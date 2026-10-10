@@ -1,0 +1,58 @@
+[Goal]
+A minimal Blender-style 3D viewport (infinite grid, orbit/pan/zoom, view and transform an OBJ 
+model, no editing) written in C++17 with CMake, built three ways: OpenGL, Vulkan, and a CUDA 
+software rasterizer. CUDA ray tracing comes after.
+
+[Key Decisions]
+{Area}	              {Decision}
+Platform	          Windows, NVIDIA RTX 5080 (Blackwell, sm_120)
+Editor & build	      VS Code, CMake Tools, MSVC Build Tools 2022, Ninja
+Dependencies	      Only OpenGL, Vulkan SDK, and CUDA 12.8+, each optional in CMake
+Windowing	          Hand-written Win32 layer, no GLFW
+OpenGL	              4.6 core, hand-rolled function loader
+Vulkan	              1.3+ with dynamic rendering and synchronization2
+CUDA	              Software rasterizer producing a pixel buffer, shown through GL interop
+Conventions	          Right-handed, Z-up, column-major, one projection function that handles GL/Vulkan 
+                      clip-space differences
+Grid	              Infinite plane in the fragment shader (ray-plane intersection, fwidth anti-aliasing, 
+                      red/green axis lines, writes depth)
+
+[Layout]
+            gfxlab/
+            ├── CMakeLists.txt
+            ├── CMakePresets.json
+            ├── .vscode/                # settings, launch.json
+            ├── cmake/                  # backend options, shader compile helper
+            ├── src/
+            │   ├── core/               # math, logging, timer
+            │   ├── platform/win32/     # window, input
+            │   ├── scene/              # camera, mesh, transform, OBJ loader
+            │   ├── renderer/           # renderer.h (IRenderer, FrameData)
+            │   │   ├── opengl/
+            │   │   ├── vulkan/
+            │   │   └── cuda/
+            │   └── app/                # main.cpp, viewport controller
+            ├── shaders/
+            ├── assets/
+            ├── tests/
+            └── docs/
+
+[Architecture]
+Layers depend downward only: core, then platform, then scene, then renderer, then app. 
+The app builds a FrameData each frame (view and projection matrices, draw list, grid parameters) 
+and passes it to whichever IRenderer backend was chosen with --backend=gl|vk|cuda.
+
+Milestones and installs
+{#}	{Goal}	                                                  {Install Needed}
+M0	CMake skeleton, math lib, logging, tests, smoke test	  Build Tools, CMake, VS Code extensions
+M1	Win32 window and input	                                  none
+M2	OpenGL: grid and orbit camera	                          none
+M3	OBJ loader, lit mesh, G/R/S object transforms	          none
+M4	Vulkan backend (same scene)	                              Vulkan SDK
+M5	CUDA rasterizer via GL interop	                          CUDA Toolkit 12.8+
+M6	Polish: wireframe toggle, FPS in the title, backend       RenderDoc (optional)
+    frame-time comparison
+M7	CUDA ray tracer with a CPU-built BVH	                  none
+
+Where practical, build each feature as a vertical slice across backends (grid in GL, then the same 
+grid in Vulkan), starting with OpenGL.
