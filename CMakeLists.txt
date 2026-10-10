@@ -10,6 +10,10 @@ if(MSVC)
     add_compile_options(/W4 /permissive- /utf-8)
 endif()
 
+# Optional backend detection
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+include(GfxBackends)
+
 add_subdirectory(src/core)
 add_subdirectory(src/app)
 
