@@ -60,7 +60,7 @@ endif()
 # --------------------------------------------------
 # CUDA
 # --------------------------------------------------
-# Optional list of CUDA architectures, supplied by the user
+# Optional list of CUDA architectures, provided by the user
 set(GFX_CUDA_ARCHITECTURES "" CACHE STRING
     "CUDA architectures to compile for, e.g. 75;86;89;120"
 )
