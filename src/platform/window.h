@@ -8,7 +8,7 @@ struct WindowDesc {
     int height;
 };
 
-struct WindowImpl;       // defined in the platform .cpp
+struct WindowImpl;       // defined in the platform\win32\window_win32.cpp
 
 class Window {
 public:

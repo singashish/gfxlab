@@ -9,7 +9,20 @@ for /F %%a in ('echo prompt $E ^| cmd') do set "ESC=%%a"
 
 :: Configure project
 echo %ESC%[96m[INFO] Configuring project...%ESC%[0m
-cmake -S . -B build -G Ninja
+:: RTX 20 series
+:: cmake -S . -B build -G Ninja -DGFX_CUDA_ARCHITECTURES=75
+
+:: RTX 30 series
+:: cmake -S . -B build -G Ninja -DGFX_CUDA_ARCHITECTURES=86
+
+:: RTX 40 series
+:: cmake -S . -B build -G Ninja -DGFX_CUDA_ARCHITECTURES=89
+
+:: RTX 50 series, including your RTX 5080
+cmake -S . -B build -G Ninja -DGFX_CUDA_ARCHITECTURES=120
+
+:: Build for several GPU generations
+:: cmake -S . -B build -G Ninja "-DGFX_CUDA_ARCHITECTURES=75;86;89;120"
 
 if errorlevel 1 (
     echo %ESC%[91m[X] CMake configuration failed%ESC%[0m

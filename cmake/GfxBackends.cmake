@@ -60,15 +60,20 @@ endif()
 # --------------------------------------------------
 # CUDA
 # --------------------------------------------------
+# Optional list of CUDA architectures, supplied by the user
+set(GFX_CUDA_ARCHITECTURES "" CACHE STRING
+    "CUDA architectures to compile for, e.g. 75;86;89;120"
+)
+
 if(GFX_ENABLE_CUDA)
     include(CheckLanguage)
     check_language(CUDA)
 
     if(CMAKE_CUDA_COMPILER)
-        # Set architecture before enabling the CUDA language
-        # 120 = NVIDIA Blackwell compute capability 12.0
-        if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-            set(CMAKE_CUDA_ARCHITECTURES 120)
+        if(GFX_CUDA_ARCHITECTURES)
+            set(CMAKE_CUDA_ARCHITECTURES
+                "${GFX_CUDA_ARCHITECTURES}"
+            )
         endif()
 
         set(CMAKE_CUDA_STANDARD 17)
@@ -77,9 +82,14 @@ if(GFX_ENABLE_CUDA)
         enable_language(CUDA)
 
         set(GFX_HAVE_CUDA ON)
-        message(STATUS "GFXLab: CUDA compiler found")
+        message(STATUS
+            "GFXLab: CUDA compiler found; architectures="
+            "${CMAKE_CUDA_ARCHITECTURES}"
+        )
     else()
-        message(STATUS "GFXLab: CUDA compiler not found, backend disabled")
+        message(STATUS
+            "GFXLab: CUDA compiler not found, backend disabled"
+        )
     endif()
 else()
     message(STATUS "GFXLab: CUDA disabled by option")
