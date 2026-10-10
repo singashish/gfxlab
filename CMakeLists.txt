@@ -15,6 +15,7 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(GfxBackends)
 
 add_subdirectory(src/core)
+add_subdirectory(src/platform)
 add_subdirectory(src/app)
 
 enable_testing()
