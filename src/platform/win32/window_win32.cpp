@@ -1,12 +1,12 @@
 #include "platform/window.h"
 #include "core/log.h"
 
-// (set via CMake below: WIN32_LEAN_AND_MEAN, NOMINMAX, UNICODE)
+// WIN32_LEAN_AND_MEAN, NOMINMAX and UNICODE are defined
+// project-wide in the root CMakeLists.txt
 #include <windows.h>
 #include <windowsx.h>
 
 #include <string>
-#include <vector>
 
 namespace gfx {
 
@@ -346,12 +346,7 @@ bool Window::create(const WindowDesc& desc) {
     }
 
     // 2. Convert the UTF-8 title into UTF-16
-    std::vector<wchar_t> title;
     const std::wstring wide_title = utf8_to_wide(desc.title);
-
-    // if (!utf8_to_utf16(desc.title, title)) {
-    //     return false;
-    // }
 
     // 3. Register the window class
     if (!register_window_class()) {
@@ -494,7 +489,8 @@ void Window::set_title(const char* utf8) {
 }
 
 const InputState& Window::input() const {
-    return m_impl->input;
+    static const InputState empty{};
+    return m_impl != nullptr ? m_impl->input : empty;
 }
 
 } // namespace gfx

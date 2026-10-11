@@ -12,10 +12,10 @@ static const char* log_level_name(LogLevel level) {
     switch (level) {
         case LogLevel::LOG_LEVEL_TRACE: return "TRACE";
         case LogLevel::LOG_LEVEL_DEBUG: return "DEBUG";
-        case LogLevel::LOG_LEVEL_INFO:  return "INFO";
-        case LogLevel::LOG_LEVEL_WARN:  return "WARN";
+        case LogLevel::LOG_LEVEL_INFO:  return "INFO ";
+        case LogLevel::LOG_LEVEL_WARN:  return "WARN ";
         case LogLevel::LOG_LEVEL_ERROR: return "ERROR";
-        default:              return "?????";
+        default:                        return "?????";
     }
 }
 

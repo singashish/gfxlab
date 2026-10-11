@@ -16,17 +16,16 @@ The only external dependencies are the graphics APIs themselves. Windowing,
 input, math, logging, the OpenGL function loader and the model parser are all
 written in this repository, as they are added.
 
-The full design and milestone plan is in [`docs/plan.txt`](docs/plan.txt).
-
 ## Status
 
-Early development. **M0 (project foundation) is complete.** No window or
-renderer exists yet; the next milestone starts the Win32 window layer.
+Early development. **M0 (foundation) and M1 (window and input) are complete.**
+The app opens a window and reports keyboard, mouse, resize and frame-timing
+events, but nothing is rendered yet. The next milestone is the OpenGL backend.
 
 | Milestone | Goal | State |
 |-----------|------|-------|
 | M0 | Build system, core library (logging, math), tests | DONE |
-| M1 | Win32 window and input | |
+| M1 | Win32 window, input, frame timer | DONE |
 | M2 | OpenGL backend: grid and orbit camera | |
 | M3 | OBJ loading, lit mesh, object transforms | |
 | M4 | Vulkan backend | |
@@ -34,28 +33,37 @@ renderer exists yet; the next milestone starts the Win32 window layer.
 | M6 | Polish and backend comparison | |
 | M7 | CUDA ray tracer | |
 
-### What M0 contains
+### What is in the repository so far
 
-- **CMake build** with presets (Debug and Release), `/W4` warnings on MSVC,
-  and automatic detection of the optional backends
-- **`gfx_core` static library**: a printf-style logger with levels and
-  file:line output
-- **Header-only math**: `Vec3`, `Vec4`, `Mat4` (identity, multiply, translate,
-  scale, rotate, point and direction transforms), and camera matrices
-  (`look_at`, and `perspective` for both OpenGL and Vulkan clip space)
-- **Unit tests** using a tiny assert harness registered with CTest
-- **`gfxlab` executable**: currently only logs which backends were detected
-  at configure time
+- **Build system**: CMake with Debug and Release presets, `/W4` warnings on
+  MSVC, and automatic detection of the optional backends
+- **`gfx_core`**: a printf-style logger, header-only math (`Vec3`, `Vec4`,
+  `Mat4`) and camera matrices (`look_at`, and `perspective` for both OpenGL and
+  Vulkan clip space), plus a frame timer
+- **`gfx_platform`**: a hand-written Win32 window (DPI-aware, resize and
+  minimize handling), and a keyboard and mouse state tracker with mouse capture
+  and focus-loss handling
+- **Tests**: three unit-test programs (math, input, timer) registered with CTest
+- **`gfxlab` app**: opens a 1280x720 window and logs input and resize events to
+  the console. The title bar shows the FPS and frame time. Press **Esc** to quit
+
+## Documentation
+
+| Document | Contents |
+|----------|----------|
+| [`docs/plan.txt`](docs/plan.txt) | Overall goal, key decisions, layout and milestones |
+| [`docs/m0-design.md`](docs/m0-design.md) | Build system, backend detection, logging, math and camera conventions |
+| [`docs/m1-design.md`](docs/m1-design.md) | Window, input model, frame timer, known limitations, manual test checklist |
 
 ## Requirements
 
-- Windows 10/11
+- Windows 10 (version 1703 or later) or Windows 11
 - MSVC (Visual Studio 2022 Build Tools, no IDE needed), CMake 3.21+, Ninja
 - Optional: [Vulkan SDK](https://vulkan.lunarg.com/) for the Vulkan backend
-- Optional: CUDA Toolkit 12.8+ for the CUDA backend (NVIDIA GPU; the build is
-  set up for compute capability 12.0, an RTX 50 series card)
+- Optional: CUDA Toolkit for the CUDA backend (12.8 or newer for RTX 50 series)
 
-Backends whose dependencies are not found are skipped automatically.
+Backends whose dependencies are not found are skipped automatically. The
+project currently builds on Windows only.
 
 ## Building
 
@@ -78,9 +86,11 @@ the executable is at `build/windows-debug/src/app/gfxlab.exe`.
 ### With `build.bat`
 
 `build.bat` is a convenience script for quick iteration. It deletes `build/`,
-configures with Ninja (without a preset, so no explicit build type), builds,
-and then shows a menu to run `gfxlab.exe`, run `test_math.exe`, or run all
-tests through CTest. Its output goes to `build/src/app/`.
+configures with Ninja (without a preset, so no explicit build type, and with
+`-DGFX_CUDA_ARCHITECTURES=120`), builds, and then shows a menu to run
+`gfxlab.exe`, run `test_math.exe`, or run all tests through CTest. Its output
+goes to `build/src/app/` and `build/tests/`. Edit the architecture line in the
+script if your GPU is not an RTX 50 series card.
 
 ### Backend options
 
@@ -102,24 +112,59 @@ Configuration prints a summary line such as
 cmake --preset windows-debug -DGFX_ENABLE_CUDA=OFF
 ```
 
+### CUDA architecture
+
+The CUDA architecture is chosen with `GFX_CUDA_ARCHITECTURES`. If it is empty,
+CMake and `nvcc` use their own default, which is unlikely to match a current
+GPU, so set it when CUDA is enabled:
+
+| GPU | Value |
+|-----|-------|
+| RTX 20 series | `75` |
+| RTX 30 series | `86` |
+| RTX 40 series | `89` |
+| RTX 50 series | `120` |
+
+```
+cmake --preset windows-debug -DGFX_CUDA_ARCHITECTURES=120
+cmake --preset windows-debug "-DGFX_CUDA_ARCHITECTURES=75;86;89;120"   # several GPUs
+```
+
 Detection results are cached. After installing the Vulkan SDK or the CUDA
 Toolkit, delete the cache (or the build directory) and configure again.
+
+## Running
+
+```
+build\windows-debug\src\app\gfxlab.exe
+```
+
+The app is a console program, so the log output is visible in the terminal. It
+logs which backends were compiled in, then opens the window and reports:
+
+- window resizes (with the aspect ratio) and minimize
+- mouse button presses and releases, scroll steps, and cursor movement while
+  the middle button is held
+- key presses and releases (as numeric ids matching the `Key` enum order)
+
+**Esc** quits.
 
 ## Project layout
 
 ```
-cmake/          build helper modules (backend detection)
-docs/           design plan
-src/core/       logging, math, common macros      -> gfx_core library
-src/app/        application entry point            -> gfxlab executable
-tests/          unit tests                         -> test_math executable
+cmake/            build helper modules (backend detection)
+docs/             design documents
+src/core/         logging, math, camera math, frame timer   -> gfx_core
+src/platform/     window and input                          -> gfx_platform
+  win32/          Win32 implementation of the window
+src/app/          application entry point                   -> gfxlab
+tests/            unit tests                                -> test_math, test_input, test_timer
 CMakePresets.json
 build.bat
 ```
 
-Planned, not yet present: `src/platform/win32/` (window and input),
-`src/scene/` (camera, mesh, OBJ loader), `src/renderer/{opengl,vulkan,cuda}/`,
-`shaders/` and `assets/`.
+Planned, not yet present: `src/scene/` (camera, mesh, OBJ loader),
+`src/renderer/{opengl,vulkan,cuda}/`, `shaders/` and `assets/`.
 
 ## Conventions
 
@@ -129,6 +174,8 @@ Planned, not yet present: `src/platform/win32/` (window and input),
 - The camera looks down -Z in view space, with +X right and +Y up
 - `perspective()` takes a `ClipSpace` argument: OpenGL uses NDC depth in
   [-1, 1] with Y up, Vulkan uses [0, 1] with Y down
+- Mouse coordinates are client pixels with the origin at the top left and Y
+  pointing down
 - Math functions are marked `GFX_HD` so the same code can later be compiled
   by `nvcc` for the CUDA backend
 - Names avoid collisions with `<windows.h>` macros, for example

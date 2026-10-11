@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstdio>
 
-static int g_failures = 0;
+inline int g_failures = 0;
 
 #define CHECK(cond)                                       \
     do {                                                  \
@@ -14,6 +14,6 @@ static int g_failures = 0;
         }                                                 \
     } while (0)
 
-static bool approx(float a, float b, float eps = 1e-5f) {
+inline bool approx(double a, double b, double eps = 1e-5) {
     return std::fabs(a - b) <= eps;
 }

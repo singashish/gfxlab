@@ -25,8 +25,6 @@ int main() {
     LOG_WARN("No graphics backends were compiled in");
 #endif
 
-    LOG_WARN("Example warning, value = %d", 42);
-
     gfx::Window window;
     if (!window.create({"gfxlab", 1280, 720})) {
         LOG_ERROR("failed to create window");
