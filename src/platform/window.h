@@ -25,9 +25,9 @@ public:
     bool should_close() const;
     void request_close();
 
-    bool is_minimized() const;
-    bool was_resized() const;
-    void wait_events();
+    bool is_minimized() const;   // true while the window is minimized
+    bool was_resized() const;    // true for one frame after the client size changed
+    void wait_events();          // block until a message arrives, then poll_events()
 
     int width() const;
     int height() const;
@@ -35,6 +35,8 @@ public:
     // HWND on Windows
     // needed later to create the GL context / Vulkan surface
     void* native_handle() const;
+
+    void set_title(const char* utf8);
 
     const InputState& input() const;
 

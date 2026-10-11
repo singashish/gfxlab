@@ -5,3 +5,7 @@ add_test(NAME math COMMAND test_math)
 add_executable(test_input test_input.cpp)
 target_link_libraries(test_input PRIVATE gfx_core)
 add_test(NAME input COMMAND test_input)
+
+add_executable(test_timer test_timer.cpp)
+target_link_libraries(test_timer PRIVATE gfx_core)
+add_test(NAME timer COMMAND test_timer)

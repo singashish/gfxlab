@@ -1,5 +1,8 @@
 #include "core/log.h"
+#include "core/timer.h"
 #include "platform/window.h"
+
+#include <cstdio>
 
 int main() {
     // gfx::log_set_level(gfx::LogLevel::LOG_LEVEL_TRACE);
@@ -30,9 +33,11 @@ int main() {
         return 1;
     }
 
+    gfx::FrameTimer timer;
     bool was_minimized = false;
 
     while (!window.should_close()) {
+        timer.tick();
         window.poll_events();
 
         if (window.is_minimized()) {
@@ -43,8 +48,11 @@ int main() {
 
             window.wait_events();
 
+            // Discard time spent waiting while minimized
+            timer.reset();
+
             // If still minimized, return to waiting. If restored, continue
-            // processing this iteration so resize/input events aren't skipped.
+            // processing this iteration so resize/input events aren't skipped
             if (window.should_close()) {
                 break;
             }
@@ -104,6 +112,15 @@ int main() {
             const gfx::Key key = (gfx::Key)k;
             if (in.key_pressed(key))  LOG_INFO("key %d pressed", k);
             if (in.key_released(key)) LOG_INFO("key %d released", k);
+        }
+
+        if (timer.fps_updated() && timer.fps() > 0.0) {
+            char title[96];
+
+            std::snprintf(title, sizeof(title), "gfxlab | %.1f FPS | %.4f ms",
+                timer.fps(), 1000.0 / timer.fps());
+
+            window.set_title(title);
         }
     }
 

@@ -88,45 +88,43 @@ bool register_window_class() {
     return true;
 }
 
-bool utf8_to_utf16(const char* input, std::vector<wchar_t>& output) {
-    if (input == nullptr) {
-        return false;
+static std::wstring utf8_to_wide(const char* utf8) {
+    if (utf8 == nullptr || utf8[0] == '\0') {
+        return L"";
     }
 
     const int length = MultiByteToWideChar(
         CP_UTF8,
         MB_ERR_INVALID_CHARS,
-        input,
+        utf8,
         -1,
         nullptr,
         0
     );
 
     if (length == 0) {
-        LOG_ERROR(
-            "MultiByteToWideChar length query failed: %lu",
-            static_cast<unsigned long>(GetLastError())
-        );
-        return false;
+        return L"";
     }
 
-    output.resize(static_cast<std::size_t>(length));
+    std::wstring result(
+        static_cast<std::size_t>(length),
+        L'\0'
+    );
 
     if (MultiByteToWideChar(
             CP_UTF8,
             MB_ERR_INVALID_CHARS,
-            input,
+            utf8,
             -1,
-            output.data(),
-            length) == 0) {
-        LOG_ERROR(
-            "MultiByteToWideChar conversion failed: %lu",
-            static_cast<unsigned long>(GetLastError())
-        );
-        return false;
+            result.data(),
+            length
+        ) == 0) {
+        return L"";
     }
 
-    return true;
+    result.resize(static_cast<std::size_t>(length - 1));
+
+    return result;
 }
 
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -349,10 +347,11 @@ bool Window::create(const WindowDesc& desc) {
 
     // 2. Convert the UTF-8 title into UTF-16
     std::vector<wchar_t> title;
+    const std::wstring wide_title = utf8_to_wide(desc.title);
 
-    if (!utf8_to_utf16(desc.title, title)) {
-        return false;
-    }
+    // if (!utf8_to_utf16(desc.title, title)) {
+    //     return false;
+    // }
 
     // 3. Register the window class
     if (!register_window_class()) {
@@ -391,7 +390,7 @@ bool Window::create(const WindowDesc& desc) {
     HWND hwnd = CreateWindowExW(
         ex_style,
         WINDOW_CLASS_NAME,
-        title.data(),
+        wide_title.c_str(),
         style,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -482,6 +481,16 @@ void* Window::native_handle() const {
     return m_impl != nullptr
         ? static_cast<void*>(m_impl->hwnd)
         : nullptr;
+}
+
+void Window::set_title(const char* utf8) {
+    if (m_impl == nullptr || m_impl->hwnd == nullptr) {
+        return;
+    }
+
+    const std::wstring wide_title = utf8_to_wide(utf8);
+
+    SetWindowTextW(m_impl->hwnd, wide_title.c_str());
 }
 
 const InputState& Window::input() const {
