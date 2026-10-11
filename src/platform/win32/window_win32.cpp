@@ -3,6 +3,7 @@
 
 // (set via CMake below: WIN32_LEAN_AND_MEAN, NOMINMAX, UNICODE)
 #include <windows.h>
+#include <windowsx.h>
 
 #include <string>
 #include <vector>
@@ -14,6 +15,7 @@ struct WindowImpl {
     bool close_requested = false;
     int width = 0;
     int height = 0;
+    InputState input;
 };
 
 } // namespace gfx
@@ -162,6 +164,54 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+static gfx::Key translate_vk(WPARAM vk) {
+    using gfx::Key;
+
+    if (vk >= 'A' && vk <= 'Z') {
+        return static_cast<Key>(
+            static_cast<unsigned char>(Key::GFX_KEY_A)
+            + static_cast<unsigned char>(vk - 'A')
+        );
+    }
+
+    if (vk >= '0' && vk <= '9') {
+        return static_cast<Key>(
+            static_cast<unsigned char>(Key::GFX_KEY_0)
+            + static_cast<unsigned char>(vk - '0')
+        );
+    }
+
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
+        return static_cast<Key>(
+            static_cast<unsigned char>(Key::GFX_KEY_NUMPAD_0)
+            + static_cast<unsigned char>(vk - VK_NUMPAD0)
+        );
+    }
+
+    switch (vk) {
+    case VK_ESCAPE:  return Key::GFX_KEY_ESCAPE;
+    case VK_SPACE:   return Key::GFX_KEY_SPACE;
+    case VK_TAB:     return Key::GFX_KEY_TAB;
+    case VK_DELETE:  return Key::GFX_KEY_DELETE;
+    case VK_LEFT:    return Key::GFX_KEY_LEFT;
+    case VK_RIGHT:   return Key::GFX_KEY_RIGHT;
+    case VK_UP:      return Key::GFX_KEY_UP;
+    case VK_DOWN:    return Key::GFX_KEY_DOWN;
+    case VK_SHIFT:   return Key::GFX_KEY_SHIFT;
+    case VK_CONTROL: return Key::GFX_KEY_CTRL;
+    case VK_MENU:    return Key::GFX_KEY_ALT;
+    default:         return Key::GFX_KEY_UNKNOWN;
+    }
+}
+
+static bool any_mouse_down(const gfx::InputState& input) {
+    using gfx::MouseButton;
+
+    return input.mouse_down(MouseButton::GFX_MOUSE_LEFT)
+        || input.mouse_down(MouseButton::GFX_MOUSE_MIDDLE)
+        || input.mouse_down(MouseButton::GFX_MOUSE_RIGHT);
+}
+
 } // namespace
 
 namespace gfx {
@@ -275,6 +325,8 @@ bool Window::create(const WindowDesc& desc) {
 }
 
 void Window::poll_events() {
+    m_impl->input.begin_frame();
+
     MSG msg{};
 
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -286,10 +338,16 @@ void Window::poll_events() {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+
+    m_impl->input.end_frame();
 }
 
 bool Window::should_close() const {
     return m_impl == nullptr || m_impl->close_requested;
+}
+
+const InputState& Window::input() const {
+    return m_impl->input;
 }
 
 int Window::width() const {
@@ -304,6 +362,12 @@ void* Window::native_handle() const {
     return m_impl != nullptr
         ? static_cast<void*>(m_impl->hwnd)
         : nullptr;
+}
+
+void Window::request_close() {
+    if (m_impl != nullptr) {
+        m_impl->close_requested = true;
+    }
 }
 
 } // namespace gfx

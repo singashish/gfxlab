@@ -33,6 +33,15 @@ int main() {
     while (!window.should_close()) {
         window.poll_events();
         // rendering will go here
+        const gfx::InputState& in = window.input();
+
+        if (in.key_pressed(gfx::Key::GFX_KEY_ESCAPE)) window.request_close();
+
+        for (int k = 1; k < (int)gfx::Key::GFX_KEY_COUNT; ++k) {
+            const gfx::Key key = (gfx::Key)k;
+            if (in.key_pressed(key))  LOG_INFO("key %d pressed", k);
+            if (in.key_released(key)) LOG_INFO("key %d released", k);
+        }
     }
 
     LOG_INFO("shutting down");

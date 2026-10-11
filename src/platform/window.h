@@ -1,5 +1,7 @@
 #pragma once
 
+#include "platform/input.h"
+
 namespace gfx {
 
 struct WindowDesc {
@@ -14,12 +16,14 @@ class Window {
 public:
     Window();
     ~Window();
+
     Window(const Window&) = delete;
     Window& operator=(const Window&) = delete;
 
     bool create(const WindowDesc& desc);
     void poll_events();
     bool should_close() const;
+    void request_close();
 
     int width() const;
     int height() const;
@@ -27,6 +31,8 @@ public:
     // HWND on Windows
     // needed later to create the GL context / Vulkan surface
     void* native_handle() const;
+
+    const InputState& input() const;
 
 private:
     WindowImpl* m_impl;
