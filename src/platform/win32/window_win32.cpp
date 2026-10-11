@@ -15,6 +15,8 @@ struct WindowImpl {
     bool close_requested = false;
     int width = 0;
     int height = 0;
+    bool minimized = false;
+    bool resized = false;
     InputState input;
 };
 
@@ -149,8 +151,20 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_SIZE:
-            impl->width = static_cast<int>(LOWORD(lp));
-            impl->height = static_cast<int>(HIWORD(lp));
+            if (wp == SIZE_MINIMIZED) {
+                impl->minimized = true;
+            } else {
+                impl->minimized = false;
+
+                const int new_width = static_cast<int>(LOWORD(lp));
+                const int new_height = static_cast<int>(HIWORD(lp));
+
+                if (new_width != impl->width || new_height != impl->height) {
+                    impl->width = new_width;
+                    impl->height = new_height;
+                    impl->resized = true;
+                }
+            }
             return 0;
 
         case WM_NCDESTROY:
@@ -411,6 +425,7 @@ bool Window::create(const WindowDesc& desc) {
 }
 
 void Window::poll_events() {
+    m_impl->resized = false;
     m_impl->input.begin_frame();
 
     MSG msg{};
@@ -432,8 +447,27 @@ bool Window::should_close() const {
     return m_impl == nullptr || m_impl->close_requested;
 }
 
-const InputState& Window::input() const {
-    return m_impl->input;
+void Window::request_close() {
+    if (m_impl != nullptr) {
+        m_impl->close_requested = true;
+    }
+}
+
+bool Window::is_minimized() const {
+    return m_impl == nullptr || m_impl->minimized;
+}
+
+bool Window::was_resized() const {
+    return m_impl != nullptr && m_impl->resized;
+}
+
+void Window::wait_events() {
+    if (m_impl == nullptr || m_impl->close_requested) {
+        return;
+    }
+
+    WaitMessage();
+    poll_events();
 }
 
 int Window::width() const {
@@ -450,10 +484,8 @@ void* Window::native_handle() const {
         : nullptr;
 }
 
-void Window::request_close() {
-    if (m_impl != nullptr) {
-        m_impl->close_requested = true;
-    }
+const InputState& Window::input() const {
+    return m_impl->input;
 }
 
 } // namespace gfx

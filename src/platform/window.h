@@ -25,6 +25,10 @@ public:
     bool should_close() const;
     void request_close();
 
+    bool is_minimized() const;
+    bool was_resized() const;
+    void wait_events();
+
     int width() const;
     int height() const;
 
