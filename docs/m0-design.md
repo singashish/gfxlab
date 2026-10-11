@@ -20,8 +20,9 @@ This document records what was built and why. The overall plan is in
 
 **Non-goals**
 
-- Any platform other than Windows (the portable parts stay portable, but only
-  Windows is built and tested)
+- Running the app on any platform other than Windows. The window layer and
+  the app are Windows-only, while `gfx_core` and the tests are portable and
+  also build elsewhere
 - A third-party test framework, logging library or math library
 
 ## 2. Decisions
@@ -50,8 +51,14 @@ test_*        EXECUTABLE tests/          one per test file, registered with CTes
 
 Each module has its own `CMakeLists.txt`, and the root file only holds
 project-wide settings and the module list. Order in the root file matters
-twice: `add_compile_options` must come before the subdirectories it should
-affect, and libraries are added before the targets that use them.
+twice: `add_compile_options` and `add_compile_definitions` must come before the
+subdirectories they should affect, and libraries are added before the targets
+that use them.
+
+On Windows the root file defines `WIN32_LEAN_AND_MEAN`, `NOMINMAX`, `UNICODE`
+and `_UNICODE` for every target. `src/platform` and `src/app` are added only
+when `WIN32` is set, while `gfx_core` and the tests are added everywhere, so
+the portable part configures, builds and passes `ctest` on any platform.
 
 **Visibility.** `gfx_core` exposes `src/` as a `PUBLIC` include directory, so
 anything linking it can write `#include "core/log.h"` or
@@ -71,9 +78,10 @@ compile definitions to whatever links it.
 There are two configure presets, not one, because Ninja is a single-config
 generator: the build type is fixed when you configure, so each type needs its
 own build directory. Both inherit from a hidden `windows-base` preset that sets
-the generator, `cl.exe`, `compile_commands.json` export, and
-`"strategy": "external"` for the architecture, which makes CMake Tools set up
-the MSVC environment automatically. The presets are guarded by a condition so
+the generator, `cl.exe`, the `compile_commands.json` export, the CUDA
+architecture (`GFX_CUDA_ARCHITECTURES=120`), and `"strategy": "external"` for
+the x64 toolset, which makes CMake Tools set up the MSVC environment
+automatically. The presets are guarded by a condition so
 they only appear on Windows. Matching build and test presets (`debug`,
 `release`) bind to them.
 
@@ -107,7 +115,8 @@ their own default, which is unlikely to match the architecture of a current
 GPU. Use
 `120` for RTX 50 series (Blackwell), `89` for RTX 40, `86` for RTX 30, `75`
 for RTX 20, or a list such as `"75;86;89;120"` to build for several.
-`build.bat` currently passes `120` explicitly. The presets do not set it.
+`build.bat` and the `windows-base` preset both set it to `120`, so change it in
+both places if your GPU is different.
 
 Detected backends define `GFX_HAS_OPENGL`, `GFX_HAS_VULKAN` and `GFX_HAS_CUDA`
 on `gfx_config`, and configuration ends with a summary such as
@@ -145,8 +154,9 @@ Application code uses the macros `LOG_TRACE`, `LOG_DEBUG`, `LOG_INFO`,
 - **printf-style** formatting: no allocation, no streams, and easy to read when
   logging numbers.
 - Output goes to `stderr` as `[LEVEL] file.cpp:line  message`, with the
-  directory stripped from the path (both `/` and `\` are handled). The default
-  minimum level is `INFO`.
+  directory stripped from the path (both `/` and `\` are handled). Level names
+  are padded to five characters (`[INFO ]`, `[WARN ]`) so the columns line up.
+  The default minimum level is `INFO`.
 - Not thread-safe. This is acceptable while everything runs on one thread, and
   needs revisiting if a second thread ever logs.
 
@@ -285,3 +295,4 @@ collisions up front:
 - The app starts and logs which backends were detected
 - The configure output reports the backends honestly when Vulkan or CUDA are
   absent
+- `gfx_core` and the tests also configure, build and pass on a non-Windows host

@@ -49,14 +49,17 @@ types**:
   `Window`, because the free function `wnd_proc` has to name it, and a free
   function cannot name a private nested type.
 - `input.h` and `timer.h` are header-only and platform-independent. That is
-  why `test_input` and `test_timer` link only `gfx_core` and run without a
-  window.
+  why `test_input` and `test_timer` link only `gfx_core`, run without a
+  window, and build on any platform.
 
 `gfx_platform` is a static library that exposes `src/` as a public include
-path and links `gfx_core` publicly. It defines `WIN32_LEAN_AND_MEAN`,
-`NOMINMAX`, `UNICODE` and `_UNICODE` privately, because only its own sources
-include `windows.h`. Its `CMakeLists.txt` stops configuration with an error on
-non-Windows hosts.
+path and links `gfx_core` publicly. The macros `WIN32_LEAN_AND_MEAN`,
+`NOMINMAX`, `UNICODE` and `_UNICODE` are defined for every target by the root
+`CMakeLists.txt` on Windows (not just for `gfx_platform`), so any future file
+that includes `windows.h` is safe from its `min` and `max` macros. The root
+file adds `src/platform` and `src/app` only when `WIN32` is set, and the
+platform `CMakeLists.txt` still stops configuration with an error if it is
+added on another host.
 
 ## 3. The window (`window.h`, `win32/window_win32.cpp`)
 
@@ -73,7 +76,7 @@ non-Windows hosts.
 | `width()` / `height()` | Current client size in pixels (never 0 while minimized, see below) |
 | `native_handle()` | The `HWND` as `void*`, needed later for the GL context and the Vulkan surface |
 | `set_title(utf8)` | Change the window title |
-| `input()` | Read-only access to the `InputState` |
+| `input()` | Read-only access to the `InputState` (a static empty state if the implementation is missing) |
 
 `Window` is not copyable. Its destructor destroys the native window.
 

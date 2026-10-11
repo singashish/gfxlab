@@ -62,8 +62,9 @@ events, but nothing is rendered yet. The next milestone is the OpenGL backend.
 - Optional: [Vulkan SDK](https://vulkan.lunarg.com/) for the Vulkan backend
 - Optional: CUDA Toolkit for the CUDA backend (12.8 or newer for RTX 50 series)
 
-Backends whose dependencies are not found are skipped automatically. The
-project currently builds on Windows only.
+Backends whose dependencies are not found are skipped automatically. The app
+and the window layer build on Windows only. `gfx_core` and the unit tests are
+portable, and also configure and build on other platforms.
 
 ## Building
 
@@ -90,7 +91,18 @@ configures with Ninja (without a preset, so no explicit build type, and with
 `-DGFX_CUDA_ARCHITECTURES=120`), builds, and then shows a menu to run
 `gfxlab.exe`, run `test_math.exe`, or run all tests through CTest. Its output
 goes to `build/src/app/` and `build/tests/`. Edit the architecture line in the
-script if your GPU is not an RTX 50 series card.
+script (and in `CMakePresets.json`) if your GPU is not an RTX 50 series card.
+
+### Core and tests only (any platform)
+
+On a non-Windows host the app is skipped, and the portable core and tests build
+with plain CMake:
+
+```
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build
+```
 
 ### Backend options
 
@@ -114,9 +126,10 @@ cmake --preset windows-debug -DGFX_ENABLE_CUDA=OFF
 
 ### CUDA architecture
 
-The CUDA architecture is chosen with `GFX_CUDA_ARCHITECTURES`. If it is empty,
-CMake and `nvcc` use their own default, which is unlikely to match a current
-GPU, so set it when CUDA is enabled:
+The CUDA architecture is chosen with `GFX_CUDA_ARCHITECTURES`. The presets and
+`build.bat` set it to `120` (RTX 50 series). If it is empty, CMake and `nvcc`
+use their own default, which is unlikely to match a current GPU, so change it
+to match yours when CUDA is enabled:
 
 | GPU | Value |
 |-----|-------|
