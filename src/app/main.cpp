@@ -34,6 +34,33 @@ int main() {
         window.poll_events();
         // rendering will go here
         const gfx::InputState& in = window.input();
+        const gfx::MouseButton buttons[] = {
+            gfx::MouseButton::GFX_MOUSE_LEFT,
+            gfx::MouseButton::GFX_MOUSE_MIDDLE,
+            gfx::MouseButton::GFX_MOUSE_RIGHT
+        };
+
+        for (const auto button : buttons) {
+            if (in.mouse_pressed(button)) {
+                LOG_INFO("Mouse button %d pressed",
+                    static_cast<int>(button));
+            }
+
+            if (in.mouse_released(button)) {
+                LOG_INFO("Mouse button %d released",
+                    static_cast<int>(button));
+            }
+        }
+
+        if (in.scroll() != 0.0f) {
+            LOG_INFO("Scroll: %.2f", in.scroll());
+        }
+
+        if (in.mouse_down(gfx::MouseButton::GFX_MOUSE_MIDDLE)
+            && (in.mouse_dx() != 0.0f || in.mouse_dy() != 0.0f)) {
+            LOG_INFO("Mouse delta: %.1f, %.1f",
+                in.mouse_dx(), in.mouse_dy());
+        }
 
         if (in.key_pressed(gfx::Key::GFX_KEY_ESCAPE)) window.request_close();
 

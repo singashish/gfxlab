@@ -26,6 +26,8 @@ constexpr wchar_t WINDOW_CLASS_NAME[] = L"GfxLabWindow";
 
 // Forward declaration
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+static gfx::Key translate_vk(WPARAM vk);
+static bool any_mouse_down(const gfx::InputState& input);
 
 bool make_process_dpi_aware() {
     static bool initialized = false;
@@ -154,6 +156,90 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_NCDESTROY:
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             impl->hwnd = nullptr;
+            break;
+
+        case WM_KEYDOWN:
+        case WM_KEYUP: {
+            const gfx::Key key = translate_vk(wp);
+            if (key != gfx::Key::GFX_KEY_UNKNOWN) {
+                impl->input.set_key(key, msg == WM_KEYDOWN);
+            }
+            return 0;
+        }
+
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP: {
+            const gfx::Key key = translate_vk(wp);
+            if (key != gfx::Key::GFX_KEY_UNKNOWN) {
+                impl->input.set_key(key, msg == WM_SYSKEYDOWN);
+            }
+            // Preserve default system-key processing, including Alt+F4.
+            break;
+        }
+
+        case WM_SYSCOMMAND:
+            if ((wp & 0xFFF0) == SC_KEYMENU) {
+                return 0;
+            }
+            break;
+
+        case WM_MOUSEMOVE:
+            impl->input.set_mouse_position(
+                static_cast<float>(GET_X_LPARAM(lp)),
+                static_cast<float>(GET_Y_LPARAM(lp))
+            );
+            return 0;
+
+        case WM_LBUTTONDOWN:
+        case WM_MBUTTONDOWN:
+        case WM_RBUTTONDOWN: {
+            const bool was_down = any_mouse_down(impl->input);
+
+            gfx::MouseButton button = gfx::MouseButton::GFX_MOUSE_LEFT;
+            if (msg == WM_MBUTTONDOWN) {
+                button = gfx::MouseButton::GFX_MOUSE_MIDDLE;
+            } else if (msg == WM_RBUTTONDOWN) {
+                button = gfx::MouseButton::GFX_MOUSE_RIGHT;
+            }
+
+            impl->input.set_mouse_button(button, true);
+
+            if (!was_down) {
+                SetCapture(hwnd);
+            }
+            return 0;
+        }
+
+        case WM_LBUTTONUP:
+        case WM_MBUTTONUP:
+        case WM_RBUTTONUP: {
+            gfx::MouseButton button = gfx::MouseButton::GFX_MOUSE_LEFT;
+            if (msg == WM_MBUTTONUP) {
+                button = gfx::MouseButton::GFX_MOUSE_MIDDLE;
+            } else if (msg == WM_RBUTTONUP) {
+                button = gfx::MouseButton::GFX_MOUSE_RIGHT;
+            }
+
+            impl->input.set_mouse_button(button, false);
+
+            if (!any_mouse_down(impl->input) && GetCapture() == hwnd) {
+                ReleaseCapture();
+            }
+            return 0;
+        }
+
+        case WM_MOUSEWHEEL:
+            impl->input.add_scroll(
+                static_cast<float>(GET_WHEEL_DELTA_WPARAM(wp))
+                / static_cast<float>(WHEEL_DELTA)
+            );
+            return 0;
+
+        case WM_KILLFOCUS:
+            if (GetCapture() == hwnd) {
+                ReleaseCapture();
+            }
+            impl->input.release_all();
             break;
 
         default:
