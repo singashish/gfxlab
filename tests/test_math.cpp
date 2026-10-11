@@ -1,26 +1,12 @@
 #include "core/vec3.h"
 #include "core/mat4.h"
 #include "core/camera_math.h"
+#include "check.h"
 
 #include <cstdio>
 #include <cstring>
 #include <cmath>
 #include <type_traits>
-
-static int g_failures = 0;
-
-#define CHECK(cond)                                       \
-    do {                                                  \
-        if (!(cond)) {                                    \
-            std::fprintf(stderr, "FAIL %s:%d  %s\n",      \
-                         __FILE__, __LINE__, #cond);      \
-            ++g_failures;                                 \
-        }                                                 \
-    } while (0)
-
-static bool approx(float a, float b, float eps = 1e-5f) {
-    return std::fabs(a - b) <= eps;
-}
 
 static bool approx_vec(gfx::Vec3 a, gfx::Vec3 b, float eps = 1e-5f) {
     return approx(a.x, b.x, eps) &&
@@ -37,6 +23,7 @@ static gfx::Vec3 project(const gfx::Mat4& m, gfx::Vec3 p) {
         clip.z / clip.w
     };
 }
+
 
 int main() {
     using gfx::Vec3;
