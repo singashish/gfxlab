@@ -1,26 +1,22 @@
 #include "core/orbit_camera.h"
+#include "check.h"
 
-#include <cassert>
 #include <cmath>
 
 namespace {
 
 constexpr float kEpsilon = 1e-4f;
 
-bool near(float a, float b, float eps = kEpsilon) {
-    return std::fabs(a - b) <= eps;
-}
-
-bool near_vec(const gfx::Vec3& a, const gfx::Vec3& b, float eps = kEpsilon) {
-    return near(a.x, b.x, eps)
-        && near(a.y, b.y, eps)
-        && near(a.z, b.z, eps);
+bool approx_vec(const gfx::Vec3& a, const gfx::Vec3& b, float eps = kEpsilon) {
+    return approx(a.x, b.x, eps)
+        && approx(a.y, b.y, eps)
+        && approx(a.z, b.z, eps);
 }
 
 void test_eye_distance() {
     gfx::OrbitCamera camera;
 
-    assert(near(
+    CHECK(approx(
         gfx::length(camera.eye() - camera.target),
         camera.distance
     ));
@@ -33,7 +29,7 @@ void test_orbit_preserves_distance() {
     camera.orbit(-64.0f, 80.0f);
     camera.orbit(12.0f, 15.0f);
 
-    assert(near(
+    CHECK(approx(
         gfx::length(camera.eye() - camera.target),
         camera.distance
     ));
@@ -44,18 +40,18 @@ void test_pitch_clamp_and_finite_view() {
     const float half_pi = gfx::kPi * 0.5f;
 
     camera.orbit(0.0f, 1e6f);
-    assert(camera.pitch < half_pi);
-    assert(camera.pitch > -half_pi);
+    CHECK(camera.pitch < half_pi);
+    CHECK(camera.pitch > -half_pi);
 
     gfx::Mat4 view = camera.view();
-    assert(view.col[0].x == view.col[0].x); // not NaN
+    CHECK(view.col[0].x == view.col[0].x); // not NaN
 
     camera.orbit(0.0f, -1e6f);
-    assert(camera.pitch < half_pi);
-    assert(camera.pitch > -half_pi);
+    CHECK(camera.pitch < half_pi);
+    CHECK(camera.pitch > -half_pi);
 
     view = camera.view();
-    assert(view.col[0].x == view.col[0].x);
+    CHECK(view.col[0].x == view.col[0].x);
 }
 
 void test_target_is_straight_ahead() {
@@ -65,7 +61,7 @@ void test_target_is_straight_ahead() {
         camera.view(), camera.target
     );
 
-    assert(near_vec(p, {0.0f, 0.0f, -camera.distance}));
+    CHECK(approx_vec(p, {0.0f, 0.0f, -camera.distance}));
 }
 
 void test_zoom() {
@@ -73,14 +69,14 @@ void test_zoom() {
     const float initial_distance = camera.distance;
 
     camera.zoom(1.0f);
-    assert(near(camera.distance, initial_distance * 0.9f));
+    CHECK(approx(camera.distance, initial_distance * 0.9f));
 
     for (int i = 0; i < 100; ++i) {
         camera.zoom(100.0f);
     }
 
-    assert(near(camera.distance, 0.2f));
-    assert(camera.distance > 0.0f);
+    CHECK(approx(camera.distance, 0.2f));
+    CHECK(camera.distance > 0.0f);
 }
 
 void test_pan_perpendicular_to_view() {
@@ -95,8 +91,8 @@ void test_pan_perpendicular_to_view() {
 
     const gfx::Vec3 delta = camera.target - old_target;
 
-    assert(near(gfx::dot(delta, forward), 0.0f));
-    assert(near(
+    CHECK(approx(gfx::dot(delta, forward), 0.0f));
+    CHECK(approx(
         gfx::length(camera.eye() - camera.target),
         old_distance
     ));
@@ -116,7 +112,7 @@ void test_pan_direction() {
     camera.pan(100.0f, 0.0f, 0.01f);
 
     const gfx::Vec3 delta = camera.target - old_target;
-    assert(gfx::dot(delta, right) < 0.0f);
+    CHECK(gfx::dot(delta, right) < 0.0f);
 }
 
 } // namespace
@@ -130,5 +126,12 @@ int main() {
     test_zoom();
     test_pan_perpendicular_to_view();
     test_pan_direction();
-    return 0;
+    
+    if (g_failures == 0) {
+        std::printf("All camera tests passed\n");
+        return 0;
+    }
+
+    std::fprintf(stderr, "%d camera test(s) failed\n", g_failures);
+    return 1;
 }

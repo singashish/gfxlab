@@ -7,10 +7,6 @@
 
 #if defined(GFX_HAS_OPENGL)
 #include "renderer/opengl/gl_context.h"
-#endif
-
-#if defined(GFX_HAS_OPENGL)
-#include "renderer/opengl/gl_context.h"
 #include "renderer/opengl/gl_triangle_demo.h"
 #endif
 

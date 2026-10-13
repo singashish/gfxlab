@@ -356,7 +356,11 @@ bool GLContext::create(void* native_window) {
 
         LOG_INFO("OpenGL debug output enabled");
     } else {
-        LOG_WARN("OpenGL debug context unavailable");
+#ifndef NDEBUG
+       LOG_WARN("OpenGL debug context unavailable");
+#else
+       LOG_INFO("OpenGL debug output disabled (release build)");
+#endif
     }
 
     return true;
