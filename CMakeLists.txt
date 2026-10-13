@@ -28,6 +28,11 @@ add_subdirectory(src/core)
 # tests are portable and are built everywhere
 if(WIN32)
     add_subdirectory(src/platform)
+
+    if(GFX_HAVE_OPENGL)
+        add_subdirectory(src/renderer/opengl)
+    endif()
+
     add_subdirectory(src/app)
 endif()
 

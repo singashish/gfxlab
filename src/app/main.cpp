@@ -1,6 +1,17 @@
 #include "core/log.h"
 #include "core/timer.h"
+#include "core/camera_math.h"
+#include "core/math_util.h"
 #include "platform/window.h"
+
+#if defined(GFX_HAS_OPENGL)
+#include "renderer/opengl/gl_context.h"
+#endif
+
+#if defined(GFX_HAS_OPENGL)
+#include "renderer/opengl/gl_context.h"
+#include "renderer/opengl/gl_triangle_demo.h"
+#endif
 
 #include <cstdio>
 
@@ -31,8 +42,29 @@ int main() {
         return 1;
     }
 
+#if defined(GFX_HAS_OPENGL)
+    // Declare after window: GLContext must be destroyed first
+    gfx::GLContext gl;
+
+    if (!gl.create(window.native_handle())) {
+        LOG_ERROR("failed to create the OpenGL context");
+        return 1;
+    }
+
+    gl.set_vsync(true);
+
+    // Testing demo
+    gfx::TriangleDemo triangle;
+
+    if (!triangle.init()) {
+        LOG_ERROR("failed to create the triangle demo");
+        return 1;
+    }
+#endif
+
     gfx::FrameTimer timer;
     bool was_minimized = false;
+    float spin_angle = 0.0f;
 
     while (!window.should_close()) {
         timer.tick();
@@ -120,6 +152,34 @@ int main() {
 
             window.set_title(title);
         }
+
+#if defined(GFX_HAS_OPENGL)
+    spin_angle += static_cast<float>(timer.delta_seconds());
+
+    const float aspect =
+        static_cast<float>(window.width()) /
+        static_cast<float>(window.height());
+
+    const gfx::Mat4 view = gfx::look_at(
+        {2.5f, -3.5f, 2.0f},  // Eye
+        {0.0f,  0.0f, 0.0f},  // Target
+        {0.0f,  0.0f, 1.0f}   // Up: Z-up
+    );
+
+    const gfx::Mat4 proj = gfx::perspective(
+        gfx::to_radians(60.0f),
+        aspect,
+        0.1f,
+        100.0f,
+        gfx::ClipSpace::CLIP_SPACE_OPENGL
+    );
+
+    const gfx::Mat4 view_proj = proj * view;
+
+    gfx::gl_clear_frame(window.width(), window.height());
+    triangle.draw(view_proj, spin_angle);
+    gl.swap_buffers();
+#endif
     }
 
     LOG_INFO("shutting down");
