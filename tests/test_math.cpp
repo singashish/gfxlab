@@ -1,5 +1,6 @@
 #include "core/vec3.h"
 #include "core/mat4.h"
+#include "core/math_util.h"
 #include "core/camera_math.h"
 #include "check.h"
 
@@ -293,6 +294,10 @@ int main() {
         proj_gl * gfx::make_vec4({0.0f, 0.0f, 1.0f}, 1.0f);
 
     CHECK(behind_clip.w < 0.0f);
+
+    // Conversion to Radian
+    CHECK(approx(gfx::to_radians(180.0f), gfx::kPi));
+    CHECK(approx(gfx::to_radians(90.0f), gfx::kPi / 2.0f));
 
 
     if (g_failures == 0) {
