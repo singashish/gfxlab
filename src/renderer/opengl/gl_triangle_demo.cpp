@@ -71,7 +71,7 @@ bool TriangleDemo::init() {
         LOG_WARN("u_mvp uniform not found in triangle shader");
     }
 
-    // glEnable(GL_DEPTH_TEST);
+    glEnable(GL_DEPTH_TEST);
 
     // The VAO must be bound before configuring vertex attributes
     glGenVertexArrays(1, &m_vao);

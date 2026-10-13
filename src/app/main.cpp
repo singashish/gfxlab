@@ -1,6 +1,7 @@
 #include "core/log.h"
 #include "core/timer.h"
 #include "core/camera_math.h"
+#include "core/orbit_camera.h"
 #include "core/math_util.h"
 #include "platform/window.h"
 
@@ -66,6 +67,9 @@ int main() {
     bool was_minimized = false;
     float spin_angle = 0.0f;
 
+    gfx::OrbitCamera camera;
+    constexpr float kFovY = gfx::to_radians(60.0f);
+
     while (!window.should_close()) {
         timer.tick();
         window.poll_events();
@@ -94,6 +98,21 @@ int main() {
 
         was_minimized = false;
 
+        // Orbit camera controls
+        const gfx::InputState& in = window.input();
+
+        if (in.mouse_down(gfx::MouseButton::GFX_MOUSE_MIDDLE)) {
+            if (in.key_down(gfx::Key::GFX_KEY_SHIFT)) {
+                camera.pan(in.mouse_dx(), in.mouse_dy(),
+                    camera.world_per_pixel(kFovY,
+                        static_cast<float>(window.height())));
+            } else {
+                camera.orbit(in.mouse_dx(), in.mouse_dy());
+            }
+        }
+
+        camera.zoom(in.scroll());
+
         if (window.was_resized()) {
             const int width = window.width();
             const int height = window.height();
@@ -103,82 +122,54 @@ int main() {
                     static_cast<float>(width) / static_cast<float>(height);
 
                 LOG_INFO("resized: %dx%d (aspect %.3f)",
-                    width, height, aspect);
+                        width, height, aspect);
             }
         }
 
-        const gfx::InputState& in = window.input();
-        const gfx::MouseButton buttons[] = {
-            gfx::MouseButton::GFX_MOUSE_LEFT,
-            gfx::MouseButton::GFX_MOUSE_MIDDLE,
-            gfx::MouseButton::GFX_MOUSE_RIGHT
-        };
-
-        for (const auto button : buttons) {
-            if (in.mouse_pressed(button)) {
-                LOG_INFO("Mouse button %d pressed",
-                    static_cast<int>(button));
-            }
-
-            if (in.mouse_released(button)) {
-                LOG_INFO("Mouse button %d released",
-                    static_cast<int>(button));
-            }
+        if (in.key_pressed(gfx::Key::GFX_KEY_ESCAPE)) {
+            window.request_close();
         }
 
-        if (in.scroll() != 0.0f) {
-            LOG_INFO("Scroll: %.2f", in.scroll());
-        }
-
-        if (in.mouse_down(gfx::MouseButton::GFX_MOUSE_MIDDLE)
-            && (in.mouse_dx() != 0.0f || in.mouse_dy() != 0.0f)) {
-            LOG_INFO("Mouse delta: %.1f, %.1f",
-                in.mouse_dx(), in.mouse_dy());
-        }
-
-        if (in.key_pressed(gfx::Key::GFX_KEY_ESCAPE)) window.request_close();
-
-        for (int k = 1; k < (int)gfx::Key::GFX_KEY_COUNT; ++k) {
-            const gfx::Key key = (gfx::Key)k;
-            if (in.key_pressed(key))  LOG_INFO("key %d pressed", k);
-            if (in.key_released(key)) LOG_INFO("key %d released", k);
+        for (int k = 1; k < static_cast<int>(gfx::Key::GFX_KEY_COUNT); ++k) {
+            const gfx::Key key = static_cast<gfx::Key>(k);
+            if (in.key_pressed(key)) 
+                LOG_INFO("key %d pressed", k);
+            if (in.key_released(key))
+                LOG_INFO("key %d released", k);
         }
 
         if (timer.fps_updated() && timer.fps() > 0.0) {
             char title[96];
 
-            std::snprintf(title, sizeof(title), "gfxlab | %.1f FPS | %.4f ms",
+            std::snprintf(title, sizeof(title),
+                "gfxlab | %.1f FPS | %.4f ms",
                 timer.fps(), 1000.0 / timer.fps());
 
             window.set_title(title);
         }
 
 #if defined(GFX_HAS_OPENGL)
-    spin_angle += static_cast<float>(timer.delta_seconds());
+        spin_angle += static_cast<float>(timer.delta_seconds());
 
-    const float aspect =
-        static_cast<float>(window.width()) /
-        static_cast<float>(window.height());
+        const float aspect =
+            static_cast<float>(window.width()) /
+            static_cast<float>(window.height());
 
-    const gfx::Mat4 view = gfx::look_at(
-        {2.5f, -3.5f, 2.0f},  // Eye
-        {0.0f,  0.0f, 0.0f},  // Target
-        {0.0f,  0.0f, 1.0f}   // Up: Z-up
-    );
+        const gfx::Mat4 view = camera.view();
 
-    const gfx::Mat4 proj = gfx::perspective(
-        gfx::to_radians(60.0f),
-        aspect,
-        0.1f,
-        100.0f,
-        gfx::ClipSpace::CLIP_SPACE_OPENGL
-    );
+        const gfx::Mat4 proj = gfx::perspective(
+            kFovY,
+            aspect,
+            0.1f,
+            100.0f,
+            gfx::ClipSpace::CLIP_SPACE_OPENGL
+        );
 
-    const gfx::Mat4 view_proj = proj * view;
+        const gfx::Mat4 view_proj = proj * view;
 
-    gfx::gl_clear_frame(window.width(), window.height());
-    triangle.draw(view_proj, spin_angle);
-    gl.swap_buffers();
+        gfx::gl_clear_frame(window.width(), window.height());
+        triangle.draw(view_proj, spin_angle);
+        gl.swap_buffers();
 #endif
     }
 
