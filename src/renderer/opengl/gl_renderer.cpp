@@ -1,0 +1,77 @@
+#include "renderer/opengl/gl_renderer.h"
+#include "renderer/opengl/gl_api.h"
+
+#include <cmath>
+
+namespace gfx {
+
+bool GLRenderer::init(void* native_window) {
+    if (!m_context.create(native_window)) {
+        return false;
+    }
+
+    if (!m_triangle.init()) {
+        return false;
+    }
+
+    if (!m_grid.init()) {
+        return false;
+    }
+
+    return true;
+}
+
+void GLRenderer::set_vsync(bool enabled) {
+    m_context.set_vsync(enabled);
+}
+
+void GLRenderer::render(const FrameData& frame) {
+    if (frame.width <= 0 || frame.height <= 0) {
+        return;
+    }
+
+    const float aspect =
+        static_cast<float>(frame.width) /
+        static_cast<float>(frame.height);
+
+    const Mat4 projection = perspective(
+        frame.fov_y,
+        aspect,
+        frame.near_plane,
+        frame.far_plane,
+        ClipSpace::CLIP_SPACE_OPENGL
+    );
+
+    const Mat4 view_proj = projection * frame.view;
+
+    // Configure the framebuffer and clear it.
+    glViewport(0, 0, frame.width, frame.height);
+    glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // Draw opaque demo geometry first.
+    m_triangle.draw(view_proj, frame.demo_spin_angle);
+
+    // Build OpenGL-specific grid parameters.
+    const float tan_half = std::tan(frame.fov_y * 0.5f);
+
+    GridParams gp;
+    gp.view_proj = view_proj;
+    gp.eye = frame.eye;
+    gp.forward = frame.basis.forward;
+    gp.right = frame.basis.right * (tan_half * aspect);
+    gp.up = frame.basis.up * tan_half;
+    gp.fade_end = frame.grid_fade_end;
+
+    // Draw the grid after the opaque objects, as before.
+    m_grid.draw(gp);
+
+    // Present the completed frame.
+    m_context.swap_buffers();
+}
+
+} // namespace gfx

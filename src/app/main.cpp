@@ -1,18 +1,13 @@
 #include "core/log.h"
 #include "core/timer.h"
-#include "core/camera_math.h"
 #include "core/orbit_camera.h"
 #include "core/math_util.h"
 #include "platform/window.h"
+#include "renderer/renderer.h"
 
-#if defined(GFX_HAS_OPENGL)
-#include "renderer/opengl/gl_context.h"
-#include "renderer/opengl/gl_grid.h"
-#include "renderer/opengl/gl_triangle_demo.h"
-#endif
-
+#include <algorithm>
 #include <cstdio>
-#include <cmath>
+#include <memory>
 
 int main() {
     // gfx::log_set_level(gfx::LogLevel::LOG_LEVEL_TRACE);
@@ -31,57 +26,88 @@ int main() {
     LOG_INFO("CUDA backend compiled in");
 #endif
 
-#if !defined(GFX_HAS_OPENGL) && !defined(GFX_HAS_VULKAN) && !defined(GFX_HAS_CUDA)
-    LOG_WARN("No graphics backends were compiled in");
-#endif
-
     gfx::Window window;
+
     if (!window.create({"gfxlab", 1280, 720})) {
         LOG_ERROR("failed to create window");
         return 1;
     }
 
-#if defined(GFX_HAS_OPENGL)
-    // Declare after window: GLContext must be destroyed first
-    gfx::GLContext gl;
-    gfx::GridRenderer floor_grid;
+    // The renderer is destroyed before the window
+    std::unique_ptr<gfx::IRenderer> renderer =
+        gfx::create_renderer(
+            gfx::RendererBackend::GFX_BACKEND_OPENGL
+        );
 
-    if (!gl.create(window.native_handle())) {
-        LOG_ERROR("failed to create the OpenGL context");
+    if (!renderer || !renderer->init(window.native_handle())) {
+        LOG_ERROR("failed to initialize the renderer");
         return 1;
     }
 
-    if (!floor_grid.init()) {
-        LOG_ERROR("failed to create the grid renderer");
-        return 1;
-    }
-
-    gl.set_vsync(true);
-
-    // Testing demo
-    gfx::TriangleDemo triangle;
-
-    if (!triangle.init()) {
-        LOG_ERROR("failed to create the triangle demo");
-        return 1;
-    }
-#endif
+    LOG_INFO("renderer: %s", renderer->name());
+    renderer->set_vsync(true);
 
     gfx::FrameTimer timer;
+
     bool was_minimized = false;
     float spin_angle = 0.0f;
+
     constexpr float kNear = 0.1f;
     constexpr float kFar = 1000.0f;
-
-    // The grid dissolves at a multiple of the zoom distance.
-    // Keep a minimum radius for close-up views and stay inside the far plane.
     constexpr float kGridFadeFactor = 1.5f;
 
     gfx::OrbitCamera camera;
     constexpr float kFovY = gfx::to_radians(60.0f);
 
-    while (!window.should_close()) {
+    // Shared by the normal main loop and the Windows modal loop
+    auto draw_frame = [&]() {
         timer.tick();
+
+        spin_angle +=
+            static_cast<float>(timer.delta_seconds());
+
+        gfx::FrameData frame;
+
+        frame.width = window.width();
+        frame.height = window.height();
+
+        frame.view = camera.view();
+        frame.eye = camera.eye();
+        frame.basis = camera.basis();
+
+        frame.fov_y = kFovY;
+        frame.near_plane = kNear;
+        frame.far_plane = kFar;
+
+        frame.grid_fade_end = std::min(
+            kGridFadeFactor *
+                std::max(camera.distance, 10.0f),
+            0.9f * kFar
+        );
+
+        frame.demo_spin_angle = spin_angle;
+
+        renderer->render(frame);
+
+        if (timer.fps_updated() && timer.fps() > 0.0) {
+            char title[96];
+
+            std::snprintf(
+                title,
+                sizeof(title),
+                "gfxlab | %.1f FPS | %.4f ms",
+                timer.fps(),
+                1000.0 / timer.fps()
+            );
+
+            window.set_title(title);
+        }
+    };
+
+    // Windows calls this while its own modal loop is active
+    window.set_modal_frame_callback(draw_frame);
+
+    while (!window.should_close()) {
         window.poll_events();
 
         if (window.is_minimized()) {
@@ -92,11 +118,9 @@ int main() {
 
             window.wait_events();
 
-            // Discard time spent waiting while minimized
+            // Discard elapsed time while the window is minimized
             timer.reset();
 
-            // If still minimized, return to waiting. If restored, continue
-            // processing this iteration so resize/input events aren't skipped
             if (window.should_close()) {
                 break;
             }
@@ -108,14 +132,19 @@ int main() {
 
         was_minimized = false;
 
-        // Orbit camera controls
+        // Input and camera updates remain in the main loop
         const gfx::InputState& in = window.input();
 
         if (in.mouse_down(gfx::MouseButton::GFX_MOUSE_MIDDLE)) {
             if (in.key_down(gfx::Key::GFX_KEY_SHIFT)) {
-                camera.pan(in.mouse_dx(), in.mouse_dy(),
-                    camera.world_per_pixel(kFovY,
-                        static_cast<float>(window.height())));
+                camera.pan(
+                    in.mouse_dx(),
+                    in.mouse_dy(),
+                    camera.world_per_pixel(
+                        kFovY,
+                        static_cast<float>(window.height())
+                    )
+                );
             } else {
                 camera.orbit(in.mouse_dx(), in.mouse_dy());
             }
@@ -129,10 +158,15 @@ int main() {
 
             if (width > 0 && height > 0) {
                 const float aspect =
-                    static_cast<float>(width) / static_cast<float>(height);
+                    static_cast<float>(width) /
+                    static_cast<float>(height);
 
-                LOG_INFO("resized: %dx%d (aspect %.3f)",
-                        width, height, aspect);
+                LOG_INFO(
+                    "resized: %dx%d (aspect %.3f)",
+                    width,
+                    height,
+                    aspect
+                );
             }
         }
 
@@ -140,64 +174,27 @@ int main() {
             window.request_close();
         }
 
-        for (int k = 1; k < static_cast<int>(gfx::Key::GFX_KEY_COUNT); ++k) {
+        for (int k = 1;
+             k < static_cast<int>(gfx::Key::GFX_KEY_COUNT);
+             ++k) {
             const gfx::Key key = static_cast<gfx::Key>(k);
-            if (in.key_pressed(key)) 
+
+            if (in.key_pressed(key)) {
                 LOG_INFO("key %d pressed", k);
-            if (in.key_released(key))
+            }
+
+            if (in.key_released(key)) {
                 LOG_INFO("key %d released", k);
+            }
         }
 
-        if (timer.fps_updated() && timer.fps() > 0.0) {
-            char title[96];
-
-            std::snprintf(title, sizeof(title),
-                "gfxlab | %.1f FPS | %.4f ms",
-                timer.fps(), 1000.0 / timer.fps());
-
-            window.set_title(title);
-        }
-
-#if defined(GFX_HAS_OPENGL)
-        spin_angle += static_cast<float>(timer.delta_seconds());
-
-        const float aspect =
-            static_cast<float>(window.width()) /
-            static_cast<float>(window.height());
-
-        const gfx::Mat4 view = camera.view();
-
-        const gfx::Mat4 proj = gfx::perspective(
-            kFovY,
-            aspect,
-            kNear,
-            kFar,
-            gfx::ClipSpace::CLIP_SPACE_OPENGL
-        );
-
-        const gfx::Mat4 view_proj = proj * view;
-
-        const float tan_half = std::tan(kFovY * 0.5f);
-        const gfx::CameraBasis b = camera.basis();
-
-        gfx::GridParams gp;
-        gp.view_proj = view_proj;
-        gp.eye = camera.eye();
-        gp.forward = b.forward;
-        gp.right = b.right * (tan_half * aspect);
-        gp.up = b.up * tan_half;
-        gp.fade_end = std::min(
-            kGridFadeFactor * std::max(camera.distance, 10.0f), 0.9f * kFar
-        );
-
-        gfx::gl_clear_frame(window.width(), window.height());
-
-        triangle.draw(view_proj, spin_angle);
-        floor_grid.draw(gp);
-
-        gl.swap_buffers();
-#endif
+        // Render the next frame
+        // draw_frame() also advances the animation timer and updates FPS
+        draw_frame();
     }
+
+    // The callback is no longer needed. Clear it before shutdown
+    window.set_modal_frame_callback({});
 
     LOG_INFO("shutting down");
     return 0;

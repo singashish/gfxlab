@@ -33,6 +33,7 @@ if(WIN32)
         add_subdirectory(src/renderer/opengl)
     endif()
 
+    add_subdirectory(src/renderer)
     add_subdirectory(src/app)
 endif()
 

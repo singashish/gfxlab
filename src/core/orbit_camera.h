@@ -9,12 +9,6 @@
 
 namespace gfx {
 
-struct CameraBasis {
-    Vec3 right;
-    Vec3 up;
-    Vec3 forward;
-};
-
 struct OrbitCamera {
     Vec3 target = {0.0f, 0.0f, 0.0f};
 

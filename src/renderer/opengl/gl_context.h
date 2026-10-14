@@ -21,7 +21,4 @@ private:
     void* m_hglrc = nullptr;
 };
 
-// Temporary scaffolding until the renderer interface is introduced
-void gl_clear_frame(int width, int height);
-
 } // namespace gfx

@@ -2,6 +2,8 @@
 
 #include "platform/input.h"
 
+#include <functional>
+
 namespace gfx {
 
 struct WindowDesc {
@@ -39,6 +41,9 @@ public:
     void set_title(const char* utf8);
 
     const InputState& input() const;
+
+    // Called while Windows runs its modal loop during dragging/resizing
+    void set_modal_frame_callback(std::function<void()> callback);
 
 private:
     WindowImpl* m_impl;

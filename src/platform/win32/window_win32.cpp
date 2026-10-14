@@ -7,6 +7,7 @@
 #include <windowsx.h>
 
 #include <string>
+#include <utility>
 
 namespace gfx {
 
@@ -18,6 +19,8 @@ struct WindowImpl {
     bool minimized = false;
     bool resized = false;
     InputState input;
+    std::function<void()> modal_frame;
+    bool in_modal = false;
 };
 
 } // namespace gfx
@@ -25,6 +28,7 @@ struct WindowImpl {
 namespace {
 
 constexpr wchar_t WINDOW_CLASS_NAME[] = L"GfxLabWindow";
+constexpr UINT_PTR kModalTimerId = 1;
 
 // Forward declaration
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -162,6 +166,10 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     impl->height = new_height;
                     impl->resized = true;
                 }
+
+                if (!impl->minimized && impl->in_modal && impl->modal_frame) {
+                    impl->modal_frame();
+                }
             }
             return 0;
 
@@ -253,6 +261,29 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             impl->input.release_all();
             break;
+
+        case WM_ENTERSIZEMOVE:
+            impl->in_modal = true;
+            SetTimer(hwnd, kModalTimerId, 1, nullptr);
+            return 0;
+
+        case WM_EXITSIZEMOVE:
+            KillTimer(hwnd, kModalTimerId);
+            impl->in_modal = false;
+            impl->input.release_all();
+            return 0;
+
+        case WM_TIMER:
+            if (wp == kModalTimerId) {
+                if (impl->in_modal && impl->modal_frame) {
+                    impl->modal_frame();
+                }
+                return 0;
+            }
+            break;
+
+        case WM_ERASEBKGND:
+            return 1;
 
         default:
             break;
@@ -491,6 +522,12 @@ void Window::set_title(const char* utf8) {
 const InputState& Window::input() const {
     static const InputState empty{};
     return m_impl != nullptr ? m_impl->input : empty;
+}
+
+void Window::set_modal_frame_callback(std::function<void()> callback) {
+    if (m_impl) {
+        m_impl->modal_frame = std::move(callback);
+    }
 }
 
 } // namespace gfx

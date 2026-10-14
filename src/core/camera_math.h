@@ -11,6 +11,12 @@ enum class ClipSpace {
     CLIP_SPACE_VULKAN
 };
 
+struct CameraBasis {
+    Vec3 right;
+    Vec3 up;
+    Vec3 forward;
+};
+
 // Build a world-to-camera view matrix
 // The camera looks down local -Z, with +X right and +Y up
 GFX_HD inline Mat4 look_at(Vec3 eye, Vec3 target, Vec3 up) {

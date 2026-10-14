@@ -408,18 +408,4 @@ void GLContext::set_vsync(bool enabled) {
     }
 }
 
-void gl_clear_frame(int width, int height) {
-    if (width <= 0 || height <= 0) {
-        return;
-    }
-
-    glViewport(0, 0, width, height);
-    glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
-    
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-}
-
 } // namespace gfx
