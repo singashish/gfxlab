@@ -43,4 +43,7 @@
     X(void, VertexAttribPointer, (GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void* pointer)) \
     X(void, EnableVertexAttribArray, (GLuint index)) \
     /* Debug output */ \
-    X(void, DebugMessageCallback, (GLDEBUGPROC callback, const void* userParam))
+    X(void, DebugMessageCallback, (GLDEBUGPROC callback, const void* userParam)) \
+    X(void, Uniform3f, (GLint location, GLfloat v0, GLfloat v1, GLfloat v2)) \
+    X(void, DepthMask, (GLboolean flag)) \
+    X(void, Uniform1f, (GLint location, GLfloat v0))

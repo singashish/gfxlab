@@ -9,6 +9,12 @@
 
 namespace gfx {
 
+struct CameraBasis {
+    Vec3 right;
+    Vec3 up;
+    Vec3 forward;
+};
+
 struct OrbitCamera {
     Vec3 target = {0.0f, 0.0f, 0.0f};
 
@@ -44,15 +50,11 @@ struct OrbitCamera {
     }
 
     void pan(float dx_pixels, float dy_pixels, float world_per_pixel_value) {
-        const Vec3 forward = normalize(target - eye());
-        const Vec3 world_up = {0.0f, 0.0f, 1.0f};
-
-        const Vec3 right = normalize(cross(forward, world_up));
-        const Vec3 cam_up = cross(right, forward);
+        const CameraBasis b = basis();
 
         target = target
-               - right * (dx_pixels * world_per_pixel_value)
-               + cam_up * (dy_pixels * world_per_pixel_value);
+               - b.right * (dx_pixels * world_per_pixel_value)
+               + b.up * (dy_pixels * world_per_pixel_value);
     }
 
     void zoom(float notches) {
@@ -66,6 +68,16 @@ struct OrbitCamera {
         }
 
         return 2.0f * distance * std::tan(fov_y * 0.5f) / viewport_height;
+    }
+
+    CameraBasis basis() const {
+        const Vec3 forward = normalize(target - eye());
+        const Vec3 world_up = {0.0f, 0.0f, 1.0f};
+
+        const Vec3 right = normalize(cross(forward, world_up));
+        const Vec3 up = cross(right, forward);
+
+        return {right, up, forward};
     }
 };
 

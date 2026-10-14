@@ -112,4 +112,14 @@ unsigned int gl_create_program(const char* vertex_source, const char* fragment_s
     return program;
 }
 
+int gl_uniform_location(unsigned int program, const char* name) {
+    const GLint location = glGetUniformLocation(program, name);
+
+    if (location == -1) {
+        LOG_WARN("Uniform '%s' was not found or is inactive", name);
+    }
+
+    return location;
+}
+
 } // namespace gfx

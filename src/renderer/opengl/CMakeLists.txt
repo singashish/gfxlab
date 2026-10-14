@@ -3,6 +3,7 @@ add_library(gfx_gl STATIC
     gl_loader_win32.cpp
     gl_shader.cpp
     gl_triangle_demo.cpp
+    gl_grid.cpp
 )
 
 target_include_directories(gfx_gl PUBLIC 

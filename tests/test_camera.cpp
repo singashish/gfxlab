@@ -115,6 +115,77 @@ void test_pan_direction() {
     CHECK(gfx::dot(delta, right) < 0.0f);
 }
 
+void test_camera_basis() {
+    const gfx::OrbitCamera camera;
+    const gfx::CameraBasis b = camera.basis();
+
+    CHECK(approx(gfx::length(b.right), 1.0f));
+    CHECK(approx(gfx::length(b.up), 1.0f));
+    CHECK(approx(gfx::length(b.forward), 1.0f));
+
+    CHECK(approx(gfx::dot(b.right, b.up), 0.0f));
+    CHECK(approx(gfx::dot(b.right, b.forward), 0.0f));
+    CHECK(approx(gfx::dot(b.up, b.forward), 0.0f));
+
+    CHECK(approx(b.right.z, 0.0f));
+
+    const gfx::Vec3 expected_forward =
+        gfx::normalize(camera.target - camera.eye());
+
+    CHECK(approx(b.forward.x, expected_forward.x));
+    CHECK(approx(b.forward.y, expected_forward.y));
+    CHECK(approx(b.forward.z, expected_forward.z));
+
+    const gfx::Vec3 cross_result = gfx::cross(b.right, b.up);
+
+    CHECK(approx(cross_result.x, -b.forward.x));
+    CHECK(approx(cross_result.y, -b.forward.y));
+    CHECK(approx(cross_result.z, -b.forward.z));
+}
+
+void test_ray_reconstruction() {
+    const gfx::OrbitCamera camera;
+
+    constexpr float aspect = 16.0f / 9.0f;
+    constexpr float fov = gfx::to_radians(60.0f);
+
+    const gfx::Mat4 view = camera.view();
+    const gfx::Mat4 proj = gfx::perspective(
+        fov, aspect, 0.1f, 1000.0f,
+        gfx::ClipSpace::CLIP_SPACE_OPENGL
+    );
+
+    const gfx::Vec3 p = {1.0f, 2.0f, 0.0f};
+
+    const gfx::Vec4 clip =
+        (proj * view) * gfx::make_vec4(p, 1.0f);
+
+    CHECK(std::fabs(clip.w) > 1e-6f);
+
+    const float ndc_x = clip.x / clip.w;
+    const float ndc_y = clip.y / clip.w;
+
+    const gfx::CameraBasis b = camera.basis();
+    const float tan_half = std::tan(fov * 0.5f);
+
+    const gfx::Vec3 right_scaled =
+        b.right * (tan_half * aspect);
+
+    const gfx::Vec3 up_scaled = b.up * tan_half;
+
+    const gfx::Vec3 dir =
+        b.forward
+        + right_scaled * ndc_x
+        + up_scaled * ndc_y;
+
+    const gfx::Vec3 ray_to_point = p - camera.eye();
+    const gfx::Vec3 error = gfx::cross(dir, ray_to_point);
+
+    CHECK(approx(error.x, 0.0f));
+    CHECK(approx(error.y, 0.0f));
+    CHECK(approx(error.z, 0.0f));
+}
+
 } // namespace
 
 
@@ -126,6 +197,8 @@ int main() {
     test_zoom();
     test_pan_perpendicular_to_view();
     test_pan_direction();
+    test_camera_basis();
+    test_ray_reconstruction();
     
     if (g_failures == 0) {
         std::printf("All camera tests passed\n");

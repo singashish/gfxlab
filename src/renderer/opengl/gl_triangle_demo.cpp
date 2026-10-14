@@ -71,8 +71,6 @@ bool TriangleDemo::init() {
         LOG_WARN("u_mvp uniform not found in triangle shader");
     }
 
-    glEnable(GL_DEPTH_TEST);
-
     // The VAO must be bound before configuring vertex attributes
     glGenVertexArrays(1, &m_vao);
     glBindVertexArray(m_vao);
@@ -130,10 +128,7 @@ bool TriangleDemo::init() {
     return true;
 }
 
-void TriangleDemo::draw(
-    const Mat4& view_proj,
-    float spin_angle) const {
-
+void TriangleDemo::draw(const Mat4& view_proj, float spin_angle) const {
     if (m_program == 0 || m_vao == 0) {
         return;
     }
@@ -157,19 +152,15 @@ void TriangleDemo::draw(
     };
 
     // Triangle A: rotate around the world Z axis.
-    const Mat4 model_a = mat4_rotate(
-        {0.0f, 0.0f, 1.0f},
-        spin_angle
-    );
+    const Mat4 model_a = mat4_translate({0.0f, 0.0f, 0.5f})
+                       * mat4_rotate({0.0f, 0.0f, 1.0f}, spin_angle);
 
     draw_object(model_a);
 
     // Triangle B: rotate 90 degrees around X.
     // It stands upright and intersects triangle A.
-    const Mat4 model_b = mat4_rotate(
-        {1.0f, 0.0f, 0.0f},
-        kPi / 2.0f
-    );
+    const Mat4 model_b = mat4_translate({0.0f, 0.0f, 0.3f})
+                       * mat4_rotate({1.0f, 0.0f, 0.0f}, kPi * 0.5f);
 
     draw_object(model_b);
 }

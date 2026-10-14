@@ -7,10 +7,12 @@
 
 #if defined(GFX_HAS_OPENGL)
 #include "renderer/opengl/gl_context.h"
+#include "renderer/opengl/gl_grid.h"
 #include "renderer/opengl/gl_triangle_demo.h"
 #endif
 
 #include <cstdio>
+#include <cmath>
 
 int main() {
     // gfx::log_set_level(gfx::LogLevel::LOG_LEVEL_TRACE);
@@ -42,9 +44,15 @@ int main() {
 #if defined(GFX_HAS_OPENGL)
     // Declare after window: GLContext must be destroyed first
     gfx::GLContext gl;
+    gfx::GridRenderer floor_grid;
 
     if (!gl.create(window.native_handle())) {
         LOG_ERROR("failed to create the OpenGL context");
+        return 1;
+    }
+
+    if (!floor_grid.init()) {
+        LOG_ERROR("failed to create the grid renderer");
         return 1;
     }
 
@@ -62,6 +70,12 @@ int main() {
     gfx::FrameTimer timer;
     bool was_minimized = false;
     float spin_angle = 0.0f;
+    constexpr float kNear = 0.1f;
+    constexpr float kFar = 1000.0f;
+
+    // The grid dissolves at a multiple of the zoom distance.
+    // Keep a minimum radius for close-up views and stay inside the far plane.
+    constexpr float kGridFadeFactor = 1.5f;
 
     gfx::OrbitCamera camera;
     constexpr float kFovY = gfx::to_radians(60.0f);
@@ -156,15 +170,31 @@ int main() {
         const gfx::Mat4 proj = gfx::perspective(
             kFovY,
             aspect,
-            0.1f,
-            100.0f,
+            kNear,
+            kFar,
             gfx::ClipSpace::CLIP_SPACE_OPENGL
         );
 
         const gfx::Mat4 view_proj = proj * view;
 
+        const float tan_half = std::tan(kFovY * 0.5f);
+        const gfx::CameraBasis b = camera.basis();
+
+        gfx::GridParams gp;
+        gp.view_proj = view_proj;
+        gp.eye = camera.eye();
+        gp.forward = b.forward;
+        gp.right = b.right * (tan_half * aspect);
+        gp.up = b.up * tan_half;
+        gp.fade_end = std::min(
+            kGridFadeFactor * std::max(camera.distance, 10.0f), 0.9f * kFar
+        );
+
         gfx::gl_clear_frame(window.width(), window.height());
+
         triangle.draw(view_proj, spin_angle);
+        floor_grid.draw(gp);
+
         gl.swap_buffers();
 #endif
     }

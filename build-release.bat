@@ -5,7 +5,10 @@ setlocal
 for /F %%a in ('echo prompt $E ^| cmd') do set "ESC=%%a"
 
 :: Release build directory
-set "BUILD_DIR=build-release"
+set "BUILD_DIR=builds\build-release"
+
+:: Delete the build-release directory
+rmdir /s /q builds\build-release
 
 :: Configure project
 echo %ESC%[96m[INFO] Configuring Release build...%ESC%[0m
