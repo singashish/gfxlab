@@ -253,7 +253,7 @@ M1 does not include:
 
 | Limitation | Notes |
 |---|---|
-| **Modal drag and resize loop** | While the user drags the title bar or an edge, Windows runs its own loop inside `DispatchMessage`, so `poll_events()` does not return. Nothing renders during the drag, and `was_resized()` fires once after it ends. The stall is also counted in one FPS window, so the title shows a single low reading afterward. The fix is to render from inside that loop (via `WM_ENTERSIZEMOVE` and `WM_EXITSIZEMOVE` and a timer, or a render callback), planned for M2 |
+| **Modal drag and resize loop** | **Resolved in M2 (Step 9).** While the user drags the title bar or an edge, Windows runs its own loop inside `DispatchMessage`, so `poll_events()` does not return. In M1 nothing rendered during the drag, and the stall showed up as one low FPS reading afterward. M2 renders from inside that loop with a timer and a render callback (see `m2-design.md`, Step 9). `was_resized()` still fires only once, after the drag ends |
 | **Shared modifier keys** | Left and right Shift, Ctrl and Alt share one `Key`. Holding both and releasing one reads as released |
 | **Capture lost without focus loss** | If another window takes mouse capture (for example, a system dialog) without `WM_KILLFOCUS`, the button-up may never arrive. `WM_CAPTURECHANGED` and `WM_CANCELMODE` are not handled yet |
 | **Alt+Space** | The system menu is disabled, as described in Step 3 |
@@ -271,7 +271,7 @@ M1 does not include:
 5. Scroll the wheel. Steps of +1.0 and -1.0 are logged.
 6. Hold a key, then Alt+Tab away. A `released` line appears for it.
 7. Escape exits cleanly.
-8. Drag-resize an edge: one `resized` line appears after release. Maximize and restore: one line each.
+8. Drag-resize an edge: one `resized` line appears after release (from M2 onward the scene also keeps rendering during the drag). Maximize and restore: one line each.
 9. Minimize: one `minimized` line, and CPU use drops to about 0%. Restore: no `resized` line, because the size is unchanged. Closing while minimized still exits.
 10. The title updates about twice a second without flicker.
 

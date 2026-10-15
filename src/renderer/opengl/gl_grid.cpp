@@ -142,7 +142,8 @@ bool GridRenderer::init() {
         m_eye_location < 0 ||
         m_forward_location < 0 ||
         m_right_location < 0 ||
-        m_up_location < 0) {
+        m_up_location < 0 ||
+        m_fade_end < 0) {
         LOG_ERROR("One or more grid uniforms are missing");
         shutdown();
         return false;
@@ -208,6 +209,7 @@ void GridRenderer::shutdown() {
     m_forward_location = -1;
     m_right_location = -1;
     m_up_location = -1;
+    m_fade_end = -1;
 }
 
 } // namespace gfx

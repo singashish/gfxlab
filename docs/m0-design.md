@@ -27,7 +27,7 @@ gfx_config    INTERFACE   (no sources)   compile definitions for detected backen
 test_*        EXECUTABLE  tests/         one program per area, registered with CTest
 ```
 
-(`gfx_platform` is added in M1 and `gfx_gl` in M2.)
+(`gfx_platform` is added in M1, and `gfx_gl` and `gfx_renderer` in M2.)
 
 - `gfx_core` has no dependency on Windows, OpenGL or any other library. It exposes `src/` as a `PUBLIC` include directory, so anything linking it writes `#include "core/log.h"` with `src/` as the include root.
 - `gfx_config` is an `INTERFACE` library. It has no code and only carries compile definitions to whatever links it.
@@ -268,7 +268,7 @@ Detected backends define `GFX_HAS_OPENGL`, `GFX_HAS_VULKAN` and `GFX_HAS_CUDA` o
 
 ### Build scripts
 
-`build.bat` is a convenience script for quick iteration. It deletes `build/`, configures with Ninja (without a preset, so no explicit build type) and the CUDA architecture flag, builds, and offers a menu to run `gfxlab.exe`, run `test_math.exe`, or run all tests through CTest. Its output goes to `build/src/app/` and `build/tests/`, unlike the preset builds. `build-debug.bat` and `build-release.bat` were added during M2 as the same idea with an explicit build type, writing to `build-debug/` and `build-release/`.
+`build.bat` is a convenience script for quick iteration. It deletes `build/`, configures with Ninja (without a preset, so no explicit build type) and the CUDA architecture flag, builds, and offers a menu to run `gfxlab.exe`, run `test_math.exe`, or run all tests through CTest. Its output goes to `build/src/app/` and `build/tests/`, unlike the preset builds. `build-debug.bat` and `build-release.bat` were added during M2 as the same idea with an explicit build type, writing to `builds\build-debug\` and `builds\build-release\`.
 
 ## 11. Tests and correctness checks
 

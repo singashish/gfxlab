@@ -18,15 +18,19 @@ written in this repository, as they are added.
 
 ## Status
 
-Early development. **M0 (foundation) and M1 (window and input) are complete.**
-The app opens a window and reports keyboard, mouse, resize and frame-timing
-events, but nothing is rendered yet. The next milestone is the OpenGL backend.
+Early development. **M0 (foundation), M1 (window and input) and M2 (OpenGL
+renderer and orbit camera) are complete.** The app opens a window with a
+Blender-style viewport: an infinite, anti-aliased floor grid with colored X and
+Y axes that fades with distance, two demo triangles that intersect each other
+and the floor, and a mouse-controlled orbit camera. It keeps rendering while the
+window is dragged or resized. The next milestone is M3: loading OBJ models and
+moving, rotating and scaling them.
 
 | Milestone | Goal | State |
 |-----------|------|-------|
 | M0 | Build system, core library (logging, math), tests | DONE |
 | M1 | Win32 window, input, frame timer | DONE |
-| M2 | OpenGL backend: grid and orbit camera | |
+| M2 | OpenGL backend: grid and orbit camera | DONE |
 | M3 | OBJ loading, lit mesh, object transforms | |
 | M4 | Vulkan backend | |
 | M5 | CUDA rasterizer | |
@@ -38,14 +42,28 @@ events, but nothing is rendered yet. The next milestone is the OpenGL backend.
 - **Build system**: CMake with Debug and Release presets, `/W4` warnings on
   MSVC, and automatic detection of the optional backends
 - **`gfx_core`**: a printf-style logger, header-only math (`Vec3`, `Vec4`,
-  `Mat4`) and camera matrices (`look_at`, and `perspective` for both OpenGL and
-  Vulkan clip space), plus a frame timer
+  `Mat4`), camera matrices (`look_at`, and `perspective` for both OpenGL and
+  Vulkan clip space), the orbit camera, and a frame timer
 - **`gfx_platform`**: a hand-written Win32 window (DPI-aware, resize and
-  minimize handling), and a keyboard and mouse state tracker with mouse capture
-  and focus-loss handling
-- **Tests**: three unit-test programs (math, input, timer) registered with CTest
-- **`gfxlab` app**: opens a 1280x720 window and logs input and resize events to
-  the console. The title bar shows the FPS and frame time. Press **Esc** to quit
+  minimize handling, rendering during the drag/resize loop), and a keyboard and
+  mouse state tracker with mouse capture and focus-loss handling
+- **`gfx_gl`**: an OpenGL 4.6 core context created through WGL, an own function
+  loader, shader helpers, the ray-cast grid, and `GLRenderer`
+- **`gfx_renderer`**: the backend-neutral `IRenderer` interface, `FrameData`,
+  and the `create_renderer()` factory
+- **Tests**: four unit-test programs (math, input, timer, camera) registered
+  with CTest
+- **`gfxlab` app**: opens a 1280x720 window and renders the viewport. The title
+  bar shows the FPS and frame time. Press **Esc** to quit
+
+### Controls
+
+| Input | Action |
+|-------|--------|
+| Middle mouse drag | Orbit around the target |
+| Shift + middle mouse drag | Pan |
+| Scroll wheel | Zoom |
+| Esc | Quit |
 
 ## Documentation
 
@@ -54,10 +72,12 @@ events, but nothing is rendered yet. The next milestone is the OpenGL backend.
 | [`docs/plan.txt`](docs/plan.txt) | Overall goal, key decisions, layout and milestones |
 | [`docs/m0-design.md`](docs/m0-design.md) | Build system, backend detection, logging, math and camera conventions |
 | [`docs/m1-design.md`](docs/m1-design.md) | Window, input model, frame timer, known limitations, manual test checklist |
+| [`docs/m2-design.md`](docs/m2-design.md) | OpenGL context and loader, shaders, orbit camera, ray-cast grid, renderer interface, rendering during window drag, tests, manual checklist |
 
 ## Requirements
 
 - Windows 10 (version 1703 or later) or Windows 11
+- A GPU and driver that support OpenGL 4.6
 - MSVC (Visual Studio 2022 Build Tools, no IDE needed), CMake 3.21+, Ninja
 - Optional: [Vulkan SDK](https://vulkan.lunarg.com/) for the Vulkan backend
 - Optional: CUDA Toolkit for the CUDA backend (12.8 or newer for RTX 50 series)
@@ -84,14 +104,23 @@ Use `windows-release` / `release` for an optimized build. Each preset builds
 into its own directory (`build/windows-debug`, `build/windows-release`), and
 the executable is at `build/windows-debug/src/app/gfxlab.exe`.
 
-### With `build.bat`
+### With the build scripts
 
-`build.bat` is a convenience script for quick iteration. It deletes `build/`,
-configures with Ninja (without a preset, so no explicit build type, and with
-`-DGFX_CUDA_ARCHITECTURES=120`), builds, and then shows a menu to run
-`gfxlab.exe`, run `test_math.exe`, or run all tests through CTest. Its output
-goes to `build/src/app/` and `build/tests/`. Edit the architecture line in the
-script (and in `CMakePresets.json`) if your GPU is not an RTX 50 series card.
+`build.bat`, `build-debug.bat` and `build-release.bat` are convenience scripts
+for quick iteration. Each deletes its build directory, configures with Ninja
+(without a preset, and with `-DGFX_CUDA_ARCHITECTURES=120`), builds, and then
+shows a menu to run `gfxlab.exe`, run `test_math.exe`, or run all tests through
+CTest.
+
+| Script | Build type | Output directory |
+|--------|------------|------------------|
+| `build.bat` | none specified | `build/` |
+| `build-debug.bat` | Debug | `builds\build-debug\` |
+| `build-release.bat` | Release | `builds\build-release\` |
+
+The executable is in `src\app\` and the tests are in `tests\` under the output
+directory. Edit the architecture line in the scripts (and in
+`CMakePresets.json`) if your GPU is not an RTX 50 series card.
 
 ### Core and tests only (any platform)
 
@@ -153,31 +182,32 @@ build\windows-debug\src\app\gfxlab.exe
 ```
 
 The app is a console program, so the log output is visible in the terminal. It
-logs which backends were compiled in, then opens the window and reports:
+logs which backends were compiled in, creates the renderer (and prints the GPU
+and OpenGL version), then opens the viewport. The console also reports:
 
 - window resizes (with the aspect ratio) and minimize
-- mouse button presses and releases, scroll steps, and cursor movement while
-  the middle button is held
 - key presses and releases (as numeric ids matching the `Key` enum order)
 
-**Esc** quits.
+See [Controls](#controls) for the mouse and keyboard actions.
 
 ## Project layout
 
 ```
-cmake/            build helper modules (backend detection)
-docs/             design documents
-src/core/         logging, math, camera math, frame timer   -> gfx_core
-src/platform/     window and input                          -> gfx_platform
-  win32/          Win32 implementation of the window
-src/app/          application entry point                   -> gfxlab
-tests/            unit tests                                -> test_math, test_input, test_timer
+cmake/               build helper modules (backend detection)
+docs/                design documents
+src/core/            logging, math, camera math, orbit camera, timer   -> gfx_core
+src/platform/        window and input                                  -> gfx_platform
+  win32/             Win32 implementation of the window
+src/renderer/        IRenderer, FrameData, backend factory             -> gfx_renderer
+  opengl/            WGL context, loader, shaders, grid, GLRenderer    -> gfx_gl
+src/app/             application entry point                           -> gfxlab
+tests/               unit tests                                        -> test_math, test_input, test_timer, test_camera
 CMakePresets.json
-build.bat
+build.bat, build-debug.bat, build-release.bat
 ```
 
-Planned, not yet present: `src/scene/` (camera, mesh, OBJ loader),
-`src/renderer/{opengl,vulkan,cuda}/`, `shaders/` and `assets/`.
+Planned, not yet present: `src/scene/` (mesh, OBJ loader), `src/renderer/vulkan/`,
+`src/renderer/cuda/`, `shaders/` and `assets/`.
 
 ## Conventions
 
