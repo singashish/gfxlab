@@ -25,4 +25,18 @@ Aabb compute_bounds(const Mesh& mesh) {
     return bounds;
 }
 
+void mesh_y_up_to_z_up(Mesh& mesh) {
+    for (Vec3& p : mesh.positions) {
+        const float old_y = p.y;
+        p.y = -p.z;
+        p.z = old_y;
+    }
+
+    for (Vec3& n : mesh.normals) {
+        const float old_y = n.y;
+        n.y = -n.z;
+        n.z = old_y;
+    }
+}
+
 } // namespace gfx

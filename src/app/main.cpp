@@ -2,6 +2,8 @@
 #include "core/timer.h"
 #include "core/orbit_camera.h"
 #include "core/math_util.h"
+#include "core/mesh.h"
+#include "core/obj_loader.h"
 #include "platform/window.h"
 #include "renderer/renderer.h"
 
@@ -9,9 +11,7 @@
 #include <cstdio>
 #include <memory>
 
-int main() {
-    // gfx::log_set_level(gfx::LogLevel::LOG_LEVEL_TRACE);
-
+int main(int argc, char** argv) {
     LOG_INFO("gfxlab starting...");
 
 #if defined(GFX_HAS_OPENGL)
@@ -25,6 +25,28 @@ int main() {
 #if defined(GFX_HAS_CUDA)
     LOG_INFO("CUDA backend compiled in");
 #endif
+
+    // Load and convert the optional model before creating the window
+    gfx::Mesh mesh;
+    const bool has_model = argc > 1;
+
+    if (has_model) {
+        std::string error;
+
+        if (!gfx::load_obj(argv[1], mesh, error)) {
+            LOG_ERROR("failed to load model: %s", error.c_str());
+            return 1;
+        }
+
+        gfx::mesh_y_up_to_z_up(mesh);
+
+        LOG_INFO(
+            "loaded model: %zu vertices, %zu triangles, normals: %s",
+            mesh.positions.size(),
+            mesh.triangle_count(),
+            mesh.has_normals() ? "yes" : "no"
+        );
+    }
 
     gfx::Window window;
 
@@ -48,7 +70,6 @@ int main() {
     renderer->set_vsync(true);
 
     gfx::FrameTimer timer;
-
     bool was_minimized = false;
     float spin_angle = 0.0f;
 
@@ -59,7 +80,27 @@ int main() {
     gfx::OrbitCamera camera;
     constexpr float kFovY = gfx::to_radians(60.0f);
 
-    // Shared by the normal main loop and the Windows modal loop
+    gfx::MeshId mesh_id = 0;
+
+    if (has_model) {
+        const gfx::Aabb bounds = gfx::compute_bounds(mesh);
+
+        const gfx::Vec3 center =
+            (bounds.min + bounds.max) * 0.5f;
+
+        const float radius =
+            0.5f * gfx::length(bounds.max - bounds.min);
+
+        camera.frame(center, radius, kFovY);
+
+        mesh_id = renderer->create_mesh(mesh);
+
+        if (mesh_id == 0) {
+            LOG_ERROR("failed to upload model to the renderer");
+            return 1;
+        }
+    }
+
     auto draw_frame = [&]() {
         timer.tick();
 
@@ -80,12 +121,12 @@ int main() {
         frame.far_plane = kFar;
 
         frame.grid_fade_end = std::min(
-            kGridFadeFactor *
-                std::max(camera.distance, 10.0f),
+            kGridFadeFactor * std::max(camera.distance, 10.0f),
             0.9f * kFar
         );
 
         frame.demo_spin_angle = spin_angle;
+        frame.demo_mesh = mesh_id;
 
         renderer->render(frame);
 
@@ -104,7 +145,6 @@ int main() {
         }
     };
 
-    // Windows calls this while its own modal loop is active
     window.set_modal_frame_callback(draw_frame);
 
     while (!window.should_close()) {
@@ -117,8 +157,6 @@ int main() {
             }
 
             window.wait_events();
-
-            // Discard elapsed time while the window is minimized
             timer.reset();
 
             if (window.should_close()) {
@@ -132,7 +170,6 @@ int main() {
 
         was_minimized = false;
 
-        // Input and camera updates remain in the main loop
         const gfx::InputState& in = window.input();
 
         if (in.mouse_down(gfx::MouseButton::GFX_MOUSE_MIDDLE)) {
@@ -188,12 +225,9 @@ int main() {
             }
         }
 
-        // Render the next frame
-        // draw_frame() also advances the animation timer and updates FPS
         draw_frame();
     }
 
-    // The callback is no longer needed. Clear it before shutdown
     window.set_modal_frame_callback({});
 
     LOG_INFO("shutting down");

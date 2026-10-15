@@ -349,7 +349,52 @@ void test_cube_bounds() {
     CHECK(approx_vec(bounds.max, {1, 1, 1}));
 }
 
+void test_vertex_colors_ignored() {
+    const char* obj = R"OBJ(
+v 1 2 3 0.5 0.5 0.5
+v 4 2 3 1.0 0.0 0.0
+v 1 5 3 0.0 1.0 0.0
+f 1 2 3
+)OBJ";
+
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(parse(obj, mesh, error));
+    CHECK(mesh.positions.size() == 3);
+    CHECK(mesh.triangle_count() == 1);
+    CHECK(approx_vec(mesh.positions[0], {1, 2, 3}));
+    CHECK(approx_vec(mesh.positions[1], {4, 2, 3}));
+    CHECK(approx_vec(mesh.positions[2], {1, 5, 3}));
+}
+
+void test_y_up_to_z_up() {
+    gfx::Mesh mesh;
+    mesh.positions.push_back({1.0f, 2.0f, 3.0f});
+    mesh.normals.push_back({0.0f, 1.0f, 0.0f});
+
+    gfx::mesh_y_up_to_z_up(mesh);
+
+    CHECK(approx_vec(mesh.positions[0], {1.0f, -3.0f, 2.0f}));
+    CHECK(approx_vec(mesh.normals[0], {0.0f, 0.0f, 1.0f}));
+}
+
+void test_cube_bounds_after_axis_conversion() {
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(parse(kCubeWithoutNormals, mesh, error));
+
+    gfx::mesh_y_up_to_z_up(mesh);
+
+    const gfx::Aabb bounds = gfx::compute_bounds(mesh);
+
+    CHECK(approx_vec(bounds.min, {-1.0f, -1.0f, -1.0f}));
+    CHECK(approx_vec(bounds.max, {1.0f, 1.0f, 1.0f}));
+}
+
 } // namespace
+
 
 int main() {
     test_triangle();
@@ -366,6 +411,9 @@ int main() {
     test_invalid_inputs();
     test_missing_file();
     test_cube_bounds();
+    test_vertex_colors_ignored();
+    test_y_up_to_z_up();
+    test_cube_bounds_after_axis_conversion();
 
     if (g_failures == 0) {
         std::printf("All OBJ tests passed\n");

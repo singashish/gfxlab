@@ -186,6 +186,36 @@ void test_ray_reconstruction() {
     CHECK(approx(error.z, 0.0f));
 }
 
+void test_frame_camera() {
+    gfx::OrbitCamera camera;
+
+    const gfx::Vec3 center = {2.0f, -3.0f, 4.0f};
+    constexpr float radius = 2.0f;
+    constexpr float fov = gfx::to_radians(60.0f);
+
+    const float old_yaw = camera.yaw;
+    const float old_pitch = camera.pitch;
+
+    camera.frame(center, radius, fov);
+
+    CHECK(approx_vec(camera.target, center));
+    CHECK(approx(camera.yaw, old_yaw));
+    CHECK(approx(camera.pitch, old_pitch));
+    CHECK(std::asin(radius / camera.distance) < fov * 0.5f);
+}
+
+void test_frame_camera_distance_clamp() {
+    gfx::OrbitCamera camera;
+
+    camera.frame(
+        {0.0f, 0.0f, 0.0f},
+        10000.0f,
+        gfx::to_radians(60.0f)
+    );
+
+    CHECK(approx(camera.distance, 500.0f));
+}
+
 } // namespace
 
 
@@ -199,6 +229,8 @@ int main() {
     test_pan_direction();
     test_camera_basis();
     test_ray_reconstruction();
+    test_frame_camera();
+    test_frame_camera_distance_clamp();
     
     if (g_failures == 0) {
         std::printf("All camera tests passed\n");

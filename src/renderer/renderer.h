@@ -3,10 +3,14 @@
 #include "core/camera_math.h"
 #include "core/mat4.h"
 #include "core/vec3.h"
+#include "core/mesh.h"
 
+#include <cstdint>
 #include <memory>
 
 namespace gfx {
+
+using MeshId = std::uint32_t; // 0 means no mesh
 
 enum class RendererBackend {
     GFX_BACKEND_OPENGL,
@@ -34,6 +38,9 @@ struct FrameData {
 
     // Temporary demo animation state, replaced by a draw list in M3
     float demo_spin_angle = 0.0f;
+
+    // Temporary single-mesh demo; replaced by the draw list in M3 Step 4
+    MeshId demo_mesh = 0;
 };
 
 class IRenderer {
@@ -44,6 +51,7 @@ public:
     virtual bool init(void* native_window) = 0;
     virtual void render(const FrameData& frame) = 0;
     virtual void set_vsync(bool enabled) = 0;
+    virtual MeshId create_mesh(const Mesh& mesh) = 0;
 };
 
 // Returns nullptr and logs an error when the backend is unavailable

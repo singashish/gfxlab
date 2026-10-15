@@ -303,27 +303,8 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
                 );
             }
 
-            // OBJ optionally provides a fourth component, w
-            // Validate it, but do not use it
-            std::string_view extra;
-
-            if (next_token(line, extra)) {
-                float w = 0.0f;
-
-                if (!parse_float(extra, w)) {
-                    return fail(
-                        out, error, line_number,
-                        "invalid vertex w component"
-                    );
-                }
-
-                if (has_extra_token(line)) {
-                    return fail(
-                        out, error, line_number,
-                        "too many vertex components"
-                    );
-                }
-            }
+            // Anything after z is ignored: OBJ allows a 4th number (w), and many
+            // exporters append vertex colours (r g b) here
 
             source_positions.push_back(position);
         } else if (keyword == "vn") {

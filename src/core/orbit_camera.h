@@ -73,6 +73,20 @@ struct OrbitCamera {
 
         return {right, up, forward};
     }
+
+    void frame(const Vec3& center, float radius, float fov_y) {
+        target = center;
+
+        const float sin_half_fov = std::sin(fov_y * 0.5f);
+
+        if (sin_half_fov <= 0.0f || radius <= 0.0f) {
+            distance = 0.2f;
+            return;
+        }
+
+        distance = radius / sin_half_fov * 1.2f;
+        distance = std::clamp(distance, 0.2f, 500.0f);
+    }
 };
 
 } // namespace gfx

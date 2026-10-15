@@ -10,6 +10,10 @@ bool GLRenderer::init(void* native_window) {
         return false;
     }
 
+    if (!m_meshes.init()) {
+        return false;
+    }
+
     if (!m_triangle.init()) {
         return false;
     }
@@ -44,7 +48,7 @@ void GLRenderer::render(const FrameData& frame) {
 
     const Mat4 view_proj = projection * frame.view;
 
-    // Configure the framebuffer and clear it.
+    // Configure the framebuffer and clear it
     glViewport(0, 0, frame.width, frame.height);
     glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
 
@@ -53,10 +57,14 @@ void GLRenderer::render(const FrameData& frame) {
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Draw opaque demo geometry first.
-    m_triangle.draw(view_proj, frame.demo_spin_angle);
+    // Draw opaque demo geometry first
+    if (frame.demo_mesh != 0) {
+        m_meshes.draw(frame.demo_mesh, view_proj, frame.view);
+    } else {
+        m_triangle.draw(view_proj, frame.demo_spin_angle);
+    }
 
-    // Build OpenGL-specific grid parameters.
+    // Build OpenGL-specific grid parameters
     const float tan_half = std::tan(frame.fov_y * 0.5f);
 
     GridParams gp;
@@ -67,11 +75,15 @@ void GLRenderer::render(const FrameData& frame) {
     gp.up = frame.basis.up * tan_half;
     gp.fade_end = frame.grid_fade_end;
 
-    // Draw the grid after the opaque objects, as before.
+    // Draw the grid after the opaque objects, as before
     m_grid.draw(gp);
 
-    // Present the completed frame.
+    // Present the completed frame
     m_context.swap_buffers();
+}
+
+MeshId GLRenderer::create_mesh(const Mesh& mesh) {
+    return m_meshes.add(mesh);
 }
 
 } // namespace gfx
