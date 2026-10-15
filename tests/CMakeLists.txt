@@ -13,3 +13,7 @@ add_test(NAME timer COMMAND test_timer)
 add_executable(test_camera test_camera.cpp)
 target_link_libraries(test_camera PRIVATE gfx_core)
 add_test(NAME camera COMMAND test_camera)
+
+add_executable(test_obj test_obj.cpp)
+target_link_libraries(test_obj PRIVATE gfx_core)
+add_test(NAME obj COMMAND test_obj)
