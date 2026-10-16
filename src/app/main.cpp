@@ -4,6 +4,7 @@
 #include "core/math_util.h"
 #include "core/mesh.h"
 #include "core/obj_loader.h"
+#include "core/transform.h"
 #include "platform/window.h"
 #include "renderer/renderer.h"
 
@@ -29,6 +30,8 @@ int main(int argc, char** argv) {
     // Load and convert the optional model before creating the window
     gfx::Mesh mesh;
     const bool has_model = argc > 1;
+    gfx::Aabb bounds{};
+    gfx::Transform model_transform;
 
     if (has_model) {
         std::string error;
@@ -54,6 +57,13 @@ int main(int argc, char** argv) {
             mesh.positions.size(),
             mesh.triangle_count()
         );
+
+        gfx::mesh_center_at_origin(mesh);
+        bounds = gfx::compute_bounds(mesh);
+
+        // The mesh is centered at local origin
+        // Move it upward by half its height so its bottom rests on Z = 0
+        model_transform.position.z = (bounds.max.z - bounds.min.z) * 0.5f;
     }
 
     gfx::Window window;
@@ -91,15 +101,10 @@ int main(int argc, char** argv) {
     gfx::MeshId mesh_id = 0;
 
     if (has_model) {
-        const gfx::Aabb bounds = gfx::compute_bounds(mesh);
-
-        const gfx::Vec3 center =
-            (bounds.min + bounds.max) * 0.5f;
-
         const float radius =
             0.5f * gfx::length(bounds.max - bounds.min);
 
-        camera.frame(center, radius, kFovY);
+        camera.frame(model_transform.position, radius, kFovY);
 
         mesh_id = renderer->create_mesh(mesh);
 
@@ -134,7 +139,14 @@ int main(int argc, char** argv) {
         );
 
         frame.demo_spin_angle = spin_angle;
-        frame.demo_mesh = mesh_id;
+
+        if (mesh_id != 0) {
+            frame.draw_list.push_back({
+                mesh_id,
+                model_transform.model_matrix(),
+                model_transform.normal_matrix()
+            });
+        }
 
         renderer->render(frame);
 

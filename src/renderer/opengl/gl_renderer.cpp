@@ -57,11 +57,11 @@ void GLRenderer::render(const FrameData& frame) {
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Draw opaque demo geometry first
-    if (frame.demo_mesh != 0) {
-        m_meshes.draw(frame.demo_mesh, view_proj, frame.view);
-    } else {
+    // Draw opaque geometry first
+    if (frame.draw_list.empty()) {
         m_triangle.draw(view_proj, frame.demo_spin_angle);
+    } else {
+        m_meshes.draw(frame.draw_list, view_proj, frame.view);
     }
 
     // Build OpenGL-specific grid parameters

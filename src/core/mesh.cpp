@@ -56,6 +56,19 @@ Aabb compute_bounds(const Mesh& mesh) {
     return bounds;
 }
 
+void mesh_center_at_origin(Mesh& mesh) {
+    if (mesh.positions.empty()) {
+        return;
+    }
+
+    const Aabb bounds = compute_bounds(mesh);
+    const Vec3 center = (bounds.min + bounds.max) * 0.5f;
+
+    for (Vec3& position : mesh.positions) {
+        position = position - center;
+    }
+}
+
 void mesh_y_up_to_z_up(Mesh& mesh) {
     for (Vec3& p : mesh.positions) {
         const float old_y = p.y;

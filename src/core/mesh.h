@@ -31,6 +31,9 @@ struct Aabb {
 // Smallest box containing every position. An empty mesh gives a zero box
 Aabb compute_bounds(const Mesh& mesh);
 
+// Move the mesh so the centre of its bounding box is at the origin
+void mesh_center_at_origin(Mesh& mesh);
+
 // Rotate a Y-up mesh into the Z-up world: (x, y, z) -> (x, -z, y)
 void mesh_y_up_to_z_up(Mesh& mesh);
 

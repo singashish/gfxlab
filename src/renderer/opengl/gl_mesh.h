@@ -38,13 +38,16 @@ public:
 
     bool init();
     MeshId add(const Mesh& mesh);
-    void draw(MeshId id, const Mat4& view_proj, const Mat4& view) const;
+    void draw(const std::vector<DrawItem>& items,
+              const Mat4& view_proj, const Mat4& view) const;
     void shutdown();
 
 private:
     unsigned int m_program = 0;
     int m_view_location = -1;
     int m_view_proj_location = -1;
+    int m_model_location = -1;
+    int m_normal_model_location = -1;
 
     std::vector<std::unique_ptr<GLMesh>> m_meshes;
 };

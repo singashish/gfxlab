@@ -7,10 +7,17 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace gfx {
 
 using MeshId = std::uint32_t; // 0 means no mesh
+
+struct DrawItem {
+    MeshId mesh = 0;
+    Mat4 model = mat4_identity();
+    Mat4 normal_matrix = mat4_identity();
+};
 
 enum class RendererBackend {
     GFX_BACKEND_OPENGL,
@@ -39,8 +46,8 @@ struct FrameData {
     // Temporary demo animation state, replaced by a draw list in M3
     float demo_spin_angle = 0.0f;
 
-    // Temporary single-mesh demo; replaced by the draw list in M3 Step 4
-    MeshId demo_mesh = 0;
+    // Object instances to render
+    std::vector<DrawItem> draw_list;
 };
 
 class IRenderer {

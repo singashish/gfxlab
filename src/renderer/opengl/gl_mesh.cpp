@@ -23,6 +23,8 @@ constexpr const char* kMeshVertexShader = R"GLSL(
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
 
+uniform mat4 u_model;
+uniform mat4 u_normal_model;
 uniform mat4 u_view;
 uniform mat4 u_view_proj;
 
@@ -30,10 +32,13 @@ out vec3 v_view_pos;
 out vec3 v_view_normal;
 
 void main() {
-    v_view_pos = (u_view * vec4(a_position, 1.0)).xyz;
-    v_view_normal = mat3(u_view) * a_normal;
+    vec4 world = u_model * vec4(a_position, 1.0);
 
-    gl_Position = u_view_proj * vec4(a_position, 1.0);
+    v_view_pos = (u_view * world).xyz;
+    v_view_normal =
+        mat3(u_view) * (mat3(u_normal_model) * a_normal);
+
+    gl_Position = u_view_proj * world;
 }
 )GLSL";
 
@@ -312,8 +317,17 @@ bool GLMeshRenderer::init() {
 
     m_view_proj_location =
         gl_uniform_location(m_program, "u_view_proj");
+    
+    m_model_location =
+    gl_uniform_location(m_program, "u_model");
 
-    if (m_view_location < 0 || m_view_proj_location < 0) {
+    m_normal_model_location =
+        gl_uniform_location(m_program, "u_normal_model");
+
+    if (m_view_location < 0 ||
+        m_view_proj_location < 0 ||
+        m_model_location < 0 ||
+        m_normal_model_location < 0) {
         LOG_ERROR("mesh shader uniforms are missing");
         shutdown();
         return false;
@@ -342,16 +356,16 @@ MeshId GLMeshRenderer::add(const Mesh& mesh) {
     return static_cast<MeshId>(m_meshes.size());
 }
 
-void GLMeshRenderer::draw(MeshId id, const Mat4& view_proj,
+void GLMeshRenderer::draw(const std::vector<DrawItem>& items,
+                          const Mat4& view_proj,
                           const Mat4& view) const {
-    if (id == 0 ||
-        static_cast<std::size_t>(id) > m_meshes.size() ||
-        m_program == 0) {
+    if (m_program == 0 || items.empty()) {
         return;
     }
 
     glUseProgram(m_program);
 
+    // These matrices are shared by every object in this frame
     glUniformMatrix4fv(
         m_view_location,
         1,
@@ -366,7 +380,29 @@ void GLMeshRenderer::draw(MeshId id, const Mat4& view_proj,
         &view_proj.col[0].x
     );
 
-    m_meshes[static_cast<std::size_t>(id) - 1]->draw();
+    // Each object has its own model and normal matrices
+    for (const DrawItem& item : items) {
+        if (item.mesh == 0 ||
+            static_cast<std::size_t>(item.mesh) > m_meshes.size()) {
+            continue;
+        }
+
+        glUniformMatrix4fv(
+            m_model_location,
+            1,
+            GL_FALSE,
+            &item.model.col[0].x
+        );
+
+        glUniformMatrix4fv(
+            m_normal_model_location,
+            1,
+            GL_FALSE,
+            &item.normal_matrix.col[0].x
+        );
+
+        m_meshes[static_cast<std::size_t>(item.mesh) - 1]->draw();
+    }
 }
 
 void GLMeshRenderer::shutdown() {
@@ -380,6 +416,8 @@ void GLMeshRenderer::shutdown() {
 
     m_view_location = -1;
     m_view_proj_location = -1;
+    m_model_location = -1;
+    m_normal_model_location = -1;
 }
 
 } // namespace gfx
