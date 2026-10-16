@@ -42,4 +42,32 @@ struct Transform {
     }
 };
 
+inline Vec3 euler_from_matrix(const Mat4& m) {
+    // Mat4 stores columns. Access matrix entries as row, column
+    const float r00 = m.col[0].x;
+    const float r01 = m.col[1].x;
+    const float r10 = m.col[0].y;
+    const float r11 = m.col[1].y;
+    const float r20 = m.col[0].z;
+    const float r21 = m.col[1].z;
+    const float r22 = m.col[2].z;
+
+    const float sin_y = std::max(-1.0f, std::min(-r20, 1.0f));
+    const float ry = std::asin(sin_y);
+
+    float rx;
+    float rz;
+
+    if (std::fabs(r20) > 0.99999f) {
+        // Gimbal lock: choose rx = 0 as a valid representative
+        rx = 0.0f;
+        rz = std::atan2(-r01, r11);
+    } else {
+        rx = std::atan2(r21, r22);
+        rz = std::atan2(r10, r00);
+    }
+
+    return {rx, ry, rz};
+}
+
 } // namespace gfx

@@ -21,3 +21,7 @@ add_test(NAME obj COMMAND test_obj)
 add_executable(test_transform test_transform.cpp)
 target_link_libraries(test_transform PRIVATE gfx_core)
 add_test(NAME transform COMMAND test_transform)
+
+add_executable(test_transform_edit test_transform_edit.cpp)
+target_link_libraries(test_transform_edit PRIVATE gfx_core)
+add_test(NAME transform_edit COMMAND test_transform_edit)
