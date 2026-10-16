@@ -40,6 +40,15 @@ int main(int argc, char** argv) {
 
         gfx::mesh_y_up_to_z_up(mesh);
 
+        const bool normals_generated = gfx::ensure_normals(mesh);
+
+        // Log after ensure_normals(), because it may change the vertex count
+        if (normals_generated) {
+            LOG_INFO("normals generated (flat)");
+        } else {
+            LOG_INFO("normals in file: yes");
+        }
+
         LOG_INFO(
             "loaded model: %zu vertices, %zu triangles, normals: %s",
             mesh.positions.size(),

@@ -34,4 +34,8 @@ Aabb compute_bounds(const Mesh& mesh);
 // Rotate a Y-up mesh into the Z-up world: (x, y, z) -> (x, -z, y)
 void mesh_y_up_to_z_up(Mesh& mesh);
 
+// Makes sure there is one unit-length normal per vertex
+// Returns true if normals had to be generated
+bool ensure_normals(Mesh& mesh);
+
 } // namespace gfx

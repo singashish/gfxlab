@@ -3,16 +3,89 @@
 #include "renderer/opengl/gl_shader.h"
 #include "core/log.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <memory>
+#include <utility>
 #include <vector>
-#include <cstddef>
-#include <limits>
 
 namespace gfx {
 
 static_assert(sizeof(Vec3) == 12,
               "Vec3 must contain exactly three floats");
+
+namespace {
+
+constexpr const char* kMeshVertexShader = R"GLSL(
+#version 460 core
+
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec3 a_normal;
+
+uniform mat4 u_view;
+uniform mat4 u_view_proj;
+
+out vec3 v_view_pos;
+out vec3 v_view_normal;
+
+void main() {
+    v_view_pos = (u_view * vec4(a_position, 1.0)).xyz;
+    v_view_normal = mat3(u_view) * a_normal;
+
+    gl_Position = u_view_proj * vec4(a_position, 1.0);
+}
+)GLSL";
+
+constexpr const char* kMeshFragmentShader = R"GLSL(
+#version 460 core
+
+in vec3 v_view_pos;
+in vec3 v_view_normal;
+
+uniform mat4 u_view;
+
+out vec4 frag_color;
+
+void main() {
+    vec3 n = normalize(v_view_normal);
+
+    // Light both front-facing and back-facing surfaces.
+    if (!gl_FrontFacing) {
+        n = -n;
+    }
+
+    // Direction from the surface toward the camera.
+    vec3 v = normalize(-v_view_pos);
+
+    // Key light positioned up-left of the camera.
+    vec3 key_dir = normalize(vec3(-0.5, 0.6, 0.7));
+    float diff = max(dot(n, key_dir), 0.0);
+
+    // World +Z expressed in view space.
+    vec3 up_view = mat3(u_view)[2];
+    float hemi = dot(n, up_view) * 0.5 + 0.5;
+
+    vec3 ambient = mix(
+        vec3(0.10, 0.10, 0.12),
+        vec3(0.30, 0.32, 0.36),
+        hemi
+    );
+
+    // Blinn-Phong specular highlight.
+    vec3 h = normalize(key_dir + v);
+    float spec = diff > 0.0
+        ? pow(max(dot(n, h), 0.0), 32.0) * 0.25
+        : 0.0;
+
+    vec3 base = vec3(0.72, 0.74, 0.78);
+    vec3 color = base * (ambient + 0.75 * diff) + vec3(spec);
+
+    frag_color = vec4(min(color, vec3(1.0)), 1.0);
+}
+)GLSL";
+
+} // namespace
 
 GLMesh::~GLMesh() {
     shutdown();
@@ -30,6 +103,11 @@ bool GLMesh::upload(const Mesh& mesh) {
         return false;
     }
 
+    if (mesh.normals.size() != mesh.positions.size()) {
+        LOG_ERROR("mesh normals and positions have different sizes");
+        return false;
+    }
+
     for (const std::uint32_t index : mesh.indices) {
         if (index >= mesh.positions.size()) {
             LOG_ERROR("mesh contains an out-of-range index");
@@ -37,10 +115,65 @@ bool GLMesh::upload(const Mesh& mesh) {
         }
     }
 
+    // Interleave each vertex as:
+    // position.x, position.y, position.z,
+    // normal.x, normal.y, normal.z.
+    constexpr std::size_t kFloatsPerVertex = 6;
+
+    if (mesh.positions.size() >
+        std::numeric_limits<std::size_t>::max() /
+            kFloatsPerVertex / sizeof(float)) {
+        LOG_ERROR("mesh vertex buffer size overflow");
+        return false;
+    }
+
+    std::vector<float> vertex_data;
+    vertex_data.reserve(mesh.positions.size() * kFloatsPerVertex);
+
+    for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
+        const Vec3& p = mesh.positions[i];
+        const Vec3& n = mesh.normals[i];
+
+        vertex_data.push_back(p.x);
+        vertex_data.push_back(p.y);
+        vertex_data.push_back(p.z);
+
+        vertex_data.push_back(n.x);
+        vertex_data.push_back(n.y);
+        vertex_data.push_back(n.z);
+    }
+
+    const std::size_t vertex_buffer_bytes =
+        vertex_data.size() * sizeof(float);
+
+    if (vertex_buffer_bytes >
+        static_cast<std::size_t>(
+            std::numeric_limits<GLsizeiptr>::max())) {
+        LOG_ERROR("mesh vertex buffer exceeds OpenGL size limit");
+        return false;
+    }
+
+    if (mesh.indices.size() >
+        std::numeric_limits<std::size_t>::max() /
+            sizeof(std::uint32_t)) {
+        LOG_ERROR("mesh index buffer size overflow");
+        return false;
+    }
+
+    const std::size_t index_buffer_bytes =
+        mesh.indices.size() * sizeof(std::uint32_t);
+
+    if (index_buffer_bytes >
+        static_cast<std::size_t>(
+            std::numeric_limits<GLsizeiptr>::max())) {
+        LOG_ERROR("mesh index buffer exceeds OpenGL size limit");
+        return false;
+    }
+
     m_index_count = static_cast<GLsizei>(mesh.indices.size());
 
-    // Discard any previous GL error before checking this upload
-    while (glGetError() != GL_NO_ERROR) {
+    // Discard stale OpenGL errors without an unbounded loop
+    for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) {
     }
 
     glGenVertexArrays(1, &m_vao);
@@ -54,7 +187,7 @@ bool GLMesh::upload(const Mesh& mesh) {
 
     glGenBuffers(1, &m_vbo);
     if (m_vbo == 0) {
-        LOG_ERROR("failed to create mesh position VBO");
+        LOG_ERROR("failed to create mesh VBO");
         glBindVertexArray(0);
         shutdown();
         return false;
@@ -63,20 +196,34 @@ bool GLMesh::upload(const Mesh& mesh) {
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
     glBufferData(
         GL_ARRAY_BUFFER,
-        static_cast<GLsizeiptr>(
-            mesh.positions.size() * sizeof(Vec3)),
-        mesh.positions.data(),
+        static_cast<GLsizeiptr>(vertex_buffer_bytes),
+        vertex_data.data(),
         GL_STATIC_DRAW
     );
 
+    constexpr GLsizei kStride =
+        static_cast<GLsizei>(kFloatsPerVertex * sizeof(float));
+
+    // Attribute 0: position XYZ, stride 24 bytes, offset 0
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(
         0,
         3,
         GL_FLOAT,
         GL_FALSE,
-        static_cast<GLsizei>(sizeof(Vec3)),
+        kStride,
         nullptr
+    );
+
+    // Attribute 1: normal XYZ, stride 24 bytes, offset 12 bytes
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(
+        1,
+        3,
+        GL_FLOAT,
+        GL_FALSE,
+        kStride,
+        reinterpret_cast<const void*>(3 * sizeof(float))
     );
 
     glGenBuffers(1, &m_ebo);
@@ -87,12 +234,11 @@ bool GLMesh::upload(const Mesh& mesh) {
         return false;
     }
 
-    // The VAO must be bound before attaching its element buffer
+    // The EBO binding belongs to the currently bound VAO
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ebo);
     glBufferData(
         GL_ELEMENT_ARRAY_BUFFER,
-        static_cast<GLsizeiptr>(
-            mesh.indices.size() * sizeof(std::uint32_t)),
+        static_cast<GLsizeiptr>(index_buffer_bytes),
         mesh.indices.data(),
         GL_STATIC_DRAW
     );
@@ -118,7 +264,7 @@ void GLMesh::draw() const {
     glBindVertexArray(m_vao);
     glDrawElements(
         GL_TRIANGLES,
-        static_cast<GLsizei>(m_index_count),
+        m_index_count,
         GL_UNSIGNED_INT,
         nullptr
     );
@@ -143,45 +289,6 @@ void GLMesh::shutdown() {
 
     m_index_count = 0;
 }
-
-namespace {
-
-constexpr const char* kMeshVertexShader = R"GLSL(
-#version 460 core
-
-layout(location = 0) in vec3 a_position;
-
-uniform mat4 u_view;
-uniform mat4 u_view_proj;
-
-out vec3 v_view_pos;
-
-void main() {
-    v_view_pos = (u_view * vec4(a_position, 1.0)).xyz;
-    gl_Position = u_view_proj * vec4(a_position, 1.0);
-}
-)GLSL";
-
-constexpr const char* kMeshFragmentShader = R"GLSL(
-#version 460 core
-
-in vec3 v_view_pos;
-out vec4 frag_color;
-
-void main() {
-    vec3 n = normalize(cross(dFdx(v_view_pos), dFdy(v_view_pos)));
-    vec3 l = normalize(-v_view_pos);
-
-    float lit = abs(dot(n, l));
-
-    frag_color = vec4(
-        vec3(0.72, 0.74, 0.78) * (0.25 + 0.75 * lit),
-        1.0
-    );
-}
-)GLSL";
-
-} // namespace
 
 GLMeshRenderer::~GLMeshRenderer() {
     shutdown();
@@ -235,9 +342,10 @@ MeshId GLMeshRenderer::add(const Mesh& mesh) {
     return static_cast<MeshId>(m_meshes.size());
 }
 
-void GLMeshRenderer::draw(MeshId id, const Mat4& view_proj, const Mat4& view) const {
+void GLMeshRenderer::draw(MeshId id, const Mat4& view_proj,
+                          const Mat4& view) const {
     if (id == 0 ||
-        id > m_meshes.size() ||
+        static_cast<std::size_t>(id) > m_meshes.size() ||
         m_program == 0) {
         return;
     }
@@ -258,7 +366,7 @@ void GLMeshRenderer::draw(MeshId id, const Mat4& view_proj, const Mat4& view) co
         &view_proj.col[0].x
     );
 
-    m_meshes[id - 1]->draw();
+    m_meshes[static_cast<std::size_t>(id) - 1]->draw();
 }
 
 void GLMeshRenderer::shutdown() {

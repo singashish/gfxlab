@@ -393,6 +393,70 @@ void test_cube_bounds_after_axis_conversion() {
     CHECK(approx_vec(bounds.max, {1.0f, 1.0f, 1.0f}));
 }
 
+void test_flat_normals_for_triangle() {
+    gfx::Mesh mesh;
+    mesh.positions = {
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f}
+    };
+    mesh.indices = {0, 1, 2};
+
+    CHECK(ensure_normals(mesh));
+
+    CHECK(mesh.positions.size() == 3);
+    CHECK(mesh.indices.size() == 3);
+    CHECK(mesh.normals.size() == 3);
+
+    for (const gfx::Vec3& n : mesh.normals) {
+        CHECK(approx(n.x, 0.0));
+        CHECK(approx(n.y, 0.0));
+        CHECK(approx(n.z, 1.0));
+    }
+}
+
+void test_degenerate_triangle_normals() {
+    gfx::Mesh mesh;
+    mesh.positions = {
+        {1.0f, 1.0f, 1.0f},
+        {1.0f, 1.0f, 1.0f},
+        {1.0f, 1.0f, 1.0f}
+    };
+    mesh.indices = {0, 1, 2};
+
+    CHECK(ensure_normals(mesh));
+
+    for (const gfx::Vec3& n : mesh.normals) {
+        CHECK(approx(n.x, 0.0));
+        CHECK(approx(n.y, 0.0));
+        CHECK(approx(n.z, 1.0));
+        CHECK(std::isfinite(n.x));
+        CHECK(std::isfinite(n.y));
+        CHECK(std::isfinite(n.z));
+    }
+}
+
+void test_existing_normals_are_normalized() {
+    gfx::Mesh mesh;
+    mesh.positions = {
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f}
+    };
+    mesh.normals = {
+        {0.0f, 0.0f, 2.0f},
+        {0.0f, 0.0f, 0.0f}
+    };
+
+    CHECK(!ensure_normals(mesh));
+    CHECK(mesh.positions.size() == 2);
+
+    for (const gfx::Vec3& n : mesh.normals) {
+        CHECK(approx(n.x, 0.0));
+        CHECK(approx(n.y, 0.0));
+        CHECK(approx(n.z, 1.0));
+    }
+}
+
 } // namespace
 
 
@@ -414,6 +478,9 @@ int main() {
     test_vertex_colors_ignored();
     test_y_up_to_z_up();
     test_cube_bounds_after_axis_conversion();
+    test_flat_normals_for_triangle();
+    test_degenerate_triangle_normals();
+    test_existing_normals_are_normalized();
 
     if (g_failures == 0) {
         std::printf("All OBJ tests passed\n");
