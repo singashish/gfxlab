@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -29,9 +30,30 @@ int main(int argc, char** argv) {
     LOG_INFO("CUDA backend compiled in");
 #endif
 
-    // Load and convert the optional model before creating the window
+    gfx::RendererBackend backend =
+        gfx::RendererBackend::GFX_BACKEND_OPENGL;
+
+    const char* model_path = nullptr;
+
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--backend=vulkan") == 0) {
+            backend = gfx::RendererBackend::GFX_BACKEND_VULKAN;
+        } else if (std::strcmp(argv[i], "--backend=opengl") == 0) {
+            backend = gfx::RendererBackend::GFX_BACKEND_OPENGL;
+        } else if (std::strncmp(argv[i], "--", 2) == 0) {
+            LOG_ERROR("unknown command-line option: %s", argv[i]);
+            return 1;
+        } else if (model_path == nullptr) {
+            model_path = argv[i];
+        } else {
+            LOG_ERROR("unexpected extra argument: %s", argv[i]);
+            return 1;
+        }
+    }
+
+    // Load and convert the optional model before creating the window.
     gfx::Mesh mesh;
-    const bool has_model = argc > 1;
+    const bool has_model = model_path != nullptr;
     gfx::Aabb bounds{};
     gfx::Transform model_transform;
     gfx::TransformEditor editor;
@@ -39,7 +61,7 @@ int main(int argc, char** argv) {
     if (has_model) {
         std::string error;
 
-        if (!gfx::load_obj(argv[1], mesh, error)) {
+        if (!gfx::load_obj(model_path, mesh, error)) {
             LOG_ERROR("failed to load model: %s", error.c_str());
             return 1;
         }
@@ -60,11 +82,9 @@ int main(int argc, char** argv) {
             mesh.triangle_count()
         );
 
-        // Center the mesh around its local origin
         gfx::mesh_center_at_origin(mesh);
         bounds = gfx::compute_bounds(mesh);
 
-        // Place the bottom of the model on the Z = 0 floor
         model_transform.position.z =
             (bounds.max.z - bounds.min.z) * 0.5f;
     }
@@ -77,10 +97,7 @@ int main(int argc, char** argv) {
     }
 
     // The renderer is destroyed before the window
-    std::unique_ptr<gfx::IRenderer> renderer =
-        gfx::create_renderer(
-            gfx::RendererBackend::GFX_BACKEND_OPENGL
-        );
+    std::unique_ptr<gfx::IRenderer> renderer = gfx::create_renderer(backend);
 
     if (!renderer || !renderer->init(window.native_handle())) {
         LOG_ERROR("failed to initialize the renderer");

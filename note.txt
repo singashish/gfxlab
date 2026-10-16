@@ -1,0 +1,5 @@
+gfxlab.exe
+gfxlab.exe --backend=opengl
+gfxlab.exe --backend=vulkan
+gfxlab.exe model.obj --backend=opengl
+

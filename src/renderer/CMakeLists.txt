@@ -14,3 +14,7 @@ target_link_libraries(gfx_renderer PUBLIC
 if(TARGET gfx_gl)
     target_link_libraries(gfx_renderer PUBLIC gfx_gl)
 endif()
+
+if(TARGET gfx_vk)
+    target_link_libraries(gfx_renderer PUBLIC gfx_vk)
+endif()

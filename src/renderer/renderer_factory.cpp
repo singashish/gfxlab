@@ -5,6 +5,10 @@
 #include "renderer/opengl/gl_renderer.h"
 #endif
 
+#if defined(GFX_HAS_VULKAN)
+#include "renderer/vulkan/vk_renderer.h"
+#endif
+
 namespace gfx {
 
 std::unique_ptr<IRenderer> create_renderer(RendererBackend backend) {
@@ -12,6 +16,11 @@ std::unique_ptr<IRenderer> create_renderer(RendererBackend backend) {
 #if defined(GFX_HAS_OPENGL)
     case RendererBackend::GFX_BACKEND_OPENGL:
         return std::make_unique<GLRenderer>();
+#endif
+
+#if defined(GFX_HAS_VULKAN)
+    case RendererBackend::GFX_BACKEND_VULKAN:
+        return std::make_unique<VulkanRenderer>();
 #endif
 
     default:

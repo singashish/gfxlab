@@ -33,6 +33,10 @@ if(WIN32)
         add_subdirectory(src/renderer/opengl)
     endif()
 
+    if(GFX_HAVE_VULKAN)
+        add_subdirectory(src/renderer/vulkan)
+    endif()
+
     add_subdirectory(src/renderer)
     add_subdirectory(src/app)
 endif()
