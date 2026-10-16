@@ -18,20 +18,22 @@ written in this repository, as they are added.
 
 ## Status
 
-Early development. **M0 (foundation), M1 (window and input) and M2 (OpenGL
-renderer and orbit camera) are complete.** The app opens a window with a
-Blender-style viewport: an infinite, anti-aliased floor grid with colored X and
-Y axes that fades with distance, two demo triangles that intersect each other
-and the floor, and a mouse-controlled orbit camera. It keeps rendering while the
-window is dragged or resized. The next milestone is M3: loading OBJ models and
-moving, rotating and scaling them.
+Early development. **M0 (foundation), M1 (window and input), M2 (OpenGL
+renderer and orbit camera) and M3 (models, lighting and object transforms) are
+complete.** The app opens a window with a Blender-style viewport: an infinite,
+anti-aliased floor grid with colored X and Y axes that fades with distance, and
+a mouse-controlled orbit camera. Give it an OBJ file on the command line and the
+model is loaded, lit, placed on the floor, and can be moved, rotated and scaled
+with Blender's G, R and S keys. Without a file it shows two demo triangles. The
+scene keeps rendering while the window is dragged or resized. The next milestone
+is M4: the Vulkan backend.
 
 | Milestone | Goal | State |
 |-----------|------|-------|
 | M0 | Build system, core library (logging, math), tests | DONE |
 | M1 | Win32 window, input, frame timer | DONE |
 | M2 | OpenGL backend: grid and orbit camera | DONE |
-| M3 | OBJ loading, lit mesh, object transforms | |
+| M3 | OBJ loading, lit mesh, object transforms | DONE |
 | M4 | Vulkan backend | |
 | M5 | CUDA rasterizer | |
 | M6 | Polish and backend comparison | |
@@ -43,18 +45,25 @@ moving, rotating and scaling them.
   MSVC, and automatic detection of the optional backends
 - **`gfx_core`**: a printf-style logger, header-only math (`Vec3`, `Vec4`,
   `Mat4`), camera matrices (`look_at`, and `perspective` for both OpenGL and
-  Vulkan clip space), the orbit camera, and a frame timer
+  Vulkan clip space), the orbit camera, a frame timer, the `Mesh` type with an
+  own OBJ parser and normal generation, `Transform`, and the `TransformEditor`
+  behind G/R/S
 - **`gfx_platform`**: a hand-written Win32 window (DPI-aware, resize and
   minimize handling, rendering during the drag/resize loop), and a keyboard and
   mouse state tracker with mouse capture and focus-loss handling
 - **`gfx_gl`**: an OpenGL 4.6 core context created through WGL, an own function
-  loader, shader helpers, the ray-cast grid, and `GLRenderer`
-- **`gfx_renderer`**: the backend-neutral `IRenderer` interface, `FrameData`,
-  and the `create_renderer()` factory
-- **Tests**: four unit-test programs (math, input, timer, camera) registered
-  with CTest
-- **`gfxlab` app**: opens a 1280x720 window and renders the viewport. The title
-  bar shows the FPS and frame time. Press **Esc** to quit
+  loader, shader helpers, the ray-cast grid, lit mesh drawing (`GLMesh`), and
+  `GLRenderer`
+- **`gfx_renderer`**: the backend-neutral `IRenderer` interface, `FrameData`
+  with its draw list, and the `create_renderer()` factory
+- **Tests**: seven unit-test programs (math, input, timer, camera, obj,
+  transform, transform_edit) registered with CTest
+- **`gfxlab` app**: opens a 1280x720 window and renders the viewport, loading
+  the OBJ file given on the command line. The title bar shows the FPS, the frame
+  time and the active edit mode. **Esc** cancels an edit, or quits when none is
+  active
+- **`assets/`**: test models (a cube with and without normals, Suzanne flat and
+  smooth)
 
 ### Controls
 
@@ -63,7 +72,11 @@ moving, rotating and scaling them.
 | Middle mouse drag | Orbit around the target |
 | Shift + middle mouse drag | Pan |
 | Scroll wheel | Zoom |
-| Esc | Quit |
+| **G** / **R** / **S** | Grab (move), rotate or scale the model (only when a model is loaded) |
+| **X** / **Y** / **Z** during an edit | Constrain to that axis; press again to go back to free |
+| Left click during an edit | Confirm |
+| Right click or Esc during an edit | Cancel, restoring the model exactly |
+| Esc (no edit active) | Quit |
 
 ## Documentation
 
@@ -73,6 +86,7 @@ moving, rotating and scaling them.
 | [`docs/m0-design.md`](docs/m0-design.md) | Build system, backend detection, logging, math and camera conventions |
 | [`docs/m1-design.md`](docs/m1-design.md) | Window, input model, frame timer, known limitations, manual test checklist |
 | [`docs/m2-design.md`](docs/m2-design.md) | OpenGL context and loader, shaders, orbit camera, ray-cast grid, renderer interface, rendering during window drag, tests, manual checklist |
+| [`docs/m3-design.md`](docs/m3-design.md) | OBJ parser, mesh upload and lighting, normals, transforms and the normal matrix, interactive G/R/S editing, tests, manual checklist |
 
 ## Requirements
 
@@ -179,13 +193,19 @@ Toolkit, delete the cache (or the build directory) and configure again.
 
 ```
 build\windows-debug\src\app\gfxlab.exe
+build\windows-debug\src\app\gfxlab.exe assets\suzanne_smooth.obj
 ```
 
-The app is a console program, so the log output is visible in the terminal. It
+The second form loads a model. The OBJ loader reads positions, normals and
+faces, and assumes the file is Y-up (the default of most exporters). The app is
+a console program, so the log output is visible in the terminal. It
 logs which backends were compiled in, creates the renderer (and prints the GPU
 and OpenGL version), then opens the viewport. The console also reports:
 
+- the loaded model (vertex and triangle counts, and whether normals were
+  generated)
 - window resizes (with the aspect ratio) and minimize
+- edit events (`GRAB started`, `axis: X`, `confirmed`, `cancelled`)
 - key presses and releases (as numeric ids matching the `Key` enum order)
 
 See [Controls](#controls) for the mouse and keyboard actions.
@@ -195,19 +215,23 @@ See [Controls](#controls) for the mouse and keyboard actions.
 ```
 cmake/               build helper modules (backend detection)
 docs/                design documents
-src/core/            logging, math, camera math, orbit camera, timer   -> gfx_core
+src/core/            logging, math, cameras, timer, mesh, OBJ parser,
+                     transform and its editor                          -> gfx_core
 src/platform/        window and input                                  -> gfx_platform
   win32/             Win32 implementation of the window
 src/renderer/        IRenderer, FrameData, backend factory             -> gfx_renderer
   opengl/            WGL context, loader, shaders, grid, GLRenderer    -> gfx_gl
 src/app/             application entry point                           -> gfxlab
-tests/               unit tests                                        -> test_math, test_input, test_timer, test_camera
+assets/              test models (.obj)
+tests/               unit tests                                        -> test_math, test_input, test_timer,
+                                                                          test_camera, test_obj, test_transform,
+                                                                          test_transform_edit
 CMakePresets.json
 build.bat, build-debug.bat, build-release.bat
 ```
 
-Planned, not yet present: `src/scene/` (mesh, OBJ loader), `src/renderer/vulkan/`,
-`src/renderer/cuda/`, `shaders/` and `assets/`.
+Planned, not yet present: `src/renderer/vulkan/`, `src/renderer/cuda/` and
+`shaders/` (the OpenGL shaders are currently embedded in the C++ sources).
 
 ## Conventions
 
@@ -223,3 +247,7 @@ Planned, not yet present: `src/scene/` (mesh, OBJ loader), `src/renderer/vulkan/
   by `nvcc` for the CUDA backend
 - Names avoid collisions with `<windows.h>` macros, for example
   `LOG_LEVEL_ERROR` instead of `ERROR`, and `near_plane` instead of `near`
+- Model files are assumed to be Y-up and are rotated into the Z-up world on
+  load. Triangles are counter-clockwise when seen from outside
+- Object rotation uses Blender's XYZ Euler order (`R = Rz * Ry * Rx`), and the
+  model matrix is `T * R * S`

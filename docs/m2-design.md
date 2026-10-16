@@ -334,7 +334,7 @@ std::unique_ptr<IRenderer> create_renderer(RendererBackend backend);
 | `view`, `eye`, `basis` | camera: world-to-view matrix, eye position, right/up/forward vectors |
 | `fov_y`, `near_plane`, `far_plane` | projection parameters (radians for the FOV) |
 | `grid_fade_end` | world distance at which the grid is fully faded |
-| `demo_spin_angle` | temporary, drives the demo triangles; replaced by a draw list in M3 |
+| `demo_spin_angle` | drives the demo triangles. M3 added a draw list (`FrameData::draw_list`, see `m3-design.md`); the triangles remain only as the fallback when no model is loaded |
 
 `FrameData` deliberately carries **no projection matrix**. OpenGL and Vulkan differ in NDC depth range and Y direction, so each backend builds its own with `perspective(..., ClipSpace)`. `GLRenderer` uses `CLIP_SPACE_OPENGL`, and the Vulkan backend will use `CLIP_SPACE_VULKAN`.
 
@@ -435,7 +435,7 @@ Known limitations and temporary pieces:
 
 | Item | Notes |
 |---|---|
-| **Demo triangles** | `TriangleDemo` and `FrameData::demo_spin_angle` are scaffolding; M3 replaces them with a draw list of meshes |
+| **Demo triangles** | `TriangleDemo` and `FrameData::demo_spin_angle` are scaffolding. Since M3 they are drawn only when the draw list is empty (no model on the command line) |
 | **Fixed grid spacing** | Two levels (1 and 10 units); there is no adaptive subdivision when zooming in very far |
 | **Grid cost** | Writing `gl_FragDepth` disables early-Z for the grid pass, which is one fullscreen draw |
 | **Modal loop cadence** | Roughly the Windows timer resolution, not vsync; the camera does not respond to input during a drag |
@@ -468,4 +468,4 @@ The expected state at the end of M2:
 - the scene keeps rendering while the window is dragged or resized;
 - `ctest` passes in Debug and Release.
 
-Next is M3: the OBJ loader, a lit mesh, and object move/rotate/scale, which replaces the demo triangles.
+M3 followed: the OBJ loader, a lit mesh and interactive move/rotate/scale, documented in `m3-design.md`.
