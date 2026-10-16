@@ -100,6 +100,35 @@ Backends whose dependencies are not found are skipped automatically. The app
 and the window layer build on Windows only. `gfx_core` and the unit tests are
 portable, and also configure and build on other platforms.
 
+### Installing the toolchain
+
+In PowerShell, run the commands below. The `winget` package IDs can change over
+time; if one is not found, run `winget search <name>` to get the current ID.
+
+```powershell
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Kitware.CMake
+winget install Ninja-build.Ninja
+```
+
+The Build Tools install the MSVC compiler and the Windows SDK (the C++ workload).
+Open a new terminal afterwards so the updated `PATH` is loaded, then check:
+
+```powershell
+cmake --version
+ninja --version
+```
+
+`cl` is only available inside the MSVC environment (see [Building](#building)).
+For VS Code, also install the C/C++ (`ms-vscode.cpptools`) and CMake Tools
+(`ms-vscode.cmake-tools`) extensions.
+
+The Vulkan SDK and the CUDA Toolkit are optional and only needed for their
+backends. Install them from [LunarG](https://vulkan.lunarg.com/) (the SDK
+includes `glslc` and the validation layers) and from
+[NVIDIA](https://developer.nvidia.com/cuda-downloads) (12.8 or newer for
+RTX 50 series).
+
 ## Building
 
 All commands need the MSVC environment. In VS Code, the CMake Tools extension
