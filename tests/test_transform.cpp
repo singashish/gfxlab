@@ -135,6 +135,22 @@ void test_mesh_center_at_origin() {
     CHECK(approx_vec(bounds.max, { 1.0f,  1.0f,  1.0f}));
 }
 
+void test_xyz_euler_order() {
+    gfx::Transform t;
+
+    constexpr float kHalfPi = 1.57079632679489661923f;
+    t.rotation = {kHalfPi, 0.0f, kHalfPi};
+
+    const gfx::Vec3 result = gfx::transform_direction(
+        t.model_matrix(),
+        {0.0f, 1.0f, 0.0f}
+    );
+
+    // X rotation first: +Y becomes +Z.
+    // Z rotation then leaves +Z unchanged.
+    CHECK(approx_vec(result, {0.0f, 0.0f, 1.0f}));
+}
+
 } // namespace
 
 
@@ -147,6 +163,7 @@ int main() {
     test_normal_matrix();
     test_zero_scale_is_safe();
     test_mesh_center_at_origin();
+    test_xyz_euler_order();
 
     if (g_failures == 0) {
         std::printf("All transform tests passed\n");

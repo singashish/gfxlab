@@ -319,7 +319,7 @@ bool GLMeshRenderer::init() {
         gl_uniform_location(m_program, "u_view_proj");
     
     m_model_location =
-    gl_uniform_location(m_program, "u_model");
+        gl_uniform_location(m_program, "u_model");
 
     m_normal_model_location =
         gl_uniform_location(m_program, "u_normal_model");
