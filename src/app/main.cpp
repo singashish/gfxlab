@@ -50,10 +50,9 @@ int main(int argc, char** argv) {
         }
 
         LOG_INFO(
-            "loaded model: %zu vertices, %zu triangles, normals: %s",
+            "loaded model: %zu vertices, %zu triangles",
             mesh.positions.size(),
-            mesh.triangle_count(),
-            mesh.has_normals() ? "yes" : "no"
+            mesh.triangle_count()
         );
     }
 

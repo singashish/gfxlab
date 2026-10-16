@@ -168,28 +168,6 @@ f 1//1 2//1 3//1
     }
 }
 
-void test_cube_with_normals() {
-    gfx::Mesh mesh;
-    std::string error;
-
-    CHECK(parse(kCubeWithNormals, mesh, error));
-    CHECK(mesh.has_normals());
-    CHECK(mesh.positions.size() == 24);
-    CHECK(mesh.normals.size() == 24);
-    CHECK(mesh.indices.size() == 36);
-    CHECK(mesh.triangle_count() == 12);
-}
-
-void test_cube_without_normals() {
-    gfx::Mesh mesh;
-    std::string error;
-
-    CHECK(parse(kCubeWithoutNormals, mesh, error));
-    CHECK(!mesh.has_normals());
-    CHECK(mesh.positions.size() == 8);
-    CHECK(mesh.indices.size() == 36);
-}
-
 void test_mixed_normals() {
     const char* obj = R"OBJ(
 v 0 0 0
@@ -457,6 +435,86 @@ void test_existing_normals_are_normalized() {
     }
 }
 
+void test_cube_without_normals() {
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(load_obj("../../../assets/cube_no_normals.obj", mesh, error));
+
+    CHECK(ensure_normals(mesh));
+
+    CHECK(mesh.positions.size() == 36);
+    CHECK(mesh.indices.size() == 36);
+    CHECK(mesh.normals.size() == 36);
+
+    for (std::size_t i = 0; i < mesh.indices.size(); ++i) {
+        CHECK(mesh.indices[i] == i);
+
+        const gfx::Vec3& n = mesh.normals[i];
+
+        const float len = std::sqrt(
+            n.x * n.x + n.y * n.y + n.z * n.z
+        );
+
+        CHECK(approx(len, 1.0));
+    }
+
+    // The cube is centered at the origin. Each triangle's normal
+    // should point away from the origin, not into the cube.
+    for (std::size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+        const gfx::Vec3& a = mesh.positions[mesh.indices[i]];
+        const gfx::Vec3& b = mesh.positions[mesh.indices[i + 1]];
+        const gfx::Vec3& c = mesh.positions[mesh.indices[i + 2]];
+        const gfx::Vec3& n = mesh.normals[mesh.indices[i]];
+
+        const gfx::Vec3 centroid = (a + b + c) * (1.0f / 3.0f);
+
+        const float outward_dot =
+            n.x * centroid.x +
+            n.y * centroid.y +
+            n.z * centroid.z;
+
+        CHECK(outward_dot > 0.0f);
+    }
+}
+
+void test_cube_with_normals() {
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(load_obj("../../../assets/cube.obj", mesh, error));
+
+    const std::size_t original_vertex_count = mesh.positions.size();
+
+    CHECK(original_vertex_count == 24);
+    CHECK(!ensure_normals(mesh));
+    CHECK(mesh.positions.size() == original_vertex_count);
+    CHECK(mesh.normals.size() == original_vertex_count);
+}
+
+void test_small_triangle_normal() {
+    gfx::Mesh mesh;
+
+    mesh.positions = {
+        {0.0f, 0.0f, 0.0f},
+        {5.0e-4f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 5.0e-4f}
+    };
+
+    mesh.indices = {0, 1, 2};
+
+    CHECK(ensure_normals(mesh));
+
+    CHECK(mesh.positions.size() == 3);
+    CHECK(mesh.normals.size() == 3);
+
+    for (const gfx::Vec3& n : mesh.normals) {
+        CHECK(approx(n.x, 0.0));
+        CHECK(approx(n.y, -1.0));
+        CHECK(approx(n.z, 0.0));
+    }
+}
+
 } // namespace
 
 
@@ -466,8 +524,6 @@ int main() {
     test_negative_indices();
     test_position_texcoord_normal();
     test_position_double_slash_normal();
-    test_cube_with_normals();
-    test_cube_without_normals();
     test_mixed_normals();
     test_ignored_keywords_and_crlf();
     test_float_formats_and_w();
@@ -481,6 +537,9 @@ int main() {
     test_flat_normals_for_triangle();
     test_degenerate_triangle_normals();
     test_existing_normals_are_normalized();
+    test_cube_without_normals();
+    test_cube_with_normals();
+    test_small_triangle_normal();
 
     if (g_failures == 0) {
         std::printf("All OBJ tests passed\n");

@@ -3,28 +3,22 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <vector>
 #include <utility>
+#include <vector>
 
 namespace gfx {
 
 namespace {
 
-constexpr float kNormalEpsilon = 1.0e-12f;
-
-Vec3 cross_product(const Vec3& a, const Vec3& b) {
-    return Vec3{
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x
-    };
-}
+constexpr float kNormalEpsilon = 1.0e-30f;
 
 Vec3 normalize_or_default(const Vec3& v) {
     const float len_squared =
         v.x * v.x + v.y * v.y + v.z * v.z;
 
-    if (len_squared < kNormalEpsilon) {
+    // The threshold applies to squared length. The negated comparison
+    // also catches NaN, which would otherwise propagate into the normal
+    if (!(len_squared >= kNormalEpsilon)) {
         return Vec3{0.0f, 0.0f, 1.0f};
     }
 
@@ -77,8 +71,8 @@ void mesh_y_up_to_z_up(Mesh& mesh) {
 }
 
 bool ensure_normals(Mesh& mesh) {
-    // A normal array with the wrong size cannot describe the mesh correctly
-    // Regenerate flat normals in that case
+    // Existing normals are valid only when there is one per vertex
+    // Normalize them and replace zero-length normals with the fallback
     if (!mesh.normals.empty() &&
         mesh.normals.size() == mesh.positions.size()) {
         for (Vec3& normal : mesh.normals) {
@@ -88,8 +82,8 @@ bool ensure_normals(Mesh& mesh) {
         return false;
     }
 
-    // Without valid per-vertex normals, create independent vertices for
-    // every triangle so adjacent faces can have different normals
+    // Without valid per-vertex normals, unweld the mesh so each triangle
+    // can have its own flat normal
     std::vector<Vec3> new_positions;
     std::vector<Vec3> new_normals;
     std::vector<std::uint32_t> new_indices;
@@ -105,8 +99,9 @@ bool ensure_normals(Mesh& mesh) {
         const std::uint32_t ib = mesh.indices[i + 1];
         const std::uint32_t ic = mesh.indices[i + 2];
 
-        // The OBJ loader should already validate indices. Keep this guard
-        // so malformed mesh data cannot cause an out-of-bounds access
+        // Defensive check: the OBJ loader already validates indices
+        // This prevents out-of-bounds access if another caller supplies
+        // an invalid mesh. False here does not mean normals were present
         if (ia >= mesh.positions.size() ||
             ib >= mesh.positions.size() ||
             ic >= mesh.positions.size()) {
@@ -117,15 +112,8 @@ bool ensure_normals(Mesh& mesh) {
         const Vec3 pb = mesh.positions[ib];
         const Vec3 pc = mesh.positions[ic];
 
-        const Vec3 edge1{
-            pb.x - pa.x, pb.y - pa.y, pb.z - pa.z
-        };
-        const Vec3 edge2{
-            pc.x - pa.x, pc.y - pa.y, pc.z - pa.z
-        };
-
         const Vec3 normal =
-            normalize_or_default(cross_product(edge1, edge2));
+            normalize_or_default(cross(pb - pa, pc - pa));
 
         const std::uint32_t base =
             static_cast<std::uint32_t>(new_positions.size());
