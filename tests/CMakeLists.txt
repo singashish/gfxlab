@@ -16,6 +16,9 @@ add_test(NAME camera COMMAND test_camera)
 
 add_executable(test_obj test_obj.cpp)
 target_link_libraries(test_obj PRIVATE gfx_core)
+target_compile_definitions(test_obj PRIVATE
+    GFX_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets"
+)
 add_test(NAME obj COMMAND test_obj)
 
 add_executable(test_transform test_transform.cpp)

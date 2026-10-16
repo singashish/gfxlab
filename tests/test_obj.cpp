@@ -61,6 +61,12 @@ f 3 4 8 7
 f 4 1 5 8
 )OBJ";
 
+const std::string cube_path =
+    std::string(GFX_ASSETS_DIR) + "/cube.obj";
+
+const std::string cube_no_normals_path =
+    std::string(GFX_ASSETS_DIR) + "/cube_no_normals.obj";
+
 bool parse(std::string_view text, gfx::Mesh& mesh, std::string& error) {
     return gfx::parse_obj(text, mesh, error);
 }
@@ -439,7 +445,7 @@ void test_cube_without_normals() {
     gfx::Mesh mesh;
     std::string error;
 
-    CHECK(load_obj("../../../assets/cube_no_normals.obj", mesh, error));
+    CHECK(load_obj(cube_no_normals_path, mesh, error));
 
     CHECK(ensure_normals(mesh));
 
@@ -482,7 +488,7 @@ void test_cube_with_normals() {
     gfx::Mesh mesh;
     std::string error;
 
-    CHECK(load_obj("../../../assets/cube.obj", mesh, error));
+    CHECK(load_obj(cube_path, mesh, error));
 
     const std::size_t original_vertex_count = mesh.positions.size();
 

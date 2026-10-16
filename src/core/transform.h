@@ -25,7 +25,7 @@ struct Transform {
     }
 
     Mat4 normal_matrix() const {
-        constexpr float kMinScale = 1.0e-6f;
+        static constexpr float kMinScale = 1.0e-6f;
 
         const auto safe_scale = [](float s) {
             const float sign = s < 0.0f ? -1.0f : 1.0f;

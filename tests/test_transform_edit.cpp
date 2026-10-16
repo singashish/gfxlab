@@ -289,6 +289,7 @@ void test_rotate_past_180_degrees() {
     gfx::Transform out;
 
     editor.begin(gfx::EditMode::EDIT_ROTATE, start, px + 100, py, view);
+    editor.set_axis(gfx::EditAxis::EDIT_AXIS_Z);
 
     for (int degrees = 30; degrees <= 270; degrees += 30) {
         const float angle = gfx::to_radians(

@@ -1,68 +1,67 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Build directories
+# ---- Build output ----
 build/
-Build/
+builds/
 build-*/
+out/
+cmake-build-*/
 
-# CMake generated files
+# ---- CMake generated ----
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
+CMakeUserPresets.json
 install_manifest.txt
 compile_commands.json
-
-# Temporary files
-*.tmp
-*.log
-*.bak
-*.swp
-
-# vcpkg
-vcpkg_installed/
-
-# debug information files
-*.dwo
-
-# test output & cache
+CTestTestfile.cmake
 Testing/
 .cache/
+
+# ---- Compiled output (MSVC / Ninja / nvcc) ----
+*.o
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.a
+*.pdb
+*.ilk
+*.idb
+*.pch
+*.gch
+*.d
+*.log
+*.cubin
+*.fatbin
+*.spv
+
+# Keep model files in assets/ (the *.obj rule above is for compiler output)
+!assets/**/*.obj
+
+# Big models you only want locally (not committed)
+assets/local/
+
+# ---- Editors and IDEs ----
+.vs/
+*.user
+*.suo
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/
+
+# ---- Profiling and debugging captures ----
+*.rdc
+*.nsys-rep
+*.ncu-rep
+
+# ---- OS junk ----
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ---- Temporary files ----
+*.tmp
+*.bak
+*.swp
