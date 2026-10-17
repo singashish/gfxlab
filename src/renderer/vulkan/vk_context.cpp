@@ -1,7 +1,7 @@
 #include "renderer/vulkan/vk_context.h"
 
 #include <algorithm>
-#include <string>
+#include <cstring>
 #include <vector>
 
 namespace gfx {
@@ -74,7 +74,7 @@ bool has_instance_layer(const char* requested) {
     return std::any_of(
         layers.begin(), layers.end(),
         [requested](const VkLayerProperties& layer) {
-            return std::string(layer.layerName) == requested;
+            return std::strcmp(layer.layerName, requested) == 0;
         });
 }
 
@@ -98,7 +98,7 @@ bool has_instance_extension(const char* requested) {
     return std::any_of(
         extensions.begin(), extensions.end(),
         [requested](const VkExtensionProperties& extension) {
-            return std::string(extension.extensionName) == requested;
+            return std::strcmp(extension.extensionName, requested) == 0;
         });
 }
 
@@ -121,7 +121,7 @@ bool has_device_extension(VkPhysicalDevice device, const char* requested) {
     return std::any_of(
         extensions.begin(), extensions.end(),
         [requested](const VkExtensionProperties& extension) {
-            return std::string(extension.extensionName) == requested;
+            return std::strcmp(extension.extensionName, requested) == 0;
         });
 }
 
@@ -147,12 +147,12 @@ bool find_graphics_present_queue(VkPhysicalDevice device,
 
     vkGetPhysicalDeviceQueueFamilyProperties(
         device, &count, nullptr);
-
-    std::vector<VkQueueFamilyProperties> families(count);
-
+        
     if (count == 0) {
         return false;
     }
+
+    std::vector<VkQueueFamilyProperties> families(count);
 
     vkGetPhysicalDeviceQueueFamilyProperties(
         device, &count, families.data());
