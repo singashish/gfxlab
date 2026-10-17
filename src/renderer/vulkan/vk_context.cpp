@@ -5,11 +5,16 @@
 #include <vector>
 
 namespace gfx {
-
 namespace {
 
 constexpr const char* kValidationLayer =
     "VK_LAYER_KHRONOS_validation";
+
+#ifdef NDEBUG
+constexpr bool kRequestValidation = false;
+#else
+constexpr bool kRequestValidation = true;
+#endif
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -252,17 +257,17 @@ bool VulkanContext::create(void* native_window) {
     }
 
     // Step 2: Enable validation in debug builds when available.
-#ifndef NDEBUG
-    m_validation_enabled = has_instance_layer(kValidationLayer);
+    if (kRequestValidation) {
+        m_validation_enabled = has_instance_layer(kValidationLayer);
 
-    if (m_validation_enabled) {
-        LOG_INFO("Vulkan validation layer enabled");
-    } else {
-        LOG_WARN(
-            "VK_LAYER_KHRONOS_validation not found; "
-            "continuing without validation");
+        if (m_validation_enabled) {
+            LOG_INFO("Vulkan validation layer enabled");
+        } else {
+            LOG_WARN(
+                "VK_LAYER_KHRONOS_validation not found; "
+                "continuing without validation");
+        }
     }
-#endif
 
     // Step 3: Check the required instance extensions.
     std::vector<const char*> extensions = {

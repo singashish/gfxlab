@@ -3,7 +3,7 @@
 namespace gfx {
 
 const char* VulkanRenderer::name() const {
-    return "Vulkan 1.4";
+    return "Vulkan 1.3";
 }
 
 bool VulkanRenderer::init(void* native_window) {
