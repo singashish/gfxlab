@@ -4,7 +4,9 @@
 #include "renderer/vulkan/vk_context.h"
 #include "renderer/vulkan/vk_depth.h"
 #include "renderer/vulkan/vk_frames.h"
+#include "renderer/vulkan/vk_mesh.h"
 #include "renderer/vulkan/vk_swapchain.h"
+#include "renderer/vulkan/vk_upload.h"
 #include "renderer/vulkan/vk_triangle_demo.h"
 
 namespace gfx {
@@ -26,12 +28,15 @@ public:
 private:
     bool recreate_swapchain();
 
-    // Order is important
+    // Order is important: dependent GPU resources are destroyed
+    // before the context
     VulkanContext m_context;
     VulkanSwapchain m_swapchain;
     VulkanDepthBuffer m_depth;
     VulkanFrames m_frames;
+    VulkanUploader m_uploader;
     VulkanTriangleDemo m_triangle;
+    VulkanMeshRenderer m_meshes;
 
     VkFormat m_color_format = VK_FORMAT_UNDEFINED;
     VkFormat m_depth_format = VK_FORMAT_UNDEFINED;

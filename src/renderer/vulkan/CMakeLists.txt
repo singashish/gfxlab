@@ -3,6 +3,8 @@ gfx_compile_shaders(
     "${CMAKE_BINARY_DIR}/shaders"
     shaders/triangle.vert
     shaders/triangle.frag
+    shaders/mesh.vert
+    shaders/mesh.frag
 )
 
 add_library(gfx_vk STATIC
@@ -10,9 +12,12 @@ add_library(gfx_vk STATIC
     vk_swapchain.cpp
     vk_memory.cpp
     vk_depth.cpp
+    vk_buffer.cpp
+    vk_upload.cpp
     vk_frames.cpp
     vk_shader.cpp
     vk_triangle_demo.cpp
+    vk_mesh.cpp
     vk_renderer.cpp
 )
 

@@ -92,16 +92,29 @@ bool VulkanRenderer::init(void* native_window) {
     m_color_format = m_swapchain.format();
     m_depth_format = m_depth.format();
 
-    if (!m_frames.create(m_context.device(), m_context.queue_family(),
+    if (!m_frames.create(m_context.device(),
+                         m_context.queue_family(),
                          m_swapchain.image_count())) {
         LOG_ERROR("failed to create Vulkan frame resources");
+        return false;
+    }
+
+    if (!m_uploader.init(m_context)) {
+        LOG_ERROR("failed to initialize Vulkan uploader");
         return false;
     }
 
     if (!m_triangle.init(m_context.device(),
                          m_color_format,
                          m_depth_format)) {
-        LOG_ERROR("Failed to initialize Vulkan triangle demo pipeline");
+        LOG_ERROR("failed to initialize Vulkan triangle demo pipeline");
+        return false;
+    }
+
+    if (!m_meshes.init(m_context.device(),
+                       m_color_format,
+                       m_depth_format)) {
+        LOG_ERROR("failed to initialize Vulkan mesh renderer");
         return false;
     }
 
@@ -189,12 +202,11 @@ bool VulkanRenderer::recreate_swapchain() {
         return false;
     }
 
-    // The pipeline depends on attachment formats, not extent
+    // Attachment formats determine graphics pipeline compatibility
+    // A resize alone does not require rebuilding either pipeline
     const VkFormat new_color_format = m_swapchain.format();
     const VkFormat new_depth_format = m_depth.format();
 
-    // Reinitialize the graphics pipeline with the current attachment
-    // formats if your triangle demo owns a format-dependent pipeline
     if (new_color_format != m_color_format ||
         new_depth_format != m_depth_format) {
 
@@ -209,7 +221,18 @@ bool VulkanRenderer::recreate_swapchain() {
             return false;
         }
 
-        // Update the cached formats only after successful initialization
+        if (!m_meshes.init(m_context.device(),
+                           new_color_format,
+                           new_depth_format)) {
+            LOG_ERROR("failed to recreate Vulkan mesh pipeline");
+
+            m_frames.destroy();
+            m_depth.destroy();
+            m_swapchain.destroy();
+            return false;
+        }
+
+        // Update only after both pipelines have been recreated successfully
         m_color_format = new_color_format;
         m_depth_format = new_depth_format;
     }
@@ -384,10 +407,32 @@ void VulkanRenderer::render(const FrameData& frame) {
     rendering_info.pColorAttachments = &color_attachment;
     rendering_info.pDepthAttachment = &depth_attachment;
 
+    const VkExtent2D extent = m_swapchain.extent();
+
+    const float aspect =
+        static_cast<float>(extent.width) /
+        static_cast<float>(extent.height);
+
+    const Mat4 projection = perspective(
+        frame.fov_y,
+        aspect,
+        frame.near_plane,
+        frame.far_plane,
+        ClipSpace::CLIP_SPACE_VULKAN);
+
+    const Mat4 view_proj = projection * frame.view;
+
     vkCmdBeginRendering(slot.cmd, &rendering_info);
 
     if (frame.draw_list.empty()) {
-        m_triangle.record(slot.cmd, m_swapchain.extent());
+        // Preserve the Step 6 depth-test demonstration when no mesh is loaded
+        m_triangle.record(slot.cmd, extent);
+    } else {
+        m_meshes.draw(
+            slot.cmd,
+            extent,
+            frame.draw_list,
+            view_proj);
     }
 
     vkCmdEndRendering(slot.cmd);
@@ -482,9 +527,8 @@ void VulkanRenderer::render(const FrameData& frame) {
     }
 }
 
-MeshId VulkanRenderer::create_mesh(const Mesh&) {
-    LOG_WARN("Vulkan mesh creation is not implemented yet");
-    return 0;
+MeshId VulkanRenderer::create_mesh(const Mesh& mesh) {
+    return m_meshes.create(m_context, m_uploader, mesh);
 }
 
 } // namespace gfx
