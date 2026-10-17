@@ -86,10 +86,11 @@ bool VulkanRenderer::init(void* native_window) {
 
     if (!m_depth.create(m_context, m_swapchain.extent())) {
         LOG_ERROR("failed to create Vulkan depth buffer");
-        m_swapchain.destroy();
-        m_context.destroy();
         return false;
     }
+
+    m_color_format = m_swapchain.format();
+    m_depth_format = m_depth.format();
 
     if (!m_frames.create(m_context.device(), m_context.queue_family(),
                          m_swapchain.image_count())) {
@@ -98,9 +99,9 @@ bool VulkanRenderer::init(void* native_window) {
     }
 
     if (!m_triangle.init(m_context.device(),
-                         m_swapchain.format(),
-                         m_depth.format())) {
-        LOG_ERROR("Failed to initialize Vulkan triangle demo");
+                         m_color_format,
+                         m_depth_format)) {
+        LOG_ERROR("Failed to initialize Vulkan triangle demo pipeline");
         return false;
     }
 
@@ -164,27 +165,23 @@ bool VulkanRenderer::recreate_swapchain() {
     m_width = width;
     m_height = height;
 
-    // Create the replacement swapchain
-    if (!m_swapchain.create(
-            m_context, m_width, m_height, m_vsync)) {
-        LOG_WARN("swapchain recreation deferred or failed");
-        m_swapchain.destroy();
+    // Recreate the swapchain
+    if (!m_swapchain.create(m_context, m_width, m_height, m_vsync)) {
+        LOG_ERROR("failed to recreate Vulkan swapchain");
         return false;
     }
 
     // Recreate the depth buffer using the new swapchain extent
     if (!m_depth.create(m_context, m_swapchain.extent())) {
         LOG_ERROR("failed to recreate Vulkan depth buffer");
-        m_depth.destroy();
         m_swapchain.destroy();
         return false;
     }
 
     // Frame synchronization resources depend on the image count
-    if (!m_frames.create(
-            m_context.device(),
-            m_context.queue_family(),
-            m_swapchain.image_count())) {
+    if (!m_frames.create(m_context.device(),
+                         m_context.queue_family(),
+                         m_swapchain.image_count())) {
         LOG_ERROR("failed to recreate Vulkan frame resources");
         m_frames.destroy();
         m_depth.destroy();
@@ -192,16 +189,29 @@ bool VulkanRenderer::recreate_swapchain() {
         return false;
     }
 
+    // The pipeline depends on attachment formats, not extent
+    const VkFormat new_color_format = m_swapchain.format();
+    const VkFormat new_depth_format = m_depth.format();
+
     // Reinitialize the graphics pipeline with the current attachment
     // formats if your triangle demo owns a format-dependent pipeline
-    if (!m_triangle.init(m_context.device(),
-                         m_swapchain.format(),
-                         m_depth.format())) {
-        LOG_ERROR("failed to recreate Vulkan triangle pipeline");
-        m_frames.destroy();
-        m_depth.destroy();
-        m_swapchain.destroy();
-        return false;
+    if (new_color_format != m_color_format ||
+        new_depth_format != m_depth_format) {
+
+        if (!m_triangle.init(m_context.device(),
+                             new_color_format,
+                             new_depth_format)) {
+            LOG_ERROR("failed to recreate Vulkan triangle pipeline");
+
+            m_frames.destroy();
+            m_depth.destroy();
+            m_swapchain.destroy();
+            return false;
+        }
+
+        // Update the cached formats only after successful initialization
+        m_color_format = new_color_format;
+        m_depth_format = new_depth_format;
     }
 
     LOG_INFO("Vulkan swapchain recreated successfully");
@@ -297,65 +307,24 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 4. Transition the swapchain image to color-attachment layout
+    // 4. The depth image is shared by frames in flight. These stages
+    // ensure earlier depth writes, including late fragment tests,
+    // are ordered before the next frame reads or writes depth.
     transition_image(
         slot.cmd,
-        image,
-        VK_IMAGE_ASPECT_COLOR_BIT,
+        m_depth.image(),
+        VK_IMAGE_ASPECT_DEPTH_BIT,
         VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        0,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-
-    // 5. Transition the shared depth image
-    //
-    // The depth image is shared by frames in flight. This barrier
-    // orders depth attachment access against earlier queue work
-    VkImageMemoryBarrier2 depth_barrier{};
-    depth_barrier.sType =
-        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-
-    depth_barrier.srcStageMask =
+        VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-
-    depth_barrier.srcAccessMask =
-        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-    depth_barrier.dstStageMask =
+            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-
-    depth_barrier.dstAccessMask =
+            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
-    depth_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    depth_barrier.newLayout =
-        VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-
-    depth_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    depth_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-
-    depth_barrier.image = m_depth.image();
-
-    depth_barrier.subresourceRange.aspectMask =
-        VK_IMAGE_ASPECT_DEPTH_BIT;
-    depth_barrier.subresourceRange.baseMipLevel = 0;
-    depth_barrier.subresourceRange.levelCount = 1;
-    depth_barrier.subresourceRange.baseArrayLayer = 0;
-    depth_barrier.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo depth_dependency{};
-    depth_dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    depth_dependency.imageMemoryBarrierCount = 1;
-    depth_dependency.pImageMemoryBarriers = &depth_barrier;
-
-    vkCmdPipelineBarrier2(slot.cmd, &depth_dependency);
-
-    // 6. Configure the color attachment
+    // 5. Configure the color attachment
     VkRenderingAttachmentInfo color_attachment{};
     color_attachment.sType =
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -372,7 +341,7 @@ void VulkanRenderer::render(const FrameData& frame) {
     color_attachment.clearValue.color.float32[2] = 0.13f;
     color_attachment.clearValue.color.float32[3] = 1.0f;
 
-    // 7. Configure the depth attachment
+    // 6. Configure the depth attachment
     VkRenderingAttachmentInfo depth_attachment{};
     depth_attachment.sType =
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -386,7 +355,7 @@ void VulkanRenderer::render(const FrameData& frame) {
 
     depth_attachment.clearValue.depthStencil = {1.0f, 0};
 
-    // 8. Begin dynamic rendering with both attachments
+    // 7. Begin dynamic rendering with both attachments
     VkRenderingInfo rendering_info{};
     rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
 
@@ -407,7 +376,7 @@ void VulkanRenderer::render(const FrameData& frame) {
 
     vkCmdEndRendering(slot.cmd);
 
-    // 9. Transition the color image for presentation
+    // 8. Transition the color image for presentation
     transition_image(
         slot.cmd,
         image,
@@ -425,7 +394,7 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 10. Submit, waiting for image acquisition
+    // 9. Submit, waiting for image acquisition
     VkSemaphoreSubmitInfo wait_info{};
     wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     wait_info.semaphore = slot.image_available;
@@ -467,7 +436,7 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 11. Present the image
+    // 10. Present the image
     VkPresentInfoKHR present_info{};
     present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 

@@ -10,8 +10,10 @@ VulkanTriangleDemo::~VulkanTriangleDemo() {
 bool VulkanTriangleDemo::init(VkDevice device, VkFormat color_format, VkFormat depth_format) {
     shutdown();
 
-    if (device == VK_NULL_HANDLE || color_format == VK_FORMAT_UNDEFINED) {
-        LOG_ERROR("Cannot initialize triangle demo with invalid device or format");
+    if (device == VK_NULL_HANDLE ||
+        color_format == VK_FORMAT_UNDEFINED ||
+        depth_format == VK_FORMAT_UNDEFINED) {
+        LOG_ERROR("invalid arguments for Vulkan triangle pipeline");
         return false;
     }
 

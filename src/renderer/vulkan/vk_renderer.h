@@ -33,6 +33,9 @@ private:
     VulkanFrames m_frames;
     VulkanTriangleDemo m_triangle;
 
+    VkFormat m_color_format = VK_FORMAT_UNDEFINED;
+    VkFormat m_depth_format = VK_FORMAT_UNDEFINED;
+
     HWND m_native_window = nullptr;
     std::uint32_t m_width = 0;
     std::uint32_t m_height = 0;
