@@ -307,9 +307,25 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 4. The depth image is shared by frames in flight. These stages
-    // ensure earlier depth writes, including late fragment tests,
-    // are ordered before the next frame reads or writes depth.
+    // 4. Transition the swapchain image into a layout suitable for
+    // rendering. The destination stage matches the stage the submit
+    // waits on for image_available, so the layout change happens only
+    // after the image has been acquired.
+    transition_image(
+        slot.cmd,
+        image,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        0,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+
+    // 5. Transition the shared depth image. The depth image is shared
+    // by frames in flight. These stages ensure earlier depth writes,
+    // including late fragment tests, are ordered before this frame
+    // reads or writes depth.
     transition_image(
         slot.cmd,
         m_depth.image(),
@@ -324,7 +340,7 @@ void VulkanRenderer::render(const FrameData& frame) {
         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
-    // 5. Configure the color attachment
+    // 6. Configure the color attachment
     VkRenderingAttachmentInfo color_attachment{};
     color_attachment.sType =
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -341,7 +357,7 @@ void VulkanRenderer::render(const FrameData& frame) {
     color_attachment.clearValue.color.float32[2] = 0.13f;
     color_attachment.clearValue.color.float32[3] = 1.0f;
 
-    // 6. Configure the depth attachment
+    // 7. Configure the depth attachment
     VkRenderingAttachmentInfo depth_attachment{};
     depth_attachment.sType =
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -355,7 +371,7 @@ void VulkanRenderer::render(const FrameData& frame) {
 
     depth_attachment.clearValue.depthStencil = {1.0f, 0};
 
-    // 7. Begin dynamic rendering with both attachments
+    // 8. Begin dynamic rendering with both attachments
     VkRenderingInfo rendering_info{};
     rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
 
@@ -376,7 +392,7 @@ void VulkanRenderer::render(const FrameData& frame) {
 
     vkCmdEndRendering(slot.cmd);
 
-    // 8. Transition the color image for presentation
+    // 9. Transition the color image for presentation
     transition_image(
         slot.cmd,
         image,
@@ -394,7 +410,7 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 9. Submit, waiting for image acquisition
+    // 10. Submit, waiting for image acquisition
     VkSemaphoreSubmitInfo wait_info{};
     wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     wait_info.semaphore = slot.image_available;
@@ -436,7 +452,7 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 10. Present the image
+    // 11. Present the image
     VkPresentInfoKHR present_info{};
     present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
