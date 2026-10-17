@@ -2,8 +2,9 @@
 
 #include "renderer/renderer.h"
 #include "renderer/vulkan/vk_context.h"
-#include "renderer/vulkan/vk_swapchain.h"
+#include "renderer/vulkan/vk_depth.h"
 #include "renderer/vulkan/vk_frames.h"
+#include "renderer/vulkan/vk_swapchain.h"
 #include "renderer/vulkan/vk_triangle_demo.h"
 
 namespace gfx {
@@ -28,6 +29,7 @@ private:
     // Order is important
     VulkanContext m_context;
     VulkanSwapchain m_swapchain;
+    VulkanDepthBuffer m_depth;
     VulkanFrames m_frames;
     VulkanTriangleDemo m_triangle;
 

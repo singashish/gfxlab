@@ -1,6 +1,6 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
+#include "renderer/vulkan/vk_api.h"
 
 namespace gfx {
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
+#include "renderer/vulkan/vk_api.h"
 
 namespace gfx {
 
@@ -12,7 +12,7 @@ public:
     VulkanTriangleDemo(const VulkanTriangleDemo&) = delete;
     VulkanTriangleDemo& operator=(const VulkanTriangleDemo&) = delete;
 
-    bool init(VkDevice device, VkFormat color_format);
+    bool init(VkDevice device, VkFormat color_format, VkFormat depth_format);
     void record(VkCommandBuffer cmd, VkExtent2D extent);
     void shutdown();
 

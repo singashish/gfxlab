@@ -1,8 +1,5 @@
 #include "renderer/vulkan/vk_triangle_demo.h"
-#include "renderer/vulkan/vk_api.h"
 #include "renderer/vulkan/vk_shader.h"
-
-#include "core/log.h"
 
 namespace gfx {
 
@@ -10,7 +7,7 @@ VulkanTriangleDemo::~VulkanTriangleDemo() {
     shutdown();
 }
 
-bool VulkanTriangleDemo::init(VkDevice device, VkFormat color_format) {
+bool VulkanTriangleDemo::init(VkDevice device, VkFormat color_format, VkFormat depth_format) {
     shutdown();
 
     if (device == VK_NULL_HANDLE || color_format == VK_FORMAT_UNDEFINED) {
@@ -71,6 +68,7 @@ bool VulkanTriangleDemo::init(VkDevice device, VkFormat color_format) {
     };
     rendering_info.colorAttachmentCount = 1;
     rendering_info.pColorAttachmentFormats = &color_format;
+    rendering_info.depthAttachmentFormat = depth_format;
 
     VkPipelineVertexInputStateCreateInfo vertex_input{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
@@ -133,6 +131,18 @@ bool VulkanTriangleDemo::init(VkDevice device, VkFormat color_format) {
     dynamic_state.dynamicStateCount = 2;
     dynamic_state.pDynamicStates = dynamic_states;
 
+    VkPipelineDepthStencilStateCreateInfo depth_stencil{};
+    depth_stencil.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+
+    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_TRUE;
+    depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depth_stencil.depthBoundsTestEnable = VK_FALSE;
+    depth_stencil.stencilTestEnable = VK_FALSE;
+    depth_stencil.minDepthBounds = 0.0f;
+    depth_stencil.maxDepthBounds = 1.0f;
+
     VkGraphicsPipelineCreateInfo pipeline_info{
         VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO
     };
@@ -144,7 +154,7 @@ bool VulkanTriangleDemo::init(VkDevice device, VkFormat color_format) {
     pipeline_info.pViewportState = &viewport_state;
     pipeline_info.pRasterizationState = &rasterization;
     pipeline_info.pMultisampleState = &multisampling;
-    pipeline_info.pDepthStencilState = nullptr;
+    pipeline_info.pDepthStencilState = &depth_stencil;
     pipeline_info.pColorBlendState = &color_blending;
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = m_pipeline_layout;
@@ -200,7 +210,7 @@ void VulkanTriangleDemo::record(VkCommandBuffer cmd, VkExtent2D extent) {
         VK_PIPELINE_BIND_POINT_GRAPHICS,
         m_pipeline);
 
-    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdDraw(cmd, 6, 1, 0, 0);
 }
 
 void VulkanTriangleDemo::shutdown() {

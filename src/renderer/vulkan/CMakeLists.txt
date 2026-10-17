@@ -8,6 +8,8 @@ gfx_compile_shaders(
 add_library(gfx_vk STATIC
     vk_context.cpp
     vk_swapchain.cpp
+    vk_memory.cpp
+    vk_depth.cpp
     vk_frames.cpp
     vk_shader.cpp
     vk_triangle_demo.cpp

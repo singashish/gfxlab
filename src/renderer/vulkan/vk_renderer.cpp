@@ -6,6 +6,7 @@ namespace {
 void transition_image(
     VkCommandBuffer cmd,
     VkImage image,
+    VkImageAspectFlags aspect,
     VkImageLayout old_layout,
     VkImageLayout new_layout,
     VkPipelineStageFlags2 src_stage,
@@ -25,7 +26,7 @@ void transition_image(
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
 
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.aspectMask = aspect;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
@@ -78,23 +79,27 @@ bool VulkanRenderer::init(void* native_window) {
     m_width = static_cast<std::uint32_t>(rect.right - rect.left);
     m_height = static_cast<std::uint32_t>(rect.bottom - rect.top);
 
-    if (!m_swapchain.create(
-            m_context, m_width, m_height, m_vsync)) {
+    if (!m_swapchain.create(m_context, m_width, m_height, m_vsync)) {
         LOG_ERROR("failed to create Vulkan swapchain");
         return false;
     }
 
-    if (!m_frames.create(
-            m_context.device(),
-            m_context.queue_family(),
-            m_swapchain.image_count())) {
+    if (!m_depth.create(m_context, m_swapchain.extent())) {
+        LOG_ERROR("failed to create Vulkan depth buffer");
+        m_swapchain.destroy();
+        m_context.destroy();
+        return false;
+    }
+
+    if (!m_frames.create(m_context.device(), m_context.queue_family(),
+                         m_swapchain.image_count())) {
         LOG_ERROR("failed to create Vulkan frame resources");
         return false;
     }
 
-    if (!m_triangle.init(
-            m_context.device(),
-            m_swapchain.format())) {
+    if (!m_triangle.init(m_context.device(),
+                         m_swapchain.format(),
+                         m_depth.format())) {
         LOG_ERROR("Failed to initialize Vulkan triangle demo");
         return false;
     }
@@ -136,6 +141,13 @@ bool VulkanRenderer::recreate_swapchain() {
     const std::uint32_t height =
         static_cast<std::uint32_t>(rect.bottom - rect.top);
 
+    // A minimized window has no drawable area. Defer recreation until
+    // the window has a non-zero extent
+    if (width == 0 || height == 0) {
+        LOG_INFO("swapchain recreation deferred: window has zero extent");
+        return false;
+    }
+
     LOG_INFO("recreating Vulkan swapchain");
 
     if (!vk_ok(
@@ -144,23 +156,50 @@ bool VulkanRenderer::recreate_swapchain() {
         return false;
     }
 
-    // Frame synchronization resources depend on the image count
+    // Destroy resources associated with the old swapchain
     m_frames.destroy();
+    m_depth.destroy();
     m_swapchain.destroy();
 
     m_width = width;
     m_height = height;
 
-    if (!m_swapchain.create(m_context, m_width, m_height, m_vsync)) {
+    // Create the replacement swapchain
+    if (!m_swapchain.create(
+            m_context, m_width, m_height, m_vsync)) {
         LOG_WARN("swapchain recreation deferred or failed");
+        m_swapchain.destroy();
         return false;
     }
 
+    // Recreate the depth buffer using the new swapchain extent
+    if (!m_depth.create(m_context, m_swapchain.extent())) {
+        LOG_ERROR("failed to recreate Vulkan depth buffer");
+        m_depth.destroy();
+        m_swapchain.destroy();
+        return false;
+    }
+
+    // Frame synchronization resources depend on the image count
     if (!m_frames.create(
             m_context.device(),
             m_context.queue_family(),
             m_swapchain.image_count())) {
         LOG_ERROR("failed to recreate Vulkan frame resources");
+        m_frames.destroy();
+        m_depth.destroy();
+        m_swapchain.destroy();
+        return false;
+    }
+
+    // Reinitialize the graphics pipeline with the current attachment
+    // formats if your triangle demo owns a format-dependent pipeline
+    if (!m_triangle.init(m_context.device(),
+                         m_swapchain.format(),
+                         m_depth.format())) {
+        LOG_ERROR("failed to recreate Vulkan triangle pipeline");
+        m_frames.destroy();
+        m_depth.destroy();
         m_swapchain.destroy();
         return false;
     }
@@ -169,9 +208,9 @@ bool VulkanRenderer::recreate_swapchain() {
     return true;
 }
 
+
 void VulkanRenderer::render(const FrameData& frame) {
-    // Minimal handling for a missing swapchain. Step 8 will refine
-    // resize/minimize behavior
+    // Minimal handling for a missing swapchain
     if (m_swapchain.swapchain() == VK_NULL_HANDLE) {
         if (frame.width > 0 && frame.height > 0) {
             (void)recreate_swapchain();
@@ -184,7 +223,7 @@ void VulkanRenderer::render(const FrameData& frame) {
 
     VulkanFrames::Slot& slot = m_frames.current();
 
-    // 1. Wait until this frame slot's previous GPU work has finished
+    // 1. Wait for this frame slot's previous GPU work
     if (!vk_ok(
             vkWaitForFences(
                 m_context.device(), 1, &slot.in_flight,
@@ -193,7 +232,7 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 2. Acquire an image from the swapchain
+    // 2. Acquire a swapchain image
     std::uint32_t image_index = 0;
 
     const VkResult acquire_result = vkAcquireNextImageKHR(
@@ -227,18 +266,21 @@ void VulkanRenderer::render(const FrameData& frame) {
     if (image == VK_NULL_HANDLE ||
         view == VK_NULL_HANDLE ||
         finished == VK_NULL_HANDLE) {
-        LOG_ERROR("Invalid swapchain image, image view, or render-finished semaphore");
+        LOG_ERROR(
+            "Invalid swapchain image, image view, or "
+            "render-finished semaphore");
         return;
     }
 
-    // Only reset the fence after the non-recording checks pass
+    // Reset the fence only after the non-recording checks pass
     if (!vk_ok(
-            vkResetFences(m_context.device(), 1, &slot.in_flight),
+            vkResetFences(
+                m_context.device(), 1, &slot.in_flight),
             "reset frame fence")) {
         return;
     }
 
-    // 4. Reset and begin recording this frame's command buffer
+    // 3. Reset and begin recording
     if (!vk_ok(
             vkResetCommandBuffer(slot.cmd, 0),
             "reset frame command buffer")) {
@@ -247,8 +289,7 @@ void VulkanRenderer::render(const FrameData& frame) {
 
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin_info.flags =
-        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
     if (!vk_ok(
             vkBeginCommandBuffer(slot.cmd, &begin_info),
@@ -256,10 +297,11 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 5. Transition the image into a layout suitable for rendering
+    // 4. Transition the swapchain image to color-attachment layout
     transition_image(
         slot.cmd,
         image,
+        VK_IMAGE_ASPECT_COLOR_BIT,
         VK_IMAGE_LAYOUT_UNDEFINED,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -267,38 +309,109 @@ void VulkanRenderer::render(const FrameData& frame) {
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
-    // 6. Begin dynamic rendering with a clear operation
+    // 5. Transition the shared depth image
+    //
+    // The depth image is shared by frames in flight. This barrier
+    // orders depth attachment access against earlier queue work
+    VkImageMemoryBarrier2 depth_barrier{};
+    depth_barrier.sType =
+        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+
+    depth_barrier.srcStageMask =
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+
+    depth_barrier.srcAccessMask =
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    depth_barrier.dstStageMask =
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+
+    depth_barrier.dstAccessMask =
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    depth_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth_barrier.newLayout =
+        VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+
+    depth_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    depth_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+    depth_barrier.image = m_depth.image();
+
+    depth_barrier.subresourceRange.aspectMask =
+        VK_IMAGE_ASPECT_DEPTH_BIT;
+    depth_barrier.subresourceRange.baseMipLevel = 0;
+    depth_barrier.subresourceRange.levelCount = 1;
+    depth_barrier.subresourceRange.baseArrayLayer = 0;
+    depth_barrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo depth_dependency{};
+    depth_dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    depth_dependency.imageMemoryBarrierCount = 1;
+    depth_dependency.pImageMemoryBarriers = &depth_barrier;
+
+    vkCmdPipelineBarrier2(slot.cmd, &depth_dependency);
+
+    // 6. Configure the color attachment
     VkRenderingAttachmentInfo color_attachment{};
     color_attachment.sType =
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+
     color_attachment.imageView = view;
     color_attachment.imageLayout =
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
     color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
     color_attachment.clearValue.color.float32[0] = 0.10f;
     color_attachment.clearValue.color.float32[1] = 0.11f;
     color_attachment.clearValue.color.float32[2] = 0.13f;
     color_attachment.clearValue.color.float32[3] = 1.0f;
 
+    // 7. Configure the depth attachment
+    VkRenderingAttachmentInfo depth_attachment{};
+    depth_attachment.sType =
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+
+    depth_attachment.imageView = m_depth.view();
+    depth_attachment.imageLayout =
+        VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+
+    depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+    depth_attachment.clearValue.depthStencil = {1.0f, 0};
+
+    // 8. Begin dynamic rendering with both attachments
     VkRenderingInfo rendering_info{};
     rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+
     rendering_info.renderArea.offset = {0, 0};
     rendering_info.renderArea.extent = m_swapchain.extent();
+
     rendering_info.layerCount = 1;
+
     rendering_info.colorAttachmentCount = 1;
     rendering_info.pColorAttachments = &color_attachment;
+    rendering_info.pDepthAttachment = &depth_attachment;
 
     vkCmdBeginRendering(slot.cmd, &rendering_info);
+
     if (frame.draw_list.empty()) {
         m_triangle.record(slot.cmd, m_swapchain.extent());
     }
+
     vkCmdEndRendering(slot.cmd);
 
-    // 7. Transition the image to the layout required for presentation
+    // 9. Transition the color image for presentation
     transition_image(
         slot.cmd,
         image,
+        VK_IMAGE_ASPECT_COLOR_BIT,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -312,7 +425,7 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 8. Submit the command buffer, waiting for image acquisition
+    // 10. Submit, waiting for image acquisition
     VkSemaphoreSubmitInfo wait_info{};
     wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     wait_info.semaphore = slot.image_available;
@@ -334,27 +447,35 @@ void VulkanRenderer::render(const FrameData& frame) {
 
     VkSubmitInfo2 submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+
     submit_info.waitSemaphoreInfoCount = 1;
     submit_info.pWaitSemaphoreInfos = &wait_info;
+
     submit_info.commandBufferInfoCount = 1;
     submit_info.pCommandBufferInfos = &command_info;
+
     submit_info.signalSemaphoreInfoCount = 1;
     submit_info.pSignalSemaphoreInfos = &signal_info;
 
     if (!vk_ok(
             vkQueueSubmit2(
-                m_context.queue(), 1, &submit_info, slot.in_flight),
+                m_context.queue(),
+                1,
+                &submit_info,
+                slot.in_flight),
             "submit frame")) {
         return;
     }
 
-    // 9. Present the image, waiting for its render-finished semaphore
+    // 11. Present the image
     VkPresentInfoKHR present_info{};
     present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
     present_info.waitSemaphoreCount = 1;
     present_info.pWaitSemaphores = &finished;
 
     const VkSwapchainKHR swapchain = m_swapchain.swapchain();
+
     present_info.swapchainCount = 1;
     present_info.pSwapchains = &swapchain;
     present_info.pImageIndices = &image_index;
@@ -362,8 +483,7 @@ void VulkanRenderer::render(const FrameData& frame) {
     const VkResult present_result =
         vkQueuePresentKHR(m_context.queue(), &present_info);
 
-    // This submitted frame has consumed its slot regardless of whether
-    // presentation reports success or asks for swapchain recreation
+    // The submitted frame has consumed its frame slot
     m_frames.advance();
 
     if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||

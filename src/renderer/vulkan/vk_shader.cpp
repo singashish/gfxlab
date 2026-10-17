@@ -1,5 +1,4 @@
 #include "renderer/vulkan/vk_shader.h"
-#include "renderer/vulkan/vk_api.h"
 
 #include <cstdint>
 #include <fstream>
