@@ -186,11 +186,10 @@ VulkanContext::~VulkanContext() {
 }
 
 void VulkanContext::destroy() {
-    // Wait for outstanding work before destroying the device
     if (m_device != VK_NULL_HANDLE) {
         (void)vk_ok(
             vkDeviceWaitIdle(m_device),
-            "wait for device idle before destruction");
+            "wait for device idle before destroying device");
 
         vkDestroyDevice(m_device, nullptr);
         m_device = VK_NULL_HANDLE;

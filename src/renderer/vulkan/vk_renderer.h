@@ -3,13 +3,14 @@
 #include "renderer/renderer.h"
 #include "renderer/vulkan/vk_context.h"
 #include "renderer/vulkan/vk_swapchain.h"
+#include "renderer/vulkan/vk_frames.h"
 
 namespace gfx {
 
 class VulkanRenderer final : public IRenderer {
 public:
     VulkanRenderer() = default;
-    ~VulkanRenderer() override = default;
+    ~VulkanRenderer() override;
 
     VulkanRenderer(const VulkanRenderer&) = delete;
     VulkanRenderer& operator=(const VulkanRenderer&) = delete;
@@ -25,6 +26,7 @@ private:
 
     VulkanContext m_context;
     VulkanSwapchain m_swapchain;
+    VulkanFrames m_frames;
 
     HWND m_native_window = nullptr;
     std::uint32_t m_width = 0;

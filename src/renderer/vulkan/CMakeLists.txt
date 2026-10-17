@@ -1,6 +1,7 @@
 add_library(gfx_vk STATIC
     vk_context.cpp
     vk_swapchain.cpp
+    vk_frames.cpp
     vk_renderer.cpp
 )
 

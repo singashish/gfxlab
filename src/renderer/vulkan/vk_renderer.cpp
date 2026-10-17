@@ -1,6 +1,56 @@
 #include "renderer/vulkan/vk_renderer.h"
 
 namespace gfx {
+namespace {
+
+void transition_image(
+    VkCommandBuffer cmd,
+    VkImage image,
+    VkImageLayout old_layout,
+    VkImageLayout new_layout,
+    VkPipelineStageFlags2 src_stage,
+    VkAccessFlags2 src_access,
+    VkPipelineStageFlags2 dst_stage,
+    VkAccessFlags2 dst_access) {
+
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = src_stage;
+    barrier.srcAccessMask = src_access;
+    barrier.dstStageMask = dst_stage;
+    barrier.dstAccessMask = dst_access;
+    barrier.oldLayout = old_layout;
+    barrier.newLayout = new_layout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+
+    vkCmdPipelineBarrier2(cmd, &dependency);
+}
+
+} // namespace
+
+VulkanRenderer::~VulkanRenderer() {
+    if (m_context.device() != VK_NULL_HANDLE) {
+        (void)vk_ok(
+            vkDeviceWaitIdle(m_context.device()),
+            "wait for device idle before renderer destruction");
+    }
+
+    // Members are destroyed after this body, in reverse order:
+    // frames -> swapchain -> context
+}
 
 const char* VulkanRenderer::name() const {
     return "Vulkan 1.3";
@@ -25,11 +75,8 @@ bool VulkanRenderer::init(void* native_window) {
         return false;
     }
 
-    m_width = static_cast<std::uint32_t>(
-        rect.right - rect.left);
-
-    m_height = static_cast<std::uint32_t>(
-        rect.bottom - rect.top);
+    m_width = static_cast<std::uint32_t>(rect.right - rect.left);
+    m_height = static_cast<std::uint32_t>(rect.bottom - rect.top);
 
     if (!m_swapchain.create(
             m_context, m_width, m_height, m_vsync)) {
@@ -37,12 +84,15 @@ bool VulkanRenderer::init(void* native_window) {
         return false;
     }
 
-    return true;
-}
+    if (!m_frames.create(
+            m_context.device(),
+            m_context.queue_family(),
+            m_swapchain.image_count())) {
+        LOG_ERROR("failed to create Vulkan frame resources");
+        return false;
+    }
 
-void VulkanRenderer::render(const FrameData&) {
-    // Step 3 creates the swapchain, but does not render yet
-    // Command buffers and rendering begin in Step 4
+    return true;
 }
 
 void VulkanRenderer::set_vsync(bool enabled) {
@@ -60,10 +110,24 @@ void VulkanRenderer::set_vsync(bool enabled) {
 }
 
 bool VulkanRenderer::recreate_swapchain() {
-    if (m_context.device() == VK_NULL_HANDLE) {
-        LOG_ERROR("cannot recreate swapchain without a Vulkan device");
+    if (m_context.device() == VK_NULL_HANDLE ||
+        m_native_window == nullptr) {
+        LOG_ERROR("cannot recreate swapchain without a device and window");
         return false;
     }
+
+    // Query the client rectangle before destroying working resources
+    RECT rect{};
+
+    if (!GetClientRect(m_native_window, &rect)) {
+        LOG_ERROR("GetClientRect failed during swapchain recreation");
+        return false;
+    }
+
+    const std::uint32_t width =
+        static_cast<std::uint32_t>(rect.right - rect.left);
+    const std::uint32_t height =
+        static_cast<std::uint32_t>(rect.bottom - rect.top);
 
     LOG_INFO("recreating Vulkan swapchain");
 
@@ -73,31 +137,241 @@ bool VulkanRenderer::recreate_swapchain() {
         return false;
     }
 
-    // Release all resources belonging to the old swapchain
+    // Frame synchronization resources depend on the image count
+    m_frames.destroy();
     m_swapchain.destroy();
 
-    RECT rect{};
+    m_width = width;
+    m_height = height;
 
-    if (m_native_window == nullptr ||
-        !GetClientRect(m_native_window, &rect)) {
-        LOG_ERROR("failed to query client size for swapchain recreation");
+    if (!m_swapchain.create(m_context, m_width, m_height, m_vsync)) {
+        LOG_WARN("swapchain recreation deferred or failed");
         return false;
     }
 
-    m_width = static_cast<std::uint32_t>(
-        rect.right - rect.left);
-
-    m_height = static_cast<std::uint32_t>(
-        rect.bottom - rect.top);
-
-    if (!m_swapchain.create(
-            m_context, m_width, m_height, m_vsync)) {
-        LOG_ERROR("failed to create replacement Vulkan swapchain");
+    if (!m_frames.create(
+            m_context.device(),
+            m_context.queue_family(),
+            m_swapchain.image_count())) {
+        LOG_ERROR("failed to recreate Vulkan frame resources");
+        m_swapchain.destroy();
         return false;
     }
 
     LOG_INFO("Vulkan swapchain recreated successfully");
     return true;
+}
+
+void VulkanRenderer::render(const FrameData& frame) {
+    // Minimal handling for a missing swapchain. Step 8 will refine
+    // resize/minimize behavior
+    if (m_swapchain.swapchain() == VK_NULL_HANDLE) {
+        if (frame.width > 0 && frame.height > 0) {
+            (void)recreate_swapchain();
+        }
+
+        if (m_swapchain.swapchain() == VK_NULL_HANDLE) {
+            return;
+        }
+    }
+
+    VulkanFrames::Slot& slot = m_frames.current();
+
+    // 1. Wait until this frame slot's previous GPU work has finished
+    if (!vk_ok(
+            vkWaitForFences(
+                m_context.device(), 1, &slot.in_flight,
+                VK_TRUE, UINT64_MAX),
+            "wait for frame fence")) {
+        return;
+    }
+
+    // 2. Acquire an image from the swapchain
+    std::uint32_t image_index = 0;
+
+    const VkResult acquire_result = vkAcquireNextImageKHR(
+        m_context.device(),
+        m_swapchain.swapchain(),
+        UINT64_MAX,
+        slot.image_available,
+        VK_NULL_HANDLE,
+        &image_index);
+
+    if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
+        (void)recreate_swapchain();
+        return;
+    }
+
+    if (acquire_result != VK_SUCCESS &&
+        acquire_result != VK_SUBOPTIMAL_KHR) {
+        (void)vk_ok(acquire_result, "acquire swapchain image");
+        return;
+    }
+
+    if (image_index >= m_swapchain.image_count()) {
+        LOG_ERROR("acquired swapchain image index is out of range");
+        return;
+    }
+
+    // 3. Reset the fence only after acquiring an image
+    // An early return before submission after this point would leave
+    // it unsignaled; the normal path below always submits the work
+    if (!vk_ok(
+            vkResetFences(m_context.device(), 1, &slot.in_flight),
+            "reset frame fence")) {
+        return;
+    }
+
+    // 4. Reset and begin recording this frame's command buffer
+    if (!vk_ok(
+            vkResetCommandBuffer(slot.cmd, 0),
+            "reset frame command buffer")) {
+        return;
+    }
+
+    VkCommandBufferBeginInfo begin_info{};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags =
+        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    if (!vk_ok(
+            vkBeginCommandBuffer(slot.cmd, &begin_info),
+            "begin frame command buffer")) {
+        return;
+    }
+
+    const VkImage image = m_swapchain.image(image_index);
+    const VkImageView view = m_swapchain.image_view(image_index);
+
+    if (image == VK_NULL_HANDLE || view == VK_NULL_HANDLE) {
+        LOG_ERROR("acquired swapchain image or view is null");
+        return;
+    }
+
+    // 5. Transition the image into a layout suitable for rendering
+    transition_image(
+        slot.cmd,
+        image,
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        0,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+
+    // 6. Begin dynamic rendering with a clear operation
+    VkRenderingAttachmentInfo color_attachment{};
+    color_attachment.sType =
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    color_attachment.imageView = view;
+    color_attachment.imageLayout =
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color_attachment.clearValue.color.float32[0] = 0.10f;
+    color_attachment.clearValue.color.float32[1] = 0.11f;
+    color_attachment.clearValue.color.float32[2] = 0.13f;
+    color_attachment.clearValue.color.float32[3] = 1.0f;
+
+    VkRenderingInfo rendering_info{};
+    rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    rendering_info.renderArea.offset = {0, 0};
+    rendering_info.renderArea.extent = m_swapchain.extent();
+    rendering_info.layerCount = 1;
+    rendering_info.colorAttachmentCount = 1;
+    rendering_info.pColorAttachments = &color_attachment;
+
+    vkCmdBeginRendering(slot.cmd, &rendering_info);
+    vkCmdEndRendering(slot.cmd);
+
+    // 7. Transition the image to the layout required for presentation
+    transition_image(
+        slot.cmd,
+        image,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_NONE,
+        0);
+
+    if (!vk_ok(
+            vkEndCommandBuffer(slot.cmd),
+            "end frame command buffer")) {
+        return;
+    }
+
+    // 8. Submit the command buffer, waiting for image acquisition
+    VkSemaphoreSubmitInfo wait_info{};
+    wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    wait_info.semaphore = slot.image_available;
+    wait_info.stageMask =
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    wait_info.deviceIndex = 0;
+
+    VkCommandBufferSubmitInfo command_info{};
+    command_info.sType =
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    command_info.commandBuffer = slot.cmd;
+    command_info.deviceMask = 0;
+
+    const VkSemaphore finished =
+        m_frames.render_finished(image_index);
+
+    if (finished == VK_NULL_HANDLE) {
+        LOG_ERROR("render-finished semaphore is null");
+        return;
+    }
+
+    VkSemaphoreSubmitInfo signal_info{};
+    signal_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signal_info.semaphore = finished;
+    signal_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signal_info.deviceIndex = 0;
+
+    VkSubmitInfo2 submit_info{};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submit_info.waitSemaphoreInfoCount = 1;
+    submit_info.pWaitSemaphoreInfos = &wait_info;
+    submit_info.commandBufferInfoCount = 1;
+    submit_info.pCommandBufferInfos = &command_info;
+    submit_info.signalSemaphoreInfoCount = 1;
+    submit_info.pSignalSemaphoreInfos = &signal_info;
+
+    if (!vk_ok(
+            vkQueueSubmit2(
+                m_context.queue(), 1, &submit_info, slot.in_flight),
+            "submit frame")) {
+        return;
+    }
+
+    // 9. Present the image, waiting for its render-finished semaphore
+    VkPresentInfoKHR present_info{};
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = &finished;
+
+    const VkSwapchainKHR swapchain = m_swapchain.swapchain();
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = &swapchain;
+    present_info.pImageIndices = &image_index;
+
+    const VkResult present_result =
+        vkQueuePresentKHR(m_context.queue(), &present_info);
+
+    // This submitted frame has consumed its slot regardless of whether
+    // presentation reports success or asks for swapchain recreation
+    m_frames.advance();
+
+    if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
+        present_result == VK_SUBOPTIMAL_KHR) {
+        (void)recreate_swapchain();
+        return;
+    }
+
+    if (present_result != VK_SUCCESS) {
+        (void)vk_ok(present_result, "present swapchain image");
+    }
 }
 
 MeshId VulkanRenderer::create_mesh(const Mesh&) {
