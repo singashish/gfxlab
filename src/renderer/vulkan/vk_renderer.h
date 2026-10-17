@@ -4,6 +4,7 @@
 #include "renderer/vulkan/vk_context.h"
 #include "renderer/vulkan/vk_swapchain.h"
 #include "renderer/vulkan/vk_frames.h"
+#include "renderer/vulkan/vk_triangle_demo.h"
 
 namespace gfx {
 
@@ -24,9 +25,11 @@ public:
 private:
     bool recreate_swapchain();
 
+    // Order is important
     VulkanContext m_context;
     VulkanSwapchain m_swapchain;
     VulkanFrames m_frames;
+    VulkanTriangleDemo m_triangle;
 
     HWND m_native_window = nullptr;
     std::uint32_t m_width = 0;

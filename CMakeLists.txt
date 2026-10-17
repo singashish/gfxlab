@@ -21,6 +21,7 @@ endif()
 # Optional backend detection
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(GfxBackends)
+include(GfxShaders)
 
 add_subdirectory(src/core)
 

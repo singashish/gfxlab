@@ -92,6 +92,13 @@ bool VulkanRenderer::init(void* native_window) {
         return false;
     }
 
+    if (!m_triangle.init(
+            m_context.device(),
+            m_swapchain.format())) {
+        LOG_ERROR("Failed to initialize Vulkan triangle demo");
+        return false;
+    }
+
     return true;
 }
 
@@ -213,9 +220,18 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 3. Reset the fence only after acquiring an image
-    // An early return before submission after this point would leave
-    // it unsignaled; the normal path below always submits the work
+    const VkImage image = m_swapchain.image(image_index);
+    const VkImageView view = m_swapchain.image_view(image_index);
+    const VkSemaphore finished = m_frames.render_finished(image_index);
+
+    if (image == VK_NULL_HANDLE ||
+        view == VK_NULL_HANDLE ||
+        finished == VK_NULL_HANDLE) {
+        LOG_ERROR("Invalid swapchain image, image view, or render-finished semaphore");
+        return;
+    }
+
+    // Only reset the fence after the non-recording checks pass
     if (!vk_ok(
             vkResetFences(m_context.device(), 1, &slot.in_flight),
             "reset frame fence")) {
@@ -237,14 +253,6 @@ void VulkanRenderer::render(const FrameData& frame) {
     if (!vk_ok(
             vkBeginCommandBuffer(slot.cmd, &begin_info),
             "begin frame command buffer")) {
-        return;
-    }
-
-    const VkImage image = m_swapchain.image(image_index);
-    const VkImageView view = m_swapchain.image_view(image_index);
-
-    if (image == VK_NULL_HANDLE || view == VK_NULL_HANDLE) {
-        LOG_ERROR("acquired swapchain image or view is null");
         return;
     }
 
@@ -282,6 +290,9 @@ void VulkanRenderer::render(const FrameData& frame) {
     rendering_info.pColorAttachments = &color_attachment;
 
     vkCmdBeginRendering(slot.cmd, &rendering_info);
+    if (frame.draw_list.empty()) {
+        m_triangle.record(slot.cmd, m_swapchain.extent());
+    }
     vkCmdEndRendering(slot.cmd);
 
     // 7. Transition the image to the layout required for presentation
@@ -314,14 +325,6 @@ void VulkanRenderer::render(const FrameData& frame) {
         VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
     command_info.commandBuffer = slot.cmd;
     command_info.deviceMask = 0;
-
-    const VkSemaphore finished =
-        m_frames.render_finished(image_index);
-
-    if (finished == VK_NULL_HANDLE) {
-        LOG_ERROR("render-finished semaphore is null");
-        return;
-    }
 
     VkSemaphoreSubmitInfo signal_info{};
     signal_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
