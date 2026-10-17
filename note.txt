@@ -1,5 +1,7 @@
-gfxlab.exe
-gfxlab.exe --backend=opengl
-gfxlab.exe --backend=vulkan
-gfxlab.exe model.obj --backend=opengl
+.\builds\build-debug\src\app\gfxlab.exe
 
+.\builds\build-debug\src\app\gfxlab.exe --backend=opengl
+.\builds\build-debug\src\app\gfxlab.exe --backend=vulkan
+
+.\builds\build-debug\src\app\gfxlab.exe assets\cube.obj --backend=opengl
+.\builds\build-debug\src\app\gfxlab.exe assets\cube.obj --backend=vulkan

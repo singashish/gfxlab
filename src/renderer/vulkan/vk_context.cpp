@@ -186,8 +186,12 @@ VulkanContext::~VulkanContext() {
 }
 
 void VulkanContext::destroy() {
-    // 1. The logical device must be destroyed before the instance.
+    // Wait for outstanding work before destroying the device
     if (m_device != VK_NULL_HANDLE) {
+        (void)vk_ok(
+            vkDeviceWaitIdle(m_device),
+            "wait for device idle before destruction");
+
         vkDestroyDevice(m_device, nullptr);
         m_device = VK_NULL_HANDLE;
     }
