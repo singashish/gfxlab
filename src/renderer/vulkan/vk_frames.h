@@ -24,15 +24,17 @@ public:
     VulkanFrames(const VulkanFrames&) = delete;
     VulkanFrames& operator=(const VulkanFrames&) = delete;
 
-    bool create(
-        VkDevice device,
-        std::uint32_t queue_family,
-        std::uint32_t swapchain_image_count);
+    bool create(VkDevice device, std::uint32_t queue_family,
+                std::uint32_t swapchain_image_count);
 
     void destroy();
 
     Slot& current() {
         return m_slots[m_current_slot];
+    }
+
+    std::uint32_t current_index() const {
+        return m_current_slot;
     }
 
     void advance() {

@@ -37,7 +37,6 @@ bool VulkanUploader::init(const VulkanContext& ctx) {
     // Start signaled so the first upload can wait on the fence
     VkFenceCreateInfo fence_info{};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
     if (!vk_ok(
             vkCreateFence(
@@ -85,14 +84,6 @@ bool VulkanUploader::upload_to_device_buffer(const VulkanContext& ctx,
         data == nullptr ||
         size == 0) {
         LOG_ERROR("invalid arguments for Vulkan buffer upload");
-        return false;
-    }
-
-    // Wait for any previous upload before reusing the fence
-    if (!vk_ok(
-            vkWaitForFences(
-                m_device, 1, &m_fence, VK_TRUE, UINT64_MAX),
-            "wait for upload fence")) {
         return false;
     }
 
@@ -169,15 +160,6 @@ bool VulkanUploader::upload_to_device_buffer(const VulkanContext& ctx,
         return false;
     }
 
-    // Reset immediately before submitting work that will signal it
-    if (!vk_ok(
-            vkResetFences(m_device, 1, &m_fence),
-            "reset upload fence")) {
-        free_command_buffer();
-        dst.destroy();
-        return false;
-    }
-
     VkCommandBufferSubmitInfo command_info{};
     command_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
     command_info.commandBuffer = cmd;
@@ -192,21 +174,6 @@ bool VulkanUploader::upload_to_device_buffer(const VulkanContext& ctx,
         ctx.queue(), 1, &submit_info, m_fence);
 
     if (!vk_ok(submit_result, "submit upload command buffer")) {
-        // The fence was reset but no successful submission will signal it
-        vkDestroyFence(m_device, m_fence, nullptr);
-        m_fence = VK_NULL_HANDLE;
-
-        VkFenceCreateInfo fence_info{};
-        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-        if (!vk_ok(
-                vkCreateFence(
-                    m_device, &fence_info, nullptr, &m_fence),
-                "recreate upload fence after submit failure")) {
-            LOG_ERROR("uploader is no longer usable");
-        }
-
         free_command_buffer();
         dst.destroy();
         return false;
@@ -215,11 +182,20 @@ bool VulkanUploader::upload_to_device_buffer(const VulkanContext& ctx,
     const VkResult wait_result = vkWaitForFences(
         m_device, 1, &m_fence, VK_TRUE, UINT64_MAX);
 
+    if (!vk_ok(wait_result, "wait for buffer upload")) {
+        // Ensure the command buffer is no longer in use before freeing it
+        (void)vkDeviceWaitIdle(m_device);
+        free_command_buffer();
+        dst.destroy();
+        return false;
+    }
+
     free_command_buffer();
 
-    if (!vk_ok(wait_result, "wait for buffer upload")) {
-        // Do not destroy a destination potentially still used by the GPU
-        (void)vkDeviceWaitIdle(m_device);
+    // The upload completed successfully. Prepare the fence for the next upload
+    if (!vk_ok(
+            vkResetFences(m_device, 1, &m_fence),
+            "reset upload fence after completion")) {
         dst.destroy();
         return false;
     }

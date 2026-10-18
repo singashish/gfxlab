@@ -15,6 +15,14 @@ static_assert(sizeof(Vec3) == 12,
 static_assert(sizeof(Mat4) == 64,
               "Mat4 must be 64 bytes for push constants");
 
+struct MeshPush {
+    Mat4 model;
+    Mat4 normal_matrix;
+};
+
+static_assert(sizeof(MeshPush) == 128,
+              "MeshPush must contain two 64-byte matrices");
+
 VulkanMeshRenderer::~VulkanMeshRenderer() {
     shutdown();
 }
@@ -36,14 +44,15 @@ void VulkanMeshRenderer::destroy_pipeline() {
 }
 
 bool VulkanMeshRenderer::init(VkDevice device, VkFormat color_format,
-                              VkFormat depth_format) {
+            VkFormat depth_format, VkDescriptorSetLayout descriptor_layout) {
 
     // Rebuild the pipeline without deleting uploaded mesh buffers
     destroy_pipeline();
 
     if (device == VK_NULL_HANDLE ||
         color_format == VK_FORMAT_UNDEFINED ||
-        depth_format == VK_FORMAT_UNDEFINED) {
+        depth_format == VK_FORMAT_UNDEFINED ||
+        descriptor_layout == VK_NULL_HANDLE) {
         LOG_ERROR("invalid arguments for Vulkan mesh pipeline");
         return false;
     }
@@ -68,15 +77,16 @@ bool VulkanMeshRenderer::init(VkDevice device, VkFormat color_format,
         return false;
     }
 
-    // One 64-byte vertex-stage push constant containing the MVP
     VkPushConstantRange push_range{};
     push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     push_range.offset = 0;
-    push_range.size = sizeof(Mat4);
+    push_range.size = sizeof(MeshPush);
 
     VkPipelineLayoutCreateInfo layout_info{};
     layout_info.sType =
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_info.setLayoutCount = 1;
+    layout_info.pSetLayouts = &descriptor_layout;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push_range;
 
@@ -365,11 +375,12 @@ MeshId VulkanMeshRenderer::create(const VulkanContext& ctx,
 }
 
 void VulkanMeshRenderer::draw(VkCommandBuffer cmd, VkExtent2D extent,
-                const std::vector<DrawItem>& items, const Mat4& view_proj) {
+        VkDescriptorSet descriptor_set, const std::vector<DrawItem>& items) {
 
     if (m_pipeline == VK_NULL_HANDLE ||
         m_pipeline_layout == VK_NULL_HANDLE ||
         cmd == VK_NULL_HANDLE ||
+        descriptor_set == VK_NULL_HANDLE ||
         extent.width == 0 ||
         extent.height == 0) {
         return;
@@ -387,11 +398,21 @@ void VulkanMeshRenderer::draw(VkCommandBuffer cmd, VkExtent2D extent,
     scissor.offset = {0, 0};
     scissor.extent = extent;
 
+    vkCmdBindPipeline(
+        cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
+
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    vkCmdBindPipeline(
-        cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
+    vkCmdBindDescriptorSets(
+        cmd,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        m_pipeline_layout,
+        0,
+        1,
+        &descriptor_set,
+        0,
+        nullptr);
 
     const VkDeviceSize offset = 0;
 
@@ -410,15 +431,18 @@ void VulkanMeshRenderer::draw(VkCommandBuffer cmd, VkExtent2D extent,
             continue;
         }
 
-        const Mat4 mvp = view_proj * item.model;
+        const MeshPush push{
+            item.model,
+            item.normal_matrix
+        };
 
         vkCmdPushConstants(
             cmd,
             m_pipeline_layout,
             VK_SHADER_STAGE_VERTEX_BIT,
             0,
-            sizeof(Mat4),
-            &mvp);
+            sizeof(MeshPush),
+            &push);
 
         const VkBuffer vertex_buffer =
             mesh.vertex_buffer->buffer();

@@ -8,17 +8,18 @@ gfx_compile_shaders(
 )
 
 add_library(gfx_vk STATIC
-    vk_context.cpp
-    vk_swapchain.cpp
-    vk_memory.cpp
-    vk_depth.cpp
     vk_buffer.cpp
-    vk_upload.cpp
+    vk_context.cpp
+    vk_depth.cpp
     vk_frames.cpp
-    vk_shader.cpp
-    vk_triangle_demo.cpp
+    vk_memory.cpp
     vk_mesh.cpp
     vk_renderer.cpp
+    vk_shader.cpp
+    vk_swapchain.cpp
+    vk_triangle_demo.cpp
+    vk_uniforms.cpp
+    vk_upload.cpp
 )
 
 add_dependencies(gfx_vk gfx_shaders)

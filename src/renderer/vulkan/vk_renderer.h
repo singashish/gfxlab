@@ -6,8 +6,9 @@
 #include "renderer/vulkan/vk_frames.h"
 #include "renderer/vulkan/vk_mesh.h"
 #include "renderer/vulkan/vk_swapchain.h"
-#include "renderer/vulkan/vk_upload.h"
 #include "renderer/vulkan/vk_triangle_demo.h"
+#include "renderer/vulkan/vk_uniforms.h"
+#include "renderer/vulkan/vk_upload.h"
 
 namespace gfx {
 
@@ -35,6 +36,7 @@ private:
     VulkanDepthBuffer m_depth;
     VulkanFrames m_frames;
     VulkanUploader m_uploader;
+    VulkanFrameUniforms m_uniforms;
     VulkanTriangleDemo m_triangle;
     VulkanMeshRenderer m_meshes;
 

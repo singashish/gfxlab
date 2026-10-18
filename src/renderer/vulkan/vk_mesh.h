@@ -22,7 +22,8 @@ public:
     VulkanMeshRenderer(const VulkanMeshRenderer&) = delete;
     VulkanMeshRenderer& operator=(const VulkanMeshRenderer&) = delete;
 
-    bool init(VkDevice device, VkFormat color_format, VkFormat depth_format);
+    bool init(VkDevice device, VkFormat color_format,
+              VkFormat depth_format, VkDescriptorSetLayout descriptor_layout);
 
     void shutdown();
 
@@ -30,7 +31,8 @@ public:
                   const Mesh& mesh);
 
     void draw(VkCommandBuffer cmd, VkExtent2D extent,
-              const std::vector<DrawItem>& items, const Mat4& view_proj);
+              VkDescriptorSet descriptor_set,
+              const std::vector<DrawItem>& items);
 
 private:
     struct GpuMesh {

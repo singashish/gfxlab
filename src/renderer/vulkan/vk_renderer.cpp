@@ -104,6 +104,11 @@ bool VulkanRenderer::init(void* native_window) {
         return false;
     }
 
+    if (!m_uniforms.init(m_context, VulkanFrames::kFramesInFlight)) {
+        LOG_ERROR("failed to initialize Vulkan frame uniforms");
+        return false;
+    }
+
     if (!m_triangle.init(m_context.device(),
                          m_color_format,
                          m_depth_format)) {
@@ -113,7 +118,8 @@ bool VulkanRenderer::init(void* native_window) {
 
     if (!m_meshes.init(m_context.device(),
                        m_color_format,
-                       m_depth_format)) {
+                       m_depth_format,
+                       m_uniforms.layout())) {
         LOG_ERROR("failed to initialize Vulkan mesh renderer");
         return false;
     }
@@ -223,7 +229,8 @@ bool VulkanRenderer::recreate_swapchain() {
 
         if (!m_meshes.init(m_context.device(),
                            new_color_format,
-                           new_depth_format)) {
+                           new_depth_format,
+                           m_uniforms.layout())) {
             LOG_ERROR("failed to recreate Vulkan mesh pipeline");
 
             m_frames.destroy();
@@ -254,6 +261,7 @@ void VulkanRenderer::render(const FrameData& frame) {
         }
     }
 
+    const std::uint32_t frame_index = m_frames.current_index();
     VulkanFrames::Slot& slot = m_frames.current();
 
     // 1. Wait for this frame slot's previous GPU work
@@ -262,6 +270,31 @@ void VulkanRenderer::render(const FrameData& frame) {
                 m_context.device(), 1, &slot.in_flight,
                 VK_TRUE, UINT64_MAX),
             "wait for frame fence")) {
+        return;
+    }
+
+    const VkExtent2D extent = m_swapchain.extent();
+
+    if (extent.width == 0 || extent.height == 0) {
+        return;
+    }
+
+    const float aspect =
+        static_cast<float>(extent.width) /
+        static_cast<float>(extent.height);
+
+    const Mat4 projection = perspective(
+        frame.fov_y,
+        aspect,
+        frame.near_plane,
+        frame.far_plane,
+        ClipSpace::CLIP_SPACE_VULKAN);
+
+    const Mat4 view_proj = projection * frame.view;
+
+    if (!m_uniforms.update(frame_index,
+                        FrameUniforms{frame.view, view_proj})) {
+        LOG_ERROR("failed to update Vulkan frame uniforms");
         return;
     }
 
@@ -407,21 +440,6 @@ void VulkanRenderer::render(const FrameData& frame) {
     rendering_info.pColorAttachments = &color_attachment;
     rendering_info.pDepthAttachment = &depth_attachment;
 
-    const VkExtent2D extent = m_swapchain.extent();
-
-    const float aspect =
-        static_cast<float>(extent.width) /
-        static_cast<float>(extent.height);
-
-    const Mat4 projection = perspective(
-        frame.fov_y,
-        aspect,
-        frame.near_plane,
-        frame.far_plane,
-        ClipSpace::CLIP_SPACE_VULKAN);
-
-    const Mat4 view_proj = projection * frame.view;
-
     vkCmdBeginRendering(slot.cmd, &rendering_info);
 
     if (frame.draw_list.empty()) {
@@ -431,8 +449,8 @@ void VulkanRenderer::render(const FrameData& frame) {
         m_meshes.draw(
             slot.cmd,
             extent,
-            frame.draw_list,
-            view_proj);
+            m_uniforms.set(frame_index),
+            frame.draw_list);
     }
 
     vkCmdEndRendering(slot.cmd);

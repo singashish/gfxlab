@@ -105,6 +105,7 @@ bool VulkanBuffer::write(const void* data, VkDeviceSize size) {
         m_buffer == VK_NULL_HANDLE ||
         m_memory == VK_NULL_HANDLE ||
         (m_memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0 ||
+        (m_memory_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0 ||
         data == nullptr ||
         size == 0 ||
         size > m_size) {
