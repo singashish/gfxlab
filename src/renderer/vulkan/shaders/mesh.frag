@@ -6,6 +6,11 @@ layout(location = 1) in vec3 v_view_normal;
 layout(set = 0, binding = 0) uniform Frame {
     mat4 view;
     mat4 view_proj;
+    vec4 eye;
+    vec4 forward;
+    vec4 right;
+    vec4 up;
+    vec4 params;
 } frame;
 
 layout(location = 0) out vec4 out_color;

@@ -1,5 +1,7 @@
 #include "renderer/vulkan/vk_renderer.h"
 
+#include <cmath>
+
 namespace gfx {
 namespace {
 
@@ -124,6 +126,14 @@ bool VulkanRenderer::init(void* native_window) {
         return false;
     }
 
+    if (!m_grid.init(m_context.device(),
+                     m_color_format,
+                     m_depth_format,
+                     m_uniforms.layout())) {
+        LOG_ERROR("failed to initialize Vulkan grid renderer");
+        return false;
+    }
+
     return true;
 }
 
@@ -239,6 +249,18 @@ bool VulkanRenderer::recreate_swapchain() {
             return false;
         }
 
+        if (!m_grid.init(m_context.device(),
+                         new_color_format,
+                         new_depth_format,
+                         m_uniforms.layout())) {
+            LOG_ERROR("failed to recreate Vulkan grid pipeline");
+
+            m_frames.destroy();
+            m_depth.destroy();
+            m_swapchain.destroy();
+            return false;
+        }
+
         // Update only after both pipelines have been recreated successfully
         m_color_format = new_color_format;
         m_depth_format = new_depth_format;
@@ -292,8 +314,25 @@ void VulkanRenderer::render(const FrameData& frame) {
 
     const Mat4 view_proj = projection * frame.view;
 
-    if (!m_uniforms.update(frame_index,
-                        FrameUniforms{frame.view, view_proj})) {
+    const float tan_half = std::tan(frame.fov_y * 0.5f);
+
+    const Vec3 right =
+        frame.basis.right * (tan_half * aspect);
+
+    const Vec3 up =
+        frame.basis.up * tan_half;
+
+    const FrameUniforms uniforms{
+        frame.view,
+        view_proj,
+        make_vec4(frame.eye, 0.0f),
+        make_vec4(frame.basis.forward, 0.0f),
+        make_vec4(right, 0.0f),
+        make_vec4(up, 0.0f),
+        Vec4{frame.grid_fade_end, 0.0f, 0.0f, 0.0f}
+    };
+
+    if (!m_uniforms.update(frame_index, uniforms)) {
         LOG_ERROR("failed to update Vulkan frame uniforms");
         return;
     }
@@ -442,16 +481,22 @@ void VulkanRenderer::render(const FrameData& frame) {
 
     vkCmdBeginRendering(slot.cmd, &rendering_info);
 
+    const VkDescriptorSet frame_set =
+        m_uniforms.set(frame_index);
+
     if (frame.draw_list.empty()) {
-        // Preserve the Step 6 depth-test demonstration when no mesh is loaded
         m_triangle.record(slot.cmd, extent);
     } else {
         m_meshes.draw(
             slot.cmd,
             extent,
-            m_uniforms.set(frame_index),
+            frame_set,
             frame.draw_list);
     }
+
+    // Draw after opaque geometry so the depth test hides the grid
+    // behind the model. The grid does not write depth
+    m_grid.draw(slot.cmd, extent, frame_set);
 
     vkCmdEndRendering(slot.cmd);
 

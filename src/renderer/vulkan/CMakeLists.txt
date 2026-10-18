@@ -5,6 +5,8 @@ gfx_compile_shaders(
     shaders/triangle.frag
     shaders/mesh.vert
     shaders/mesh.frag
+    shaders/grid.vert
+    shaders/grid.frag
 )
 
 add_library(gfx_vk STATIC
@@ -12,8 +14,10 @@ add_library(gfx_vk STATIC
     vk_context.cpp
     vk_depth.cpp
     vk_frames.cpp
+    vk_grid.cpp
     vk_memory.cpp
     vk_mesh.cpp
+    vk_pipeline.cpp
     vk_renderer.cpp
     vk_shader.cpp
     vk_swapchain.cpp

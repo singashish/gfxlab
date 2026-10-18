@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/mat4.h"
+#include "core/vec4.h"
 #include "renderer/vulkan/vk_api.h"
 #include "renderer/vulkan/vk_buffer.h"
 
@@ -15,10 +16,16 @@ class VulkanContext;
 struct FrameUniforms {
     Mat4 view;
     Mat4 view_proj;
+
+    Vec4 eye;
+    Vec4 forward;
+    Vec4 right;
+    Vec4 up;
+    Vec4 params;
 };
 
-static_assert(sizeof(FrameUniforms) == 128,
-              "FrameUniforms must contain two 64-byte matrices");
+static_assert(sizeof(FrameUniforms) == 208,
+              "FrameUniforms must be 208 bytes");
 
 class VulkanFrameUniforms {
 public:

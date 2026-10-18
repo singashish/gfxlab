@@ -4,6 +4,7 @@
 #include "renderer/vulkan/vk_context.h"
 #include "renderer/vulkan/vk_depth.h"
 #include "renderer/vulkan/vk_frames.h"
+#include "renderer/vulkan/vk_grid.h"
 #include "renderer/vulkan/vk_mesh.h"
 #include "renderer/vulkan/vk_swapchain.h"
 #include "renderer/vulkan/vk_triangle_demo.h"
@@ -39,6 +40,7 @@ private:
     VulkanFrameUniforms m_uniforms;
     VulkanTriangleDemo m_triangle;
     VulkanMeshRenderer m_meshes;
+    VulkanGridRenderer m_grid;
 
     VkFormat m_color_format = VK_FORMAT_UNDEFINED;
     VkFormat m_depth_format = VK_FORMAT_UNDEFINED;

@@ -440,10 +440,11 @@ bool VulkanContext::create(void* native_window) {
         vkGetPhysicalDeviceFeatures2(candidate, &features2);
 
         if (!features13.dynamicRendering ||
-            !features13.synchronization2) {
+            !features13.synchronization2 ||
+            !features13.shaderDemoteToHelperInvocation) {
             LOG_WARN(
-                "  rejected: dynamicRendering or synchronization2 "
-                "is unavailable");
+                "  rejected: dynamicRendering, synchronization2, "
+                "or shaderDemoteToHelperInvocation is unavailable");
             continue;
         }
 
@@ -508,6 +509,7 @@ bool VulkanContext::create(void* native_window) {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     enabled_features.dynamicRendering = VK_TRUE;
     enabled_features.synchronization2 = VK_TRUE;
+    enabled_features.shaderDemoteToHelperInvocation = VK_TRUE;
 
     const char* device_extensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
