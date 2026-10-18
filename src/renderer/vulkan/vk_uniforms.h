@@ -5,6 +5,7 @@
 #include "renderer/vulkan/vk_api.h"
 #include "renderer/vulkan/vk_buffer.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -26,6 +27,12 @@ struct FrameUniforms {
 
 static_assert(sizeof(FrameUniforms) == 208,
               "FrameUniforms must be 208 bytes");
+
+static_assert(offsetof(FrameUniforms, eye) == 128,
+              "FrameUniforms::eye must start at byte 128");
+
+static_assert(offsetof(FrameUniforms, params) == 192,
+              "FrameUniforms::params must start at byte 192");
 
 class VulkanFrameUniforms {
 public:
