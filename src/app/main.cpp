@@ -14,6 +14,43 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <filesystem>
+
+namespace {
+
+// Finds a model file. Tries the name as given (relative to the current
+// directory, or absolute), then assets/, then assets/local/.
+// Every location tried is appended to 'tried'.
+// Returns the first existing file, or an empty string if none exists.
+std::string resolve_model_path(const std::string& name,
+                               std::vector<std::string>& tried) {
+    namespace fs = std::filesystem;
+
+    const fs::path requested(name);
+
+    std::vector<fs::path> candidates;
+    candidates.push_back(requested);
+
+    // An absolute path is only used as given
+    if (!requested.is_absolute()) {
+        candidates.push_back(fs::path(GFX_ASSETS_DIR) / requested);
+        candidates.push_back(fs::path(GFX_ASSETS_DIR) / "local" / requested);
+    }
+
+    for (const fs::path& candidate : candidates) {
+        tried.push_back(candidate.string());
+
+        std::error_code ec;   // the error_code overload never throws
+
+        if (fs::is_regular_file(candidate, ec)) {
+            return candidate.string();
+        }
+    }
+
+    return {};
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
     LOG_INFO("gfxlab starting...");
@@ -60,8 +97,20 @@ int main(int argc, char** argv) {
 
     if (has_model) {
         std::string error;
+        std::vector<std::string> tried;
+        const std::string resolved = resolve_model_path(model_path, tried);
 
-        if (!gfx::load_obj(model_path, mesh, error)) {
+        if (resolved.empty()) {
+            LOG_ERROR("model not found: %s", model_path);
+            for (const std::string& t : tried) {
+                LOG_ERROR("  tried: %s", t.c_str());
+            }
+            return 1;
+        }
+
+        LOG_INFO("model: %s", resolved.c_str());
+
+        if (!gfx::load_obj(resolved, mesh, error)) {
             LOG_ERROR("failed to load model: %s", error.c_str());
             return 1;
         }
@@ -115,7 +164,7 @@ int main(int argc, char** argv) {
 
     constexpr float kNear = 0.1f;
     constexpr float kFar = 1000.0f;
-    constexpr float kGridFadeFactor = 1.5f;
+    constexpr float kGridFadeFactor = 2.5f;
 
     gfx::OrbitCamera camera;
     constexpr float kFovY = gfx::to_radians(60.0f);

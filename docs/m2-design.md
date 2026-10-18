@@ -223,6 +223,17 @@ The grid has no vertices, so the hardware has no depth for it. The fragment shad
 
 Writing `gl_FragDepth` disables the early depth test for the grid's draw. This is acceptable for one fullscreen pass, and is a known cost to keep in mind.
 
+### Depth bias for geometry lying on the floor
+
+Once models exist (M3), a model's base face sits at exactly z = 0, the same plane as the grid. The face's depth is interpolated from its vertices and the grid's depth is computed per pixel from the ray. The two agree only up to rounding, so with a `LESS` test the winner flips from pixel to pixel, and from below the floor the axes show through the base as a dotted pattern (z-fighting). Blender avoids this by making the grid always lose ties, and the shader does the same:
+
+```glsl
+vec3 p_depth = u_eye + (t * 1.001) * v_ray;
+vec4 clip = u_view_proj * vec4(p_depth, 1.0);
+```
+
+Only the **depth** uses this point, which is 0.1% farther from the eye along the ray. The line coverage, colours and distance fade still use the true hit point `p`. The bias is relative to the distance because the depth buffer's precision gets coarser farther away. At normal distances the shift is a few millimetres and invisible, and geometry on the floor always covers the grid. If speckles remain far away, a larger factor such as `1.003` fixes them.
+
 ## 9. Step 7 — Grid lines, axes, and anti-aliasing
 
 ### Lines from a distance field
@@ -270,13 +281,13 @@ Without a fade, the grid shimmers into a solid band near the horizon. The shader
 
 ```glsl
 float dist = t * length(v_ray);
-c.a *= 1.0 - smoothstep(0.2 * u_fade_end, u_fade_end, dist);
+c.a *= 1.0 - smoothstep(0.4 * u_fade_end, u_fade_end, dist);
 ```
 
-The fade starts gradually at 20% of `u_fade_end` and ends at `u_fade_end`. The app derives it from the zoom so the visible patch of grid scales with the camera:
+The fade starts gradually at 40% of `u_fade_end` and ends at `u_fade_end`. The app derives it from the zoom so the visible patch of grid scales with the camera:
 
 ```cpp
-grid_fade_end = min(1.5 * max(camera.distance, 10.0), 0.9 * far_plane);
+grid_fade_end = min(2.5 * max(camera.distance, 10.0), 0.9 * far_plane);
 ```
 
 The `0.9 * far_plane` cap guarantees the grid is gone before the far plane could cut it off with a visible edge. Early versions used a fade based only on line density, which left a visible horizon line when zoomed out. The distance fade, together with thinner and dimmer lines, is what made the result match Blender.

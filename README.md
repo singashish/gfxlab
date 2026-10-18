@@ -19,14 +19,16 @@ written in this repository, as they are added.
 ## Status
 
 Early development. **M0 (foundation), M1 (window and input), M2 (OpenGL
-renderer and orbit camera) and M3 (models, lighting and object transforms) are
-complete.** The app opens a window with a Blender-style viewport: an infinite,
-anti-aliased floor grid with colored X and Y axes that fades with distance, and
-a mouse-controlled orbit camera. Give it an OBJ file on the command line and the
-model is loaded, lit, placed on the floor, and can be moved, rotated and scaled
-with Blender's G, R and S keys. Without a file it shows two demo triangles. The
-scene keeps rendering while the window is dragged or resized. The next milestone
-is M4: the Vulkan backend.
+renderer and orbit camera), M3 (models, lighting and object transforms) and M4
+(the Vulkan backend) are complete.** The app opens a window with a
+Blender-style viewport: an infinite, anti-aliased floor grid with colored X and
+Y axes that fades with distance, and a mouse-controlled orbit camera. Give it
+an OBJ file on the command line and the model is loaded, lit, placed on the
+floor, and can be moved, rotated and scaled with Blender's G, R and S keys.
+Without a file it shows two demo triangles. The scene keeps rendering while the
+window is dragged or resized. It renders with OpenGL by default, or with Vulkan
+when started with `--backend=vulkan`, and both backends produce the same
+picture. The next milestone is M5: a CUDA software rasterizer.
 
 | Milestone | Goal | State |
 |-----------|------|-------|
@@ -34,7 +36,7 @@ is M4: the Vulkan backend.
 | M1 | Win32 window, input, frame timer | DONE |
 | M2 | OpenGL backend: grid and orbit camera | DONE |
 | M3 | OBJ loading, lit mesh, object transforms | DONE |
-| M4 | Vulkan backend | |
+| M4 | Vulkan backend | DONE |
 | M5 | CUDA rasterizer | |
 | M6 | Polish and backend comparison | |
 | M7 | CUDA ray tracer | |
@@ -54,6 +56,11 @@ is M4: the Vulkan backend.
 - **`gfx_gl`**: an OpenGL 4.6 core context created through WGL, an own function
   loader, shader helpers, the ray-cast grid, lit mesh drawing (`GLMesh`), and
   `GLRenderer`
+- **`gfx_vk`**: the Vulkan 1.3 backend: instance, validation layer and device
+  selection (a discrete GPU is preferred), swapchain with live recreation,
+  frames in flight, dynamic rendering, a depth buffer, staging uploads, per-frame
+  uniform buffers and push constants, a shared pipeline helper, shaders compiled
+  to SPIR-V at build time, and `VulkanRenderer`
 - **`gfx_renderer`**: the backend-neutral `IRenderer` interface, `FrameData`
   with its draw list, and the `create_renderer()` factory
 - **Tests**: seven unit-test programs (math, input, timer, camera, obj,
@@ -61,7 +68,7 @@ is M4: the Vulkan backend.
 - **`gfxlab` app**: opens a 1280x720 window and renders the viewport, loading
   the OBJ file given on the command line. The title bar shows the FPS, the frame
   time and the active edit mode. **Esc** cancels an edit, or quits when none is
-  active
+  active. `--backend=opengl|vulkan` selects the renderer
 - **`assets/`**: test models (a cube with and without normals, Suzanne flat and
   smooth)
 
@@ -76,6 +83,7 @@ is M4: the Vulkan backend.
 | **X** / **Y** / **Z** during an edit | Constrain to that axis; press again to go back to free |
 | Left click during an edit | Confirm |
 | Right click or Esc during an edit | Cancel, restoring the model exactly |
+| **V** | Toggle vsync |
 | Esc (no edit active) | Quit |
 
 ## Documentation
@@ -87,11 +95,13 @@ is M4: the Vulkan backend.
 | [`docs/m1-design.md`](docs/m1-design.md) | Window, input model, frame timer, known limitations, manual test checklist |
 | [`docs/m2-design.md`](docs/m2-design.md) | OpenGL context and loader, shaders, orbit camera, ray-cast grid, renderer interface, rendering during window drag, tests, manual checklist |
 | [`docs/m3-design.md`](docs/m3-design.md) | OBJ parser, mesh upload and lighting, normals, transforms and the normal matrix, interactive G/R/S editing, tests, manual checklist |
+| [`docs/m4-design.md`](docs/m4-design.md) | Vulkan backend: instance and device, swapchain, frames in flight and synchronization, memory and uploads, descriptors and push constants, pipelines, the grid, live resizing, differences from OpenGL, manual checklist |
 
 ## Requirements
 
 - Windows 10 (version 1703 or later) or Windows 11
-- A GPU and driver that support OpenGL 4.6
+- A GPU and driver that support OpenGL 4.6 (and Vulkan 1.3 for the Vulkan
+  backend)
 - MSVC (Visual Studio 2022 Build Tools, no IDE needed), CMake 3.21+, Ninja
 - Optional: [Vulkan SDK](https://vulkan.lunarg.com/) for the Vulkan backend
 - Optional: CUDA Toolkit for the CUDA backend (12.8 or newer for RTX 50 series)
@@ -149,15 +159,19 @@ the executable is at `build/windows-debug/src/app/gfxlab.exe`.
 
 ### With the build scripts
 
-`build.bat`, `build-debug.bat` and `build-release.bat` are convenience scripts
-for quick iteration. Each deletes its build directory, configures with Ninja
-(without a preset, and with `-DGFX_CUDA_ARCHITECTURES=120`), builds, and then
-shows a menu to run `gfxlab.exe`, run `test_math.exe`, or run all tests through
-CTest.
+`build.bat` builds both configurations in one run and then prints ready-to-copy
+commands to run the tests and the app with OpenGL and Vulkan. It configures
+with Ninja (without a preset, and with `-DGFX_CUDA_ARCHITECTURES=120`) and builds
+incrementally; `build.bat clean` deletes both build folders first. It must be
+run from a terminal that has the MSVC environment.
+
+`build-debug.bat` and `build-release.bat` build one configuration each. Each
+deletes its build directory, configures and builds, and then shows a menu to run
+`gfxlab.exe`, run `test_math.exe`, or run all tests through CTest.
 
 | Script | Build type | Output directory |
 |--------|------------|------------------|
-| `build.bat` | none specified | `build/` |
+| `build.bat` | Debug and Release | `builds\build-debug\` and `builds\build-release\` |
 | `build-debug.bat` | Debug | `builds\build-debug\` |
 | `build-release.bat` | Release | `builds\build-release\` |
 
@@ -199,7 +213,7 @@ cmake --preset windows-debug -DGFX_ENABLE_CUDA=OFF
 ### CUDA architecture
 
 The CUDA architecture is chosen with `GFX_CUDA_ARCHITECTURES`. The presets and
-`build.bat` set it to `120` (RTX 50 series). If it is empty, CMake and `nvcc`
+the build scripts set it to `120` (RTX 50 series). If it is empty, CMake and `nvcc`
 use their own default, which is unlikely to match a current GPU, so change it
 to match yours when CUDA is enabled:
 
@@ -223,13 +237,22 @@ Toolkit, delete the cache (or the build directory) and configure again.
 ```
 build\windows-debug\src\app\gfxlab.exe
 build\windows-debug\src\app\gfxlab.exe assets\suzanne_smooth.obj
+build\windows-debug\src\app\gfxlab.exe --backend=vulkan assets\suzanne_smooth.obj
 ```
 
-The second form loads a model. The OBJ loader reads positions, normals and
-faces, and assumes the file is Y-up (the default of most exporters). The app is
-a console program, so the log output is visible in the terminal. It
+The second form loads a model. The name is looked up as given, then in `assets\`,
+then in `assets\local\`, so a bare name such as `suzanne_smooth.obj` works from
+any directory. The OBJ loader reads positions, normals and
+faces, and assumes the file is Y-up (the default of most exporters). The third
+form renders it with Vulkan instead of OpenGL (`--backend=opengl` is the
+default); it needs the Vulkan SDK at build time and a Vulkan 1.3 GPU at run
+time. In a Debug build it also enables the Khronos validation layer and prints
+`Vulkan validation layer enabled`; any `[Vulkan validation]` line in the console
+is a bug to investigate.
+
+The app is a console program, so the log output is visible in the terminal. It
 logs which backends were compiled in, creates the renderer (and prints the GPU
-and OpenGL version), then opens the viewport. The console also reports:
+and API version), then opens the viewport. The console also reports:
 
 - the loaded model (vertex and triangle counts, and whether normals were
   generated)
@@ -242,7 +265,7 @@ See [Controls](#controls) for the mouse and keyboard actions.
 ## Project layout
 
 ```
-cmake/               build helper modules (backend detection)
+cmake/               build helper modules (backend detection, shader compilation)
 docs/                design documents
 src/core/            logging, math, cameras, timer, mesh, OBJ parser,
                      transform and its editor                          -> gfx_core
@@ -250,6 +273,9 @@ src/platform/        window and input                                  -> gfx_pl
   win32/             Win32 implementation of the window
 src/renderer/        IRenderer, FrameData, backend factory             -> gfx_renderer
   opengl/            WGL context, loader, shaders, grid, GLRenderer    -> gfx_gl
+  vulkan/            instance/device, swapchain, frames, memory,
+                     pipelines, mesh, grid, VulkanRenderer             -> gfx_vk
+    shaders/         GLSL sources, compiled to SPIR-V by glslc at build time
 src/app/             application entry point                           -> gfxlab
 assets/              test models (.obj)
 tests/               unit tests                                        -> test_math, test_input, test_timer,
@@ -259,8 +285,9 @@ CMakePresets.json
 build.bat, build-debug.bat, build-release.bat
 ```
 
-Planned, not yet present: `src/renderer/vulkan/`, `src/renderer/cuda/` and
-`shaders/` (the OpenGL shaders are currently embedded in the C++ sources).
+Planned, not yet present: `src/renderer/cuda/`. The OpenGL shaders are embedded
+in the C++ sources, and the Vulkan shaders are separate files that `glslc`
+compiles into `<build>/shaders`.
 
 ## Conventions
 
@@ -269,7 +296,8 @@ Planned, not yet present: `src/renderer/vulkan/`, `src/renderer/cuda/` and
   to the GPU without a transpose
 - The camera looks down -Z in view space, with +X right and +Y up
 - `perspective()` takes a `ClipSpace` argument: OpenGL uses NDC depth in
-  [-1, 1] with Y up, Vulkan uses [0, 1] with Y down
+  [-1, 1] with Y up, Vulkan uses [0, 1] with Y down. Both backends show the
+  same picture, with counter-clockwise triangles front-facing
 - Mouse coordinates are client pixels with the origin at the top left and Y
   pointing down
 - Math functions are marked `GFX_HD` so the same code can later be compiled

@@ -126,7 +126,7 @@ Two OpenGL rules that this code depends on:
 
 ### Command line
 
-`gfxlab.exe path\to\model.obj` loads the model. A load failure logs the error and exits with code 1. With no argument the app behaves as in M2 and draws the demo triangles.
+`gfxlab.exe path\to\model.obj` loads the model. The name is looked up as given (relative to the current directory, or absolute), then in the repository's `assets\` folder, then in `assets\local\`, so `gfxlab.exe cube.obj` works from any directory. The `assets` folder reaches the app as a `GFX_ASSETS_DIR` compile definition, an absolute path into the source tree. The log prints the resolved path (`model: ...`). If no candidate exists, the error lists every location tried and the app exits with code 1. A model that exists but fails to load also logs the error and exits with code 1. With no argument the app behaves as in M2 and draws the demo triangles.
 
 ## 5. Step 3 — Normals and lighting
 

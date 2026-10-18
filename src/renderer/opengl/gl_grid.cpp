@@ -85,16 +85,21 @@ void main() {
     c = layer(c, vec3(0.85, 0.25, 0.30), 0.75 * axis_x);
     c = layer(c, vec3(0.45, 0.78, 0.25), 0.75 * axis_y);
 
-    // Distance fade, relative to the zoom: gradual from 20% of u_fade_end,
+    // Distance fade, relative to the zoom: gradual from 40% of u_fade_end,
     // gone at u_fade_end. This ends well before the horizon.
     float dist = t * length(v_ray);
-    c.a *= 1.0 - smoothstep(0.2 * u_fade_end, u_fade_end, dist);
+    c.a *= 1.0 - smoothstep(0.4 * u_fade_end, u_fade_end, dist);
 
     bool valid =
         t > 0.0 &&
         abs(v_ray.z) > 1e-6;
 
-    vec4 clip = u_view_proj * vec4(p, 1.0);
+    // Depth only: push the grid slightly away from the camera along the
+    // view ray, so geometry lying exactly on the floor always wins.
+    // The bias is relative to distance because depth precision gets
+    // coarser farther away. Colour and fade keep using the true position.
+    vec3 p_depth = u_eye + (t * 1.001) * v_ray;
+    vec4 clip = u_view_proj * vec4(p_depth, 1.0);
 
     valid = valid && abs(clip.w) > 1e-6;
 

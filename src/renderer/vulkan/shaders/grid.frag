@@ -61,16 +61,21 @@ void main() {
     c = layer(c, vec3(0.85, 0.25, 0.30), 0.75 * axis_x);
     c = layer(c, vec3(0.45, 0.78, 0.25), 0.75 * axis_y);
 
-    // Fade gradually from 20% of fade_end to fade_end.
+    // Fade gradually from 40% of fade_end to fade_end.
     float dist = t * length(v_ray);
     c.a *= 1.0 - smoothstep(
-        0.2 * frame.params.x,
+        0.4 * frame.params.x,
         frame.params.x,
         dist);
 
     bool valid = t > 0.0 && abs(v_ray.z) > 1e-6;
 
-    vec4 clip = frame.view_proj * vec4(p, 1.0);
+    // Depth only: push the grid slightly away from the camera along the
+    // view ray, so geometry lying exactly on the floor always wins.
+    // The bias is relative to distance because depth precision gets
+    // coarser farther away. Colour and fade keep using the true position.
+    vec3 p_depth = frame.eye.xyz + (t * 1.001) * v_ray;
+    vec4 clip = frame.view_proj * vec4(p_depth, 1.0);
     valid = valid && abs(clip.w) > 1e-6;
 
     float ndc_z = clip.z / clip.w;
