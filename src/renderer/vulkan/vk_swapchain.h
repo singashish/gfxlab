@@ -17,11 +17,15 @@ public:
     VulkanSwapchain(const VulkanSwapchain&) = delete;
     VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
 
-    bool create(
-        const VulkanContext& ctx,
-        std::uint32_t desired_width,
-        std::uint32_t desired_height,
-        bool vsync);
+    bool create(const VulkanContext& ctx,
+                std::uint32_t desired_width,
+                std::uint32_t desired_height,
+                bool vsync);
+
+    bool recreate(const VulkanContext& ctx,
+                  std::uint32_t desired_width,
+                  std::uint32_t desired_height,
+                  bool vsync);
 
     void destroy();
 
@@ -46,6 +50,12 @@ public:
     }
 
 private:
+    bool create_impl(const VulkanContext& ctx,
+                     std::uint32_t desired_width,
+                     std::uint32_t desired_height,
+                     bool vsync,
+                     VkSwapchainKHR old_swapchain);
+
     VkDevice m_device = VK_NULL_HANDLE;
     VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
 

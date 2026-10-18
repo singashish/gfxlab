@@ -29,6 +29,7 @@ public:
 
 private:
     bool recreate_swapchain();
+    bool init_pipelines(VkFormat color_format, VkFormat depth_format);
 
     // Order is important: dependent GPU resources are destroyed
     // before the context

@@ -158,13 +158,74 @@ void VulkanSwapchain::destroy() {
     m_extent = {0, 0};
 }
 
-bool VulkanSwapchain::create(const VulkanContext& ctx,
-                             std::uint32_t desired_width,
-                             std::uint32_t desired_height,
-                             bool vsync) {
+bool VulkanSwapchain::create(
+    const VulkanContext& ctx,
+    std::uint32_t desired_width,
+    std::uint32_t desired_height,
+    bool vsync) {
 
-    // Safe when called repeatedly to recreate the swapchain
     destroy();
+
+    return create_impl(
+        ctx,
+        desired_width,
+        desired_height,
+        vsync,
+        VK_NULL_HANDLE);
+}
+
+bool VulkanSwapchain::recreate(const VulkanContext& ctx,
+                               std::uint32_t desired_width,
+                               std::uint32_t desired_height,
+                               bool vsync) {
+
+    const VkSwapchainKHR old = m_swapchain;
+    const VkDevice device = m_device;
+
+    // Destroy our image views before retiring the old swapchain
+    for (VkImageView view : m_image_views) {
+        if (view != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, view, nullptr);
+        }
+    }
+
+    m_image_views.clear();
+    m_images.clear();
+
+    // Detach the old handle without destroying it yet
+    m_swapchain = VK_NULL_HANDLE;
+    m_device = VK_NULL_HANDLE;
+    m_format = VK_FORMAT_UNDEFINED;
+    m_color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    m_extent = {0, 0};
+
+    const bool created = create_impl(
+        ctx,
+        desired_width,
+        desired_height,
+        vsync,
+        old);
+
+    // Always retire the old swapchain after the creation attempt
+    if (old != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(device, old, nullptr);
+    }
+
+    if (!created) {
+        // create_impl normally cleans up its own partial state
+        // This also guarantees a null swapchain after any failure
+        destroy();
+        return false;
+    }
+
+    return true;
+}
+
+bool VulkanSwapchain::create_impl(const VulkanContext& ctx,
+                                  std::uint32_t desired_width,
+                                  std::uint32_t desired_height,
+                                  bool vsync,
+                                  VkSwapchainKHR old_swapchain) {
 
     if (ctx.device() == VK_NULL_HANDLE ||
         ctx.physical_device() == VK_NULL_HANDLE ||
@@ -345,7 +406,7 @@ bool VulkanSwapchain::create(const VulkanContext& ctx,
     swapchain_info.compositeAlpha = composite_alpha;
     swapchain_info.presentMode = present_mode;
     swapchain_info.clipped = VK_TRUE;
-    swapchain_info.oldSwapchain = VK_NULL_HANDLE;
+    swapchain_info.oldSwapchain = old_swapchain;
 
     if (!vk_ok(
             vkCreateSwapchainKHR(

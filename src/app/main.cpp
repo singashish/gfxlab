@@ -105,7 +105,9 @@ int main(int argc, char** argv) {
     }
 
     LOG_INFO("renderer: %s", renderer->name());
-    renderer->set_vsync(true);
+
+    bool vsync = true;
+    renderer->set_vsync(vsync);
 
     gfx::FrameTimer timer;
     bool was_minimized = false;
@@ -398,6 +400,13 @@ int main(int argc, char** argv) {
             !was_editing_at_frame_start &&
             !editor.active()) {
             window.request_close();
+        }
+
+        // Toggle vsync with V
+        if (in.key_pressed(gfx::Key::GFX_KEY_V)) {
+            vsync = !vsync;
+            renderer->set_vsync(vsync);
+            LOG_INFO("vsync: %s", vsync ? "on" : "off");
         }
 
         // ------------------------------------------------------------

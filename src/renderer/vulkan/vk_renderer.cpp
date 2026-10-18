@@ -59,6 +59,35 @@ const char* VulkanRenderer::name() const {
     return "Vulkan 1.3";
 }
 
+bool VulkanRenderer::init_pipelines(VkFormat color_format,
+                                    VkFormat depth_format) {
+
+    if (!m_triangle.init(m_context.device(),
+                         color_format,
+                         depth_format)) {
+        LOG_ERROR("failed to initialize Vulkan triangle pipeline");
+        return false;
+    }
+
+    if (!m_meshes.init(m_context.device(),
+                       color_format,
+                       depth_format,
+            m_uniforms.layout())) {
+        LOG_ERROR("failed to initialize Vulkan mesh pipeline");
+        return false;
+    }
+
+    if (!m_grid.init(m_context.device(),
+                     color_format,
+                     depth_format,
+            m_uniforms.layout())) {
+        LOG_ERROR("failed to initialize Vulkan grid pipeline");
+        return false;
+    }
+
+    return true;
+}
+
 bool VulkanRenderer::init(void* native_window) {
     if (native_window == nullptr) {
         LOG_ERROR("Vulkan renderer received a null window");
@@ -111,26 +140,7 @@ bool VulkanRenderer::init(void* native_window) {
         return false;
     }
 
-    if (!m_triangle.init(m_context.device(),
-                         m_color_format,
-                         m_depth_format)) {
-        LOG_ERROR("failed to initialize Vulkan triangle demo pipeline");
-        return false;
-    }
-
-    if (!m_meshes.init(m_context.device(),
-                       m_color_format,
-                       m_depth_format,
-                       m_uniforms.layout())) {
-        LOG_ERROR("failed to initialize Vulkan mesh renderer");
-        return false;
-    }
-
-    if (!m_grid.init(m_context.device(),
-                     m_color_format,
-                     m_depth_format,
-                     m_uniforms.layout())) {
-        LOG_ERROR("failed to initialize Vulkan grid renderer");
+    if (!init_pipelines(m_color_format, m_depth_format)) {
         return false;
     }
 
@@ -174,11 +184,11 @@ bool VulkanRenderer::recreate_swapchain() {
     // A minimized window has no drawable area. Defer recreation until
     // the window has a non-zero extent
     if (width == 0 || height == 0) {
-        LOG_INFO("swapchain recreation deferred: window has zero extent");
+        LOG_DEBUG("swapchain recreation deferred: window has zero extent");
         return false;
     }
 
-    LOG_INFO("recreating Vulkan swapchain");
+    LOG_DEBUG("recreating Vulkan swapchain");
 
     if (!vk_ok(
             vkDeviceWaitIdle(m_context.device()),
@@ -189,13 +199,14 @@ bool VulkanRenderer::recreate_swapchain() {
     // Destroy resources associated with the old swapchain
     m_frames.destroy();
     m_depth.destroy();
-    m_swapchain.destroy();
 
     m_width = width;
     m_height = height;
 
-    // Recreate the swapchain
-    if (!m_swapchain.create(m_context, m_width, m_height, m_vsync)) {
+    // Vulkan receives the old swapchain handle and retires it after
+    // attempting to create the replacement
+    if (!m_swapchain.recreate(
+            m_context, m_width, m_height, m_vsync)) {
         LOG_ERROR("failed to recreate Vulkan swapchain");
         return false;
     }
@@ -226,34 +237,8 @@ bool VulkanRenderer::recreate_swapchain() {
     if (new_color_format != m_color_format ||
         new_depth_format != m_depth_format) {
 
-        if (!m_triangle.init(m_context.device(),
-                             new_color_format,
-                             new_depth_format)) {
-            LOG_ERROR("failed to recreate Vulkan triangle pipeline");
-
-            m_frames.destroy();
-            m_depth.destroy();
-            m_swapchain.destroy();
-            return false;
-        }
-
-        if (!m_meshes.init(m_context.device(),
-                           new_color_format,
-                           new_depth_format,
-                           m_uniforms.layout())) {
-            LOG_ERROR("failed to recreate Vulkan mesh pipeline");
-
-            m_frames.destroy();
-            m_depth.destroy();
-            m_swapchain.destroy();
-            return false;
-        }
-
-        if (!m_grid.init(m_context.device(),
-                         new_color_format,
-                         new_depth_format,
-                         m_uniforms.layout())) {
-            LOG_ERROR("failed to recreate Vulkan grid pipeline");
+        if (!init_pipelines(new_color_format, new_depth_format)) {
+            LOG_ERROR("failed to recreate Vulkan graphics pipelines");
 
             m_frames.destroy();
             m_depth.destroy();
@@ -266,19 +251,26 @@ bool VulkanRenderer::recreate_swapchain() {
         m_depth_format = new_depth_format;
     }
 
-    LOG_INFO("Vulkan swapchain recreated successfully");
+    LOG_DEBUG("Vulkan swapchain recreated successfully");
     return true;
 }
 
 
 void VulkanRenderer::render(const FrameData& frame) {
-    // Minimal handling for a missing swapchain
-    if (m_swapchain.swapchain() == VK_NULL_HANDLE) {
-        if (frame.width > 0 && frame.height > 0) {
-            (void)recreate_swapchain();
-        }
+    // A minimized window has no drawable area. Stay silent and idle
+    if (frame.width == 0 || frame.height == 0) {
+        return;
+    }
 
-        if (m_swapchain.swapchain() == VK_NULL_HANDLE) {
+    const VkExtent2D current_extent = m_swapchain.extent();
+
+    if (m_swapchain.swapchain() == VK_NULL_HANDLE ||
+        frame.width < 0 || frame.height < 0 ||
+        static_cast<std::uint32_t>(frame.width) != current_extent.width ||
+        static_cast<std::uint32_t>(frame.height) != current_extent.height) {
+        // Retry on each valid frame after failure so a transient surface
+        // problem can recover without requiring another resize event
+        if (!recreate_swapchain()) {
             return;
         }
     }
