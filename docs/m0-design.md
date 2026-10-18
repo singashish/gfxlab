@@ -217,8 +217,8 @@ Presets pin the build configuration in the repository instead of in VS Code's st
 
 | Preset | Build directory | Purpose |
 |---|---|---|
-| `windows-debug` | `build/windows-debug` | Stepping through code |
-| `windows-release` | `build/windows-release` | Honest performance numbers |
+| `windows-debug` | `builds/build-debug` | Stepping through code |
+| `windows-release` | `builds/build-release` | Honest performance numbers |
 
 - **Two configure presets, not one.** Ninja is a single-configuration generator, so the build type is fixed at configure time and each type needs its own build directory.
 - Both inherit from a hidden `windows-base` preset that sets the generator, `cl.exe`, the `compile_commands.json` export, the CUDA architecture (`GFX_CUDA_ARCHITECTURES=120`, added in Step 7) and `"strategy": "external"` for the x64 toolset. The external strategy makes CMake Tools set up the MSVC environment itself.
@@ -260,7 +260,7 @@ If that variable is empty, nothing is set and CMake and `nvcc` pick their own de
 | RTX 40 series | `89` |
 | RTX 50 series (Blackwell) | `120` |
 
-A list such as `"75;86;89;120"` builds for several. The presets, `build.bat` and the later `build-debug.bat` and `build-release.bat` all set `120`, so change it everywhere if the GPU is different.
+A list such as `"75;86;89;120"` builds for several. The presets and `build.bat` both set `120`, so change it everywhere if the GPU is different.
 
 ### Shared configuration
 
@@ -268,7 +268,7 @@ Detected backends define `GFX_HAS_OPENGL`, `GFX_HAS_VULKAN` and `GFX_HAS_CUDA` o
 
 ### Build scripts
 
-`build.bat` is a convenience script for quick iteration. It deletes `build/`, configures with Ninja (without a preset, so no explicit build type) and the CUDA architecture flag, builds, and offers a menu to run `gfxlab.exe`, run `test_math.exe`, or run all tests through CTest. Its output goes to `build/src/app/` and `build/tests/`, unlike the preset builds. `build-debug.bat` and `build-release.bat` were added during M2 as the same idea with an explicit build type, writing to `builds\build-debug\` and `builds\build-release\`.
+`build.bat` builds the Debug and Release configurations in one run (Ninja, `-DGFX_CUDA_ARCHITECTURES=120`) and prints the commands to run the tests and the app. It writes to `builds\build-debug\` and `builds\build-release\`, the same folders the CMake presets use, so the presets and the script share one build tree per configuration.
 
 ## 11. Tests and correctness checks
 
@@ -296,7 +296,7 @@ From a clean checkout:
 1. `cmake --preset windows-debug` selects Ninja and `cl.exe`, applies `/W4 /permissive- /utf-8` and the Windows definitions, runs backend detection and prints the backend summary.
 2. `cmake --build --preset debug` builds `gfx_core`, the tests and the app.
 3. `ctest --preset debug` runs the registered tests.
-4. `build\windows-debug\src\app\gfxlab.exe` starts the app, which logs which backends were compiled in.
+4. `builds\build-debug\src\app\gfxlab.exe` starts the app, which logs which backends were compiled in.
 
 ## 14. Known scope and non-goals
 

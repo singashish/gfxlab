@@ -6,7 +6,6 @@
       "name": "windows-base",
       "hidden": true,
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
       "architecture": { "value": "x64", "strategy": "external" },
       "cacheVariables": {
         "CMAKE_CXX_COMPILER": "cl.exe",
@@ -19,12 +18,14 @@
       "name": "windows-debug",
       "displayName": "Debug",
       "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/builds/build-debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "windows-release",
       "displayName": "Release",
       "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/builds/build-release",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     }
   ],

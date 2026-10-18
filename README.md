@@ -154,10 +154,11 @@ ctest --preset debug
 ```
 
 Use `windows-release` / `release` for an optimized build. Each preset builds
-into its own directory (`build/windows-debug`, `build/windows-release`), and
-the executable is at `build/windows-debug/src/app/gfxlab.exe`.
+into its own directory (`builds/build-debug`, `builds/build-release`, the same
+folders `build.bat` uses), and the executable is at
+`builds/build-debug/src/app/gfxlab.exe`.
 
-### With the build scripts
+### With build.bat
 
 `build.bat` builds both configurations in one run and then prints ready-to-copy
 commands to run the tests and the app with OpenGL and Vulkan. It configures
@@ -165,18 +166,12 @@ with Ninja (without a preset, and with `-DGFX_CUDA_ARCHITECTURES=120`) and build
 incrementally; `build.bat clean` deletes both build folders first. It must be
 run from a terminal that has the MSVC environment.
 
-`build-debug.bat` and `build-release.bat` build one configuration each. Each
-deletes its build directory, configures and builds, and then shows a menu to run
-`gfxlab.exe`, run `test_math.exe`, or run all tests through CTest.
-
 | Script | Build type | Output directory |
 |--------|------------|------------------|
 | `build.bat` | Debug and Release | `builds\build-debug\` and `builds\build-release\` |
-| `build-debug.bat` | Debug | `builds\build-debug\` |
-| `build-release.bat` | Release | `builds\build-release\` |
 
 The executable is in `src\app\` and the tests are in `tests\` under the output
-directory. Edit the architecture line in the scripts (and in
+directory. Edit the architecture line in `build.bat` (and in
 `CMakePresets.json`) if your GPU is not an RTX 50 series card.
 
 ### Core and tests only (any platform)
@@ -235,9 +230,9 @@ Toolkit, delete the cache (or the build directory) and configure again.
 ## Running
 
 ```
-build\windows-debug\src\app\gfxlab.exe
-build\windows-debug\src\app\gfxlab.exe assets\suzanne_smooth.obj
-build\windows-debug\src\app\gfxlab.exe --backend=vulkan assets\suzanne_smooth.obj
+builds\build-debug\src\app\gfxlab.exe
+builds\build-debug\src\app\gfxlab.exe assets\suzanne_smooth.obj
+builds\build-debug\src\app\gfxlab.exe --backend=vulkan assets\suzanne_smooth.obj
 ```
 
 The second form loads a model. The name is looked up as given, then in `assets\`,
@@ -282,7 +277,7 @@ tests/               unit tests                                        -> test_m
                                                                           test_camera, test_obj, test_transform,
                                                                           test_transform_edit
 CMakePresets.json
-build.bat, build-debug.bat, build-release.bat
+build.bat
 ```
 
 Planned, not yet present: `src/renderer/cuda/`. The OpenGL shaders are embedded
