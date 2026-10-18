@@ -432,7 +432,7 @@ void VulkanRenderer::render(const FrameData& frame) {
     rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
 
     rendering_info.renderArea.offset = {0, 0};
-    rendering_info.renderArea.extent = m_swapchain.extent();
+    rendering_info.renderArea.extent = extent;
 
     rendering_info.layerCount = 1;
 

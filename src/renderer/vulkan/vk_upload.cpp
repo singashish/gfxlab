@@ -34,7 +34,7 @@ bool VulkanUploader::init(const VulkanContext& ctx) {
         return false;
     }
 
-    // Start signaled so the first upload can wait on the fence
+    // Start unsignaled; each upload submits work before waiting on the fence
     VkFenceCreateInfo fence_info{};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 

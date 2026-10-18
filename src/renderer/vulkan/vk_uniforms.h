@@ -1,6 +1,6 @@
 #pragma once
 
-#include "renderer/renderer.h"
+#include "core/mat4.h"
 #include "renderer/vulkan/vk_api.h"
 #include "renderer/vulkan/vk_buffer.h"
 
