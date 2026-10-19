@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cuda_runtime.h>
+#include <cstdint>
+
 #include "renderer/renderer.h"
 #include "renderer/opengl/gl_context.h"
 #include "renderer/opengl/gl_presenter.h"
@@ -27,6 +30,7 @@ public:
 
 private:
     bool resize_targets(int width, int height);
+    bool ensure_scratch_capacity(std::uint32_t vertex_count);
 
     // Declaration order is intentional
     GLContext m_context;
@@ -35,6 +39,11 @@ private:
     CudaMeshStore m_meshes;
 
     void* m_color = nullptr;
+    void* m_visibility = nullptr;
+
+    float4* m_scratch = nullptr;
+    std::uint32_t m_scratch_capacity = 0;
+
     int m_width = 0;
     int m_height = 0;
 };

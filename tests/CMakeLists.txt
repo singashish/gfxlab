@@ -28,3 +28,7 @@ add_test(NAME transform COMMAND test_transform)
 add_executable(test_transform_edit test_transform_edit.cpp)
 target_link_libraries(test_transform_edit PRIVATE gfx_core)
 add_test(NAME transform_edit COMMAND test_transform_edit)
+
+add_executable(test_raster test_raster.cpp)
+target_link_libraries(test_raster PRIVATE gfx_core)
+add_test(NAME raster COMMAND test_raster)

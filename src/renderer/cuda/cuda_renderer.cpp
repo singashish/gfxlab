@@ -6,11 +6,33 @@
 #include "renderer/opengl/gl_api.h"
 #include "core/log.h"
 
+#include <limits>
+
 namespace gfx {
 
 CudaRenderer::~CudaRenderer() {
+    if (m_scratch != nullptr) {
+        (void)cuda_ok(
+            cudaFree(m_scratch),
+            "cudaFree vertex scratch buffer"
+        );
+        m_scratch = nullptr;
+        m_scratch_capacity = 0;
+    }
+
+    if (m_visibility != nullptr) {
+        (void)cuda_ok(
+            cudaFree(m_visibility),
+            "cudaFree visibility buffer"
+        );
+        m_visibility = nullptr;
+    }
+
     if (m_color != nullptr) {
-        (void)cuda_ok(cudaFree(m_color), "cudaFree renderer color buffer");
+        (void)cuda_ok(
+            cudaFree(m_color),
+            "cudaFree renderer colour buffer"
+        );
         m_color = nullptr;
     }
 
@@ -44,48 +66,104 @@ bool CudaRenderer::resize_targets(int width, int height) {
         return false;
     }
 
-    // 1. Release CUDA's registration of the old texture
+    // Release the old registration before changing the texture
     m_image.unregister();
 
-    // 2. Create the OpenGL texture at the new dimensions
     if (!m_presenter.resize(width, height)) {
         return false;
     }
 
-    // 3. Register the new texture with CUDA
     if (!m_image.register_texture(m_presenter.texture())) {
         return false;
     }
 
-    // 4. Release the previous linear CUDA pixel buffer
+    // Release the old colour buffer
     if (m_color != nullptr) {
-        if (!cuda_ok(
-                cudaFree(m_color),
-                "cudaFree old renderer color buffer")) {
+        if (!cuda_ok(cudaFree(m_color), "cudaFree old colour buffer")) {
             return false;
         }
-
         m_color = nullptr;
     }
 
-    // 5. Allocate the new pixel buffer
-    const std::size_t pixel_count =
+    // Release the old visibility buffer
+    if (m_visibility != nullptr) {
+        if (!cuda_ok(
+                cudaFree(m_visibility),
+                "cudaFree old visibility buffer")) {
+            return false;
+        }
+        m_visibility = nullptr;
+    }
+
+    const std::size_t pixels =
         static_cast<std::size_t>(width) *
         static_cast<std::size_t>(height);
 
     if (!cuda_ok(
-            cudaMalloc(
-                reinterpret_cast<void**>(&m_color),
-                pixel_count * sizeof(uchar4)),
-            "cudaMalloc renderer color buffer")) {
+            cudaMalloc(&m_color, pixels * sizeof(uchar4)),
+            "cudaMalloc colour buffer")) {
         m_color = nullptr;
+        return false;
+    }
+
+    if (!cuda_ok(
+            cudaMalloc(&m_visibility, pixels * sizeof(std::uint64_t)),
+            "cudaMalloc visibility buffer")) {
+        (void)cuda_ok(
+            cudaFree(m_color),
+            "cudaFree colour buffer after visibility allocation failure"
+        );
+        m_color = nullptr;
+        m_visibility = nullptr;
         return false;
     }
 
     m_width = width;
     m_height = height;
 
-    LOG_INFO("CUDA render targets resized: %dx%d", width, height);
+    LOG_INFO(
+        "CUDA render targets resized: %dx%d",
+        width, height
+    );
+
+    return true;
+}
+
+bool CudaRenderer::ensure_scratch_capacity(
+                        std::uint32_t vertex_count) {
+    if (vertex_count == 0) {
+        return false;
+    }
+
+    if (m_scratch != nullptr &&
+        m_scratch_capacity >= vertex_count) {
+        return true;
+    }
+
+    if (m_scratch != nullptr) {
+        if (!cuda_ok(
+                cudaFree(m_scratch),
+                "cudaFree old vertex scratch buffer")) {
+            return false;
+        }
+
+        m_scratch = nullptr;
+        m_scratch_capacity = 0;
+    }
+
+    const std::size_t bytes =
+        static_cast<std::size_t>(vertex_count) * sizeof(float4);
+
+    if (!cuda_ok(
+            cudaMalloc(
+                reinterpret_cast<void**>(&m_scratch),
+                bytes),
+            "cudaMalloc vertex scratch buffer")) {
+        m_scratch = nullptr;
+        return false;
+    }
+
+    m_scratch_capacity = vertex_count;
     return true;
 }
 
@@ -102,15 +180,20 @@ void CudaRenderer::render(const FrameData& frame) {
     }
 
     auto* color = static_cast<uchar4*>(m_color);
+    auto* visibility = static_cast<std::uint64_t*>(m_visibility);
 
-    // 1. Clear the entire image to the familiar dark background
+    // 1. Clear colour and visibility
     const uchar4 background = make_uchar4(26, 28, 33, 255);
 
     if (!cuda_clear(color, m_width, m_height, background)) {
         return;
     }
 
-    // 2. Build the same camera projection as GLRenderer
+    if (!cuda_clear_visibility(visibility, m_width, m_height)) {
+        return;
+    }
+
+    // 2. Build the same projection used by GLRenderer
     const float aspect =
         static_cast<float>(frame.width) /
         static_cast<float>(frame.height);
@@ -125,7 +208,9 @@ void CudaRenderer::render(const FrameData& frame) {
 
     const Mat4 view_proj = projection * frame.view;
 
-    // 3. Transform and draw each mesh instance
+    // 3. Transform vertices and rasterize each draw item
+    std::uint32_t base = 0;
+
     for (const DrawItem& item : frame.draw_list) {
         const DeviceMesh* mesh = m_meshes.find(item.mesh);
 
@@ -133,28 +218,66 @@ void CudaRenderer::render(const FrameData& frame) {
             continue;
         }
 
+        const std::uint32_t triangle_count = mesh->index_count / 3;
+
+        if (triangle_count >
+            std::numeric_limits<std::uint32_t>::max() - base) {
+            LOG_ERROR("CUDA rasterizer: triangle ID range overflow");
+            return;
+        }
+
+        if (!ensure_scratch_capacity(mesh->vertex_count)) {
+            return;
+        }
+
         const Mat4 mvp = view_proj * item.model;
 
-        if (!cuda_draw_points(
-                color,
+        if (!cuda_transform_vertices(
+                *mesh,
+                mvp,
+                m_width,
+                m_height,
+                m_scratch)) {
+            return;
+        }
+
+        if (!cuda_rasterize_triangles(
+                visibility,
                 m_width,
                 m_height,
                 *mesh,
-                mvp)) {
+                m_scratch,
+                base)) {
             return;
         }
+
+        base += triangle_count;
     }
 
-    // 4. Copy the CUDA image into the OpenGL texture
+    // 4. Convert the winning triangle IDs into diagnostic colours
+    if (!cuda_resolve_ids(
+            color, visibility, m_width, m_height)) {
+        return;
+    }
+
+#ifndef NDEBUG
+    // Catch asynchronous kernel execution errors once per frame
+    if (!cuda_ok(
+            cudaDeviceSynchronize(),
+            "CUDA frame execution")) {
+        return;
+    }
+#endif
+
+    // 5. Present through the existing CUDA/OpenGL interop path
     if (!m_image.copy_from_device(
-            m_color,
+            color,
             m_width,
             m_height,
             static_cast<std::size_t>(m_width) * sizeof(uchar4))) {
         return;
     }
 
-    // 5. Present the completed image
     m_presenter.draw(m_width, m_height);
     m_context.swap_buffers();
 }
