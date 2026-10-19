@@ -17,6 +17,7 @@ namespace gfx {
 namespace {
 
 constexpr bool kDebugTriangleIds = false;
+constexpr bool kProfileStages = true;
 
 } // namespace
 
@@ -55,6 +56,12 @@ bool CudaRenderer::init(void* native_window) {
     // The OpenGL context must be current before querying interop devices
     if (!cuda_select_gl_device()) {
         return false;
+    }
+
+    if constexpr (kProfileStages) {
+        if (!m_stage_timer.init()) {
+            return false;
+        }
     }
 
     if (!m_presenter.init()) {
@@ -190,7 +197,12 @@ void CudaRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 1. Clear colour and visibility
+    // Profile marker 0: start of measured GPU work
+    if constexpr (kProfileStages) {
+        m_stage_timer.mark(0);
+    }
+
+    // Pass 1: clear colour and visibility
     const uchar4 background = make_uchar4(26, 28, 33, 255);
 
     if (!cuda_clear(color, m_width, m_height, background) ||
@@ -198,7 +210,12 @@ void CudaRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // 2. Build the same projection used by GLRenderer
+    // Profile marker 1: both clears have been submitted
+    if constexpr (kProfileStages) {
+        m_stage_timer.mark(1);
+    }
+
+    // Pass 2: build the same projection used by GLRenderer
     const float aspect =
         static_cast<float>(frame.width) /
         static_cast<float>(frame.height);
@@ -218,7 +235,7 @@ void CudaRenderer::render(const FrameData& frame) {
         std::uint32_t triangle_base;
     };
 
-    // Pass 1: calculate total vertex capacity and validate triangle IDs
+    // Calculate total vertex capacity and validate triangle IDs
     std::size_t total_vertices = 0;
     std::uint64_t total_triangles = 0;
 
@@ -277,8 +294,7 @@ void CudaRenderer::render(const FrameData& frame) {
     std::vector<DrawRecord> records;
     records.reserve(frame.draw_list.size());
 
-    // Pass 2: transform and rasterize every draw item
-    // Each mesh retains its own projected-vertex slice
+    // Transform and rasterize every draw item
     std::size_t vertex_offset = 0;
     std::uint32_t triangle_base = 0;
 
@@ -339,7 +355,12 @@ void CudaRenderer::render(const FrameData& frame) {
         triangle_base += mesh->index_count / 3;
     }
 
-    // Pass 3: shade pixels after all items have populated visibility
+    // Profile marker 2: transform and rasterize have been submitted
+    if constexpr (kProfileStages) {
+        m_stage_timer.mark(2);
+    }
+
+    // Pass 3: shade after all items have populated visibility
     if constexpr (kDebugTriangleIds) {
         if (!cuda_resolve_ids(
                 color, visibility, m_width, m_height)) {
@@ -365,6 +386,11 @@ void CudaRenderer::render(const FrameData& frame) {
         }
     }
 
+    // Profile marker 3: shading or debug-ID resolution has been submitted
+    if constexpr (kProfileStages) {
+        m_stage_timer.mark(3);
+    }
+
     // Pass 4: draw the floor grid over the shaded scene
     const float tan_half = std::tan(frame.fov_y * 0.5f);
 
@@ -384,6 +410,13 @@ void CudaRenderer::render(const FrameData& frame) {
             m_height,
             grid_params)) {
         return;
+    }
+
+    // Profile marker 4: grid has been submitted
+    // end_frame waits for this event and reports the stage timings
+    if constexpr (kProfileStages) {
+        m_stage_timer.mark(4);
+        m_stage_timer.end_frame();
     }
 
 #ifndef NDEBUG

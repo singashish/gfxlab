@@ -9,6 +9,7 @@
 #include "renderer/cuda/cuda_gl_image.h"
 #include "renderer/cuda/cuda_mesh.h"
 #include "renderer/cuda/cuda_raster.h"
+#include "renderer/cuda/cuda_timer.h"
 
 namespace gfx {
 
@@ -38,6 +39,8 @@ private:
     GLPresenter m_presenter;
     CudaGLImage m_image;
     CudaMeshStore m_meshes;
+
+    CudaStageTimer m_stage_timer;
 
     void* m_color = nullptr;
     void* m_visibility = nullptr;

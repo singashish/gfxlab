@@ -16,6 +16,9 @@ namespace {
 constexpr unsigned int kThreads = 256;
 constexpr int kTile = 16;
 constexpr float kMaxScreenCoordinate = 16384.0f;
+constexpr long long kLargeTriangleArea = 1024;
+constexpr unsigned int kLargeSlices = 32;
+constexpr unsigned int kLargeThreads = 128;
 
 bool check_launch(const char* operation) {
     return cuda_ok(cudaGetLastError(), operation);
@@ -69,6 +72,91 @@ __device__ __forceinline__ bool setup_triangle(
         vertices[i2].screen.x, vertices[i2].screen.y);
 
     return result.valid;
+}
+
+__device__ __forceinline__ bool triangle_pixel_bounds(
+                const RasterTriangleSetup& s,
+                int width,
+                int height,
+                int& min_x,
+                int& max_x,
+                int& min_y,
+                int& max_y) {
+
+    const int min_sx = min(s.sx[0], min(s.sx[1], s.sx[2]));
+    const int max_sx = max(s.sx[0], max(s.sx[1], s.sx[2]));
+    const int min_sy = min(s.sy[0], min(s.sy[1], s.sy[2]));
+    const int max_sy = max(s.sy[0], max(s.sy[1], s.sy[2]));
+
+    min_x = clamp_int(
+        static_cast<int>(floorf(min_sx / 16.0f)),
+        0, width - 1);
+
+    max_x = clamp_int(
+        static_cast<int>(ceilf(max_sx / 16.0f)),
+        0, width - 1);
+
+    min_y = clamp_int(
+        static_cast<int>(floorf(min_sy / 16.0f)),
+        0, height - 1);
+
+    max_y = clamp_int(
+        static_cast<int>(ceilf(max_sy / 16.0f)),
+        0, height - 1);
+
+    return min_x <= max_x && min_y <= max_y;
+}
+
+__device__ __forceinline__ void rasterize_pixel(
+                unsigned long long* visibility,
+                int width,
+                int x,
+                int y,
+                const RasterTriangleSetup& s,
+                const float4* v,
+                float inv_area,
+                std::uint32_t triangle_base,
+                unsigned int tri) {
+
+    const int px = x * 16 + 8;
+    const int py = y * 16 + 8;
+
+    const long long e0 = edge_function(
+        s.sx[1], s.sy[1], s.sx[2], s.sy[2], px, py);
+
+    const long long e1 = edge_function(
+        s.sx[2], s.sy[2], s.sx[0], s.sy[0], px, py);
+
+    const long long e2 = edge_function(
+        s.sx[0], s.sy[0], s.sx[1], s.sy[1], px, py);
+
+    if (!raster_triangle_covers_sample(s, px, py)) {
+        return;
+    }
+
+    const float b0 = static_cast<float>(e0) * inv_area;
+    const float b1 = static_cast<float>(e1) * inv_area;
+    const float b2 = static_cast<float>(e2) * inv_area;
+
+    const float z =
+        b0 * v[0].z +
+        b1 * v[1].z +
+        b2 * v[2].z;
+
+    if (!isfinite(z) || z < 0.0f || z > 1.0f) {
+        return;
+    }
+
+    const unsigned int depth_bits = __float_as_uint(z);
+    const unsigned int id = triangle_base + tri + 1;
+
+    const unsigned long long packed =
+        (static_cast<unsigned long long>(depth_bits) << 32) |
+        static_cast<unsigned long long>(id);
+
+    atomicMin(
+        &visibility[pixel_index(x, y, width)],
+        packed);
 }
 
 __global__ void clear_kernel(
@@ -164,7 +252,9 @@ __global__ void rasterize_triangles_kernel(
                 const ProjectedVertex* vertices,
                 std::uint32_t triangle_base) {
 
-    const unsigned int tri = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int tri =
+        blockIdx.x * blockDim.x + threadIdx.x;
+
     const unsigned int triangle_count = mesh.index_count / 3;
 
     if (tri >= triangle_count || tri >= UINT_MAX - triangle_base) {
@@ -181,71 +271,110 @@ __global__ void rasterize_triangles_kernel(
         return;
     }
 
+    int min_x, max_x, min_y, max_y;
+
+    if (!triangle_pixel_bounds(
+            s, width, height,
+            min_x, max_x, min_y, max_y)) {
+        return;
+    }
+
+    const long long area_px =
+        static_cast<long long>(max_x - min_x + 1) *
+        static_cast<long long>(max_y - min_y + 1);
+
+    // Large triangles are handled by the sliced kernel
+    if (area_px > kLargeTriangleArea) {
+        return;
+    }
+
     const std::uint32_t indices[3] = {i0, i1, i2};
 
-    float4 v[3] = {
+    const float4 v[3] = {
         vertices[indices[s.order[0]]].screen,
         vertices[indices[s.order[1]]].screen,
         vertices[indices[s.order[2]]].screen
     };
 
-    const int min_sx = min(s.sx[0], min(s.sx[1], s.sx[2]));
-    const int max_sx = max(s.sx[0], max(s.sx[1], s.sx[2]));
-    const int min_sy = min(s.sy[0], min(s.sy[1], s.sy[2]));
-    const int max_sy = max(s.sy[0], max(s.sy[1], s.sy[2]));
+    const float inv_area =
+        1.0f / static_cast<float>(s.area);
 
-    int min_x = clamp_int(
-        static_cast<int>(floorf(min_sx / 16.0f)), 0, width - 1);
-    int max_x = clamp_int(
-        static_cast<int>(ceilf(max_sx / 16.0f)), 0, width - 1);
-    int min_y = clamp_int(
-        static_cast<int>(floorf(min_sy / 16.0f)), 0, height - 1);
-    int max_y = clamp_int(
-        static_cast<int>(ceilf(max_sy / 16.0f)), 0, height - 1);
+    for (int y = min_y; y <= max_y; ++y) {
+        for (int x = min_x; x <= max_x; ++x) {
+            rasterize_pixel(
+                visibility, width, x, y, s, v,
+                inv_area, triangle_base, tri);
+        }
+    }
+}
 
-    if (min_x > max_x || min_y > max_y) {
+__global__ void rasterize_large_triangles_kernel(
+                unsigned long long* visibility,
+                int width,
+                int height,
+                DeviceMesh mesh,
+                const ProjectedVertex* vertices,
+                std::uint32_t triangle_base) {
+
+    // Each block handles one triangle and one row slice
+    const unsigned int tri = blockIdx.x;
+    const unsigned int triangle_count = mesh.index_count / 3;
+
+    if (tri >= triangle_count || tri >= UINT_MAX - triangle_base) {
         return;
     }
 
-    const float inv_area = 1.0f / static_cast<float>(s.area);
+    const std::uint32_t i0 = mesh.indices[tri * 3 + 0];
+    const std::uint32_t i1 = mesh.indices[tri * 3 + 1];
+    const std::uint32_t i2 = mesh.indices[tri * 3 + 2];
 
-    for (int y = min_y; y <= max_y; ++y) {
-        const int py = y * 16 + 8;
+    RasterTriangleSetup s{};
 
-        for (int x = min_x; x <= max_x; ++x) {
-            const int px = x * 16 + 8;
+    if (!setup_triangle(vertices, i0, i1, i2, s)) {
+        return;
+    }
 
-            const long long e0 = edge_function(
-                s.sx[1], s.sy[1], s.sx[2], s.sy[2], px, py);
-            const long long e1 = edge_function(
-                s.sx[2], s.sy[2], s.sx[0], s.sy[0], px, py);
-            const long long e2 = edge_function(
-                s.sx[0], s.sy[0], s.sx[1], s.sy[1], px, py);
+    int min_x, max_x, min_y, max_y;
 
-            if (!raster_triangle_covers_sample(s, px, py)) {
-                continue;
-            }
+    if (!triangle_pixel_bounds(
+            s, width, height,
+            min_x, max_x, min_y, max_y)) {
+        return;
+    }
 
-            const float b0 = static_cast<float>(e0) * inv_area;
-            const float b1 = static_cast<float>(e1) * inv_area;
-            const float b2 = static_cast<float>(e2) * inv_area;
+    // Keep this calculation identical to the small kernel
+    const long long area_px =
+        static_cast<long long>(max_x - min_x + 1) *
+        static_cast<long long>(max_y - min_y + 1);
 
-            const float z =
-                b0 * v[0].z + b1 * v[1].z + b2 * v[2].z;
+    if (area_px <= kLargeTriangleArea) {
+        return;
+    }
 
-            if (!isfinite(z) || z < 0.0f || z > 1.0f) {
-                continue;
-            }
+    const std::uint32_t indices[3] = {i0, i1, i2};
 
-            const unsigned int depth_bits = __float_as_uint(z);
-            const unsigned int id = triangle_base + tri + 1;
+    const float4 v[3] = {
+        vertices[indices[s.order[0]]].screen,
+        vertices[indices[s.order[1]]].screen,
+        vertices[indices[s.order[2]]].screen
+    };
 
-            const unsigned long long packed =
-                (static_cast<unsigned long long>(depth_bits) << 32) |
-                static_cast<unsigned long long>(id);
+    const float inv_area =
+        1.0f / static_cast<float>(s.area);
 
-            atomicMin(
-                &visibility[pixel_index(x, y, width)], packed);
+    // Each block owns a different subset of rows
+    for (int y = min_y + static_cast<int>(blockIdx.y);
+         y <= max_y;
+         y += static_cast<int>(gridDim.y)) {
+
+        // Threads within the block share each row
+        for (int x = min_x + static_cast<int>(threadIdx.x);
+             x <= max_x;
+             x += static_cast<int>(blockDim.x)) {
+
+            rasterize_pixel(
+                visibility, width, x, y, s, v,
+                inv_area, triangle_base, tri);
         }
     }
 }
@@ -797,14 +926,28 @@ bool cuda_rasterize_triangles(
     }
 
     const unsigned int triangle_count = mesh.index_count / 3;
-    const unsigned int blocks =
+
+    // Pass 1: small triangles, one thread per triangle
+    const unsigned int small_blocks =
         (triangle_count + kThreads - 1) / kThreads;
 
-    rasterize_triangles_kernel<<<blocks, kThreads>>>(
+    rasterize_triangles_kernel<<<small_blocks, kThreads>>>(
         reinterpret_cast<unsigned long long*>(visibility),
         width, height, mesh, vertices, triangle_base);
 
-    return check_launch("CUDA triangle rasterizer kernel launch");
+    if (!check_launch("CUDA small-triangle rasterizer launch")) {
+        return false;
+    }
+
+    // Pass 2: large triangles, many threads per triangle
+    const dim3 large_blocks(triangle_count, kLargeSlices);
+
+    rasterize_large_triangles_kernel<<<
+        large_blocks, kLargeThreads>>>(
+            reinterpret_cast<unsigned long long*>(visibility),
+            width, height, mesh, vertices, triangle_base);
+
+    return check_launch("CUDA large-triangle rasterizer launch");
 }
 
 bool cuda_shade_item(

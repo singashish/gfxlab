@@ -20,6 +20,7 @@ if(TARGET gfx_gl)
         cuda_renderer.cpp
         cuda_mesh.cpp
         cuda_raster.cu
+        cuda_timer.cpp
     )
 
     target_link_libraries(gfx_cuda PUBLIC
