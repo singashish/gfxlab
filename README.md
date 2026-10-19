@@ -10,7 +10,8 @@ API can be compared side by side:
 
 - **OpenGL 4.6**
 - **Vulkan 1.3+**
-- **CUDA**, as a software rasterizer (CUDA ray tracing may follow later)
+- **CUDA**, as a software rasterizer written from scratch as compute kernels
+  (CUDA ray tracing may follow later)
 
 The only external dependencies are the graphics APIs themselves. Windowing,
 input, math, logging, the OpenGL function loader and the model parser are all
@@ -19,16 +20,18 @@ written in this repository, as they are added.
 ## Status
 
 Early development. **M0 (foundation), M1 (window and input), M2 (OpenGL
-renderer and orbit camera), M3 (models, lighting and object transforms) and M4
-(the Vulkan backend) are complete.** The app opens a window with a
+renderer and orbit camera), M3 (models, lighting and object transforms), M4
+(the Vulkan backend) and M5 (the CUDA software rasterizer) are complete.** The app opens a window with a
 Blender-style viewport: an infinite, anti-aliased floor grid with colored X and
 Y axes that fades with distance, and a mouse-controlled orbit camera. Give it
 an OBJ file on the command line and the model is loaded, lit, placed on the
 floor, and can be moved, rotated and scaled with Blender's G, R and S keys.
 Without a file it shows two demo triangles. The scene keeps rendering while the
-window is dragged or resized. It renders with OpenGL by default, or with Vulkan
-when started with `--backend=vulkan`, and both backends produce the same
-picture. The next milestone is M5: a CUDA software rasterizer.
+window is dragged or resized. It renders with OpenGL by default, with Vulkan
+when started with `--backend=vulkan`, or with a software rasterizer written in
+CUDA when started with `--backend=cuda`, and all three backends produce the
+same picture. The next milestone is M6: polish and a comparison of the three
+backends.
 
 | Milestone | Goal | State |
 |-----------|------|-------|
@@ -37,7 +40,7 @@ picture. The next milestone is M5: a CUDA software rasterizer.
 | M2 | OpenGL backend: grid and orbit camera | DONE |
 | M3 | OBJ loading, lit mesh, object transforms | DONE |
 | M4 | Vulkan backend | DONE |
-| M5 | CUDA rasterizer | |
+| M5 | CUDA rasterizer | DONE |
 | M6 | Polish and backend comparison | |
 | M7 | CUDA ray tracer | |
 
@@ -61,16 +64,22 @@ picture. The next milestone is M5: a CUDA software rasterizer.
   frames in flight, dynamic rendering, a depth buffer, staging uploads, per-frame
   uniform buffers and push constants, a shared pipeline helper, shaders compiled
   to SPIR-V at build time, and `VulkanRenderer`
+- **`gfx_cuda`**: the CUDA backend: a software rasterizer made of kernels
+  (vertex transform, small and large triangle rasterization with fixed-point
+  edge functions and the top-left rule, a 64-bit `atomicMin` visibility buffer,
+  deferred shading that matches the OpenGL lighting, and the grid as a per-pixel
+  ray kernel), CUDA/OpenGL interop to show the result, per-stage GPU timing, and
+  `CudaRenderer`. The `cuda_info` tool reports the CUDA device
 - **`gfx_renderer`**: the backend-neutral `IRenderer` interface, `FrameData`
   with its draw list, and the `create_renderer()` factory
-- **Tests**: seven unit-test programs (math, input, timer, camera, obj,
-  transform, transform_edit) registered with CTest
+- **Tests**: eight unit-test programs (math, input, timer, camera, obj,
+  transform, transform_edit, raster) registered with CTest
 - **`gfxlab` app**: opens a 1280x720 window and renders the viewport, loading
   the OBJ file given on the command line. The title bar shows the FPS, the frame
   time and the active edit mode. **Esc** cancels an edit, or quits when none is
-  active. `--backend=opengl|vulkan` selects the renderer
-- **`assets/`**: test models (a cube with and without normals, Suzanne flat and
-  smooth)
+  active. `--backend=opengl|vulkan|cuda` selects the renderer
+- **`assets/`**: test models (a cube with and without normals, and a
+  high-resolution Suzanne with flat and smooth shading)
 
 ### Controls
 
@@ -96,6 +105,7 @@ picture. The next milestone is M5: a CUDA software rasterizer.
 | [`docs/m2-design.md`](docs/m2-design.md) | OpenGL context and loader, shaders, orbit camera, ray-cast grid, renderer interface, rendering during window drag, tests, manual checklist |
 | [`docs/m3-design.md`](docs/m3-design.md) | OBJ parser, mesh upload and lighting, normals, transforms and the normal matrix, interactive G/R/S editing, tests, manual checklist |
 | [`docs/m4-design.md`](docs/m4-design.md) | Vulkan backend: instance and device, swapchain, frames in flight and synchronization, memory and uploads, descriptors and push constants, pipelines, the grid, live resizing, differences from OpenGL, manual checklist |
+| [`docs/m5-design.md`](docs/m5-design.md) | CUDA backend: toolchain, CUDA/OpenGL interop, device meshes, the rasterizer (fixed point, edge functions, top-left rule, atomic visibility buffer), deferred shading, the grid kernel, the large-triangle performance fix, known limitations, manual checklist |
 
 ## Requirements
 
@@ -104,7 +114,9 @@ picture. The next milestone is M5: a CUDA software rasterizer.
   backend)
 - MSVC (Visual Studio 2022 Build Tools, no IDE needed), CMake 3.21+, Ninja
 - Optional: [Vulkan SDK](https://vulkan.lunarg.com/) for the Vulkan backend
-- Optional: CUDA Toolkit for the CUDA backend (12.8 or newer for RTX 50 series)
+- Optional: CUDA Toolkit for the CUDA backend (12.8 or newer for RTX 50 series;
+  developed with 13.4). The CUDA backend also needs OpenGL, which it uses to
+  show the finished picture
 
 Backends whose dependencies are not found are skipped automatically. The app
 and the window layer build on Windows only. `gfx_core` and the unit tests are
@@ -231,19 +243,30 @@ Toolkit, delete the cache (or the build directory) and configure again.
 
 ```
 builds\build-debug\src\app\gfxlab.exe
-builds\build-debug\src\app\gfxlab.exe assets\suzanne_smooth.obj
-builds\build-debug\src\app\gfxlab.exe --backend=vulkan assets\suzanne_smooth.obj
+builds\build-debug\src\app\gfxlab.exe assets\suzanne_s.obj
+builds\build-debug\src\app\gfxlab.exe --backend=vulkan assets\suzanne_s.obj
+builds\build-debug\src\app\gfxlab.exe --backend=cuda assets\suzanne_s.obj
 ```
 
 The second form loads a model. The name is looked up as given, then in `assets\`,
-then in `assets\local\`, so a bare name such as `suzanne_smooth.obj` works from
+then in `assets\local\`, so a bare name such as `suzanne_s.obj` works from
 any directory. The OBJ loader reads positions, normals and
 faces, and assumes the file is Y-up (the default of most exporters). The third
 form renders it with Vulkan instead of OpenGL (`--backend=opengl` is the
 default); it needs the Vulkan SDK at build time and a Vulkan 1.3 GPU at run
 time. In a Debug build it also enables the Khronos validation layer and prints
 `Vulkan validation layer enabled`; any `[Vulkan validation]` line in the console
-is a bug to investigate.
+is a bug to investigate. The fourth form renders with the CUDA software
+rasterizer; it needs the CUDA Toolkit at build time and an NVIDIA GPU that
+OpenGL also runs on. It logs the CUDA device it uses (`CUDA/OpenGL interop
+device: ...`). With no model it shows only the grid. The `CUDA GPU ms:` line
+that appears once per second in the console is the per-stage GPU timing; set
+`kProfileStages` to `false` in `cuda_renderer.cpp` to measure the plain frame
+rate.
+
+`builds\build-debug\src\renderer\cuda\cuda_info.exe` prints the CUDA runtime,
+driver and device properties and runs a small kernel. It is the quickest way to
+check the CUDA installation.
 
 The app is a console program, so the log output is visible in the terminal. It
 logs which backends were compiled in, creates the renderer (and prints the GPU
@@ -271,18 +294,20 @@ src/renderer/        IRenderer, FrameData, backend factory             -> gfx_re
   vulkan/            instance/device, swapchain, frames, memory,
                      pipelines, mesh, grid, VulkanRenderer             -> gfx_vk
     shaders/         GLSL sources, compiled to SPIR-V by glslc at build time
+  cuda/              interop, device meshes, rasterizer kernels, stage
+                     timer, CudaRenderer, cuda_info                    -> gfx_cuda
 src/app/             application entry point                           -> gfxlab
 assets/              test models (.obj)
 tests/               unit tests                                        -> test_math, test_input, test_timer,
                                                                           test_camera, test_obj, test_transform,
-                                                                          test_transform_edit
+                                                                          test_transform_edit, test_raster
 CMakePresets.json
 build.bat
 ```
 
-Planned, not yet present: `src/renderer/cuda/`. The OpenGL shaders are embedded
-in the C++ sources, and the Vulkan shaders are separate files that `glslc`
-compiles into `<build>/shaders`.
+The OpenGL shaders are embedded in the C++ sources, and the Vulkan shaders are
+separate files that `glslc` compiles into `<build>/shaders`. The CUDA backend
+has no shader files: its kernels are in `cuda_raster.cu`, compiled by `nvcc`.
 
 ## Conventions
 
@@ -291,12 +316,14 @@ compiles into `<build>/shaders`.
   to the GPU without a transpose
 - The camera looks down -Z in view space, with +X right and +Y up
 - `perspective()` takes a `ClipSpace` argument: OpenGL uses NDC depth in
-  [-1, 1] with Y up, Vulkan uses [0, 1] with Y down. Both backends show the
+  [-1, 1] with Y up, Vulkan uses [0, 1] with Y down. The CUDA backend uses the
+  OpenGL clip space and a viewport with row 0 at the top. All backends show the
   same picture, with counter-clockwise triangles front-facing
 - Mouse coordinates are client pixels with the origin at the top left and Y
   pointing down
-- Math functions are marked `GFX_HD` so the same code can later be compiled
-  by `nvcc` for the CUDA backend
+- Math functions are marked `GFX_HD` so the same code compiles for both the
+  host and the GPU: the CUDA kernels use the same `Vec3`, `Mat4` and
+  `raster_math.h` code as the CPU and the unit tests
 - Names avoid collisions with `<windows.h>` macros, for example
   `LOG_LEVEL_ERROR` instead of `ERROR`, and `near_plane` instead of `near`
 - Model files are assumed to be Y-up and are rotated into the Z-up world on

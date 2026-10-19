@@ -422,8 +422,8 @@ Run all of these with `--backend=vulkan` in a **Debug build** and read the conso
 
 1. The log shows `Vulkan validation layer enabled`, the discrete GPU's name as `selected Vulkan GPU`, and the Intel GPU is not chosen.
 2. With no model: two overlapping triangles in front of the grid (they are fixed to the screen), the larger one hiding behind the smaller one.
-3. `gfxlab.exe --backend=vulkan assets\suzanne_smooth.obj`: Suzanne looks the same as in `--backend=opengl` from the same camera: key light up-left, bluish ambient from above, a small highlight.
-4. `cube.obj`: lit edges, one face brighter than the others. `suzanne_flat.obj` stays faceted.
+3. `gfxlab.exe --backend=vulkan assets\suzanne_s.obj`: Suzanne looks the same as in `--backend=opengl` from the same camera: key light up-left, bluish ambient from above, a small highlight.
+4. `cube.obj`: lit edges, one face brighter than the others. `suzanne_f.obj` stays faceted.
 5. The grid matches OpenGL: red X axis, green Y axis, minor and major lines, fade with distance, visible from below the floor, hidden behind the model. Seen from below, the axes disappear cleanly under the model's base, with no dotted pattern.
 6. **G**, **R**, **S** with X/Y/Z constraints, confirm and cancel work, with correct lighting under non-uniform scale.
 7. Orbit, pan and zoom work. Zoom in and out does not make the grid shimmer.

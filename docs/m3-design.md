@@ -32,7 +32,7 @@ New files:
 | Transform | `core/transform.h` |
 | Interactive editing | `core/transform_edit.h`, `core/transform_edit.cpp` |
 | OpenGL meshes | `renderer/opengl/gl_mesh.h`, `gl_mesh.cpp` |
-| Test models | `assets/cube.obj`, `cube_no_normals.obj`, `suzanne_flat.obj`, `suzanne_smooth.obj` |
+| Test models | `assets/cube.obj`, `cube_no_normals.obj`, `suzanne_f.obj`, `suzanne_s.obj` |
 | Tests | `tests/test_obj.cpp`, `test_transform.cpp`, `test_transform_edit.cpp` |
 
 The dependency rule from M2 still holds: `gfx_core` knows nothing about OpenGL, Win32 or `InputState`. The editor receives a camera description and mouse positions as plain numbers, in the same way the orbit camera receives pixel deltas.
@@ -375,7 +375,7 @@ The core, including all of these tests, also builds and passes with GCC on Linux
 1. `gfxlab.exe` with no argument shows the spinning demo triangles, and G/R/S do nothing.
 2. `gfxlab.exe assets\cube.obj`: a cube resting on the grid, centred over the origin, with crisp lit edges and one face brighter than the others.
 3. `assets\cube_no_normals.obj` looks identical, and the log says the normals were generated.
-4. `assets\suzanne_smooth.obj` shades smoothly and `suzanne_flat.obj` stays faceted, both standing upright.
+4. `assets\suzanne_s.obj` shades smoothly and `suzanne_f.obj` stays faceted, both standing upright.
 5. A path that does not exist logs an error and exits with code 1.
 6. **G**: the model follows the cursor. **G** then **Z**: only up and down. **G** then **X** twice: free again.
 7. **R**: the model turns the way the mouse circles, including through more than one revolution. **R** then **Z**: it spins about the vertical axis, also when the camera is below the floor.
