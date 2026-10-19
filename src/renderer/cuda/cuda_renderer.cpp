@@ -2,7 +2,7 @@
 
 #include <cuda_runtime.h>
 #include "renderer/cuda/cuda_api.h"
-#include "renderer/cuda/cuda_present.h"
+#include "renderer/cuda/cuda_raster.h"
 #include "renderer/opengl/gl_api.h"
 #include "core/log.h"
 
@@ -101,13 +101,51 @@ void CudaRenderer::render(const FrameData& frame) {
         }
     }
 
-    // Generate the image entirely on the GPU
-    if (!cuda_fill_gradient(static_cast<uchar4*>(m_color),
-                            m_width, m_height)) {
+    auto* color = static_cast<uchar4*>(m_color);
+
+    // 1. Clear the entire image to the familiar dark background
+    const uchar4 background = make_uchar4(26, 28, 33, 255);
+
+    if (!cuda_clear(color, m_width, m_height, background)) {
         return;
     }
 
-    // Copy the linear device buffer into the registered OpenGL texture
+    // 2. Build the same camera projection as GLRenderer
+    const float aspect =
+        static_cast<float>(frame.width) /
+        static_cast<float>(frame.height);
+
+    const Mat4 projection = perspective(
+        frame.fov_y,
+        aspect,
+        frame.near_plane,
+        frame.far_plane,
+        ClipSpace::CLIP_SPACE_OPENGL
+    );
+
+    const Mat4 view_proj = projection * frame.view;
+
+    // 3. Transform and draw each mesh instance
+    for (const DrawItem& item : frame.draw_list) {
+        const DeviceMesh* mesh = m_meshes.find(item.mesh);
+
+        if (mesh == nullptr) {
+            continue;
+        }
+
+        const Mat4 mvp = view_proj * item.model;
+
+        if (!cuda_draw_points(
+                color,
+                m_width,
+                m_height,
+                *mesh,
+                mvp)) {
+            return;
+        }
+    }
+
+    // 4. Copy the CUDA image into the OpenGL texture
     if (!m_image.copy_from_device(
             m_color,
             m_width,
@@ -116,7 +154,7 @@ void CudaRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // OpenGL is only responsible for presenting the completed image
+    // 5. Present the completed image
     m_presenter.draw(m_width, m_height);
     m_context.swap_buffers();
 }
@@ -125,9 +163,8 @@ void CudaRenderer::set_vsync(bool enabled) {
     m_context.set_vsync(enabled);
 }
 
-MeshId CudaRenderer::create_mesh(const Mesh&) {
-    LOG_WARN("CUDA mesh rendering is not implemented yet (M5 Step 3)");
-    return 0;
+MeshId CudaRenderer::create_mesh(const Mesh& mesh) {
+    return m_meshes.add(mesh);
 }
 
 } // namespace gfx

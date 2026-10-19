@@ -18,11 +18,8 @@ if(TARGET gfx_gl)
     target_sources(gfx_cuda PRIVATE
         cuda_gl_image.cpp
         cuda_renderer.cpp
-        cuda_present.cu
-    )
-
-    target_link_libraries(gfx_cuda PUBLIC
-        gfx_gl
+        cuda_mesh.cpp
+        cuda_raster.cu
     )
 endif()
 

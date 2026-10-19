@@ -4,6 +4,7 @@
 #include "renderer/opengl/gl_context.h"
 #include "renderer/opengl/gl_presenter.h"
 #include "renderer/cuda/cuda_gl_image.h"
+#include "renderer/cuda/cuda_mesh.h"
 
 namespace gfx {
 
@@ -31,6 +32,7 @@ private:
     GLContext m_context;
     GLPresenter m_presenter;
     CudaGLImage m_image;
+    CudaMeshStore m_meshes;
 
     void* m_color = nullptr;
     int m_width = 0;
