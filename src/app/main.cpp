@@ -79,6 +79,8 @@ int main(int argc, char** argv) {
             backend = gfx::RendererBackend::GFX_BACKEND_VULKAN;
         } else if (std::strcmp(argv[i], "--backend=opengl") == 0) {
             backend = gfx::RendererBackend::GFX_BACKEND_OPENGL;
+        } else if (std::strcmp(argv[i], "--backend=cuda") == 0) {
+            backend = gfx::RendererBackend::GFX_BACKEND_CUDA;
         } else if (std::strncmp(argv[i], "--", 2) == 0) {
             LOG_ERROR("unknown command-line option: %s", argv[i]);
             return 1;

@@ -9,8 +9,22 @@ target_include_directories(gfx_cuda PUBLIC
 
 target_link_libraries(gfx_cuda PUBLIC
     gfx_core
-    CUDA::cudart
+    CUDA::cudart_static
 )
+
+# The CUDA diagnostic executable remains available even when
+# OpenGL is unavailable
+if(TARGET gfx_gl)
+    target_sources(gfx_cuda PRIVATE
+        cuda_gl_interop.cpp
+        cuda_renderer.cpp
+        cuda_present.cu
+    )
+
+    target_link_libraries(gfx_cuda PUBLIC
+        gfx_gl
+    )
+endif()
 
 add_executable(cuda_info
     cuda_info_main.cpp

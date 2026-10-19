@@ -2,7 +2,6 @@
 #include "renderer/cuda/cuda_api.h"
 #include "core/log.h"
 
-#include <cuda_runtime.h>
 #include <cstddef>
 
 namespace gfx {

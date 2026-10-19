@@ -46,4 +46,14 @@
     X(void, DebugMessageCallback, (GLDEBUGPROC callback, const void* userParam)) \
     X(void, Uniform3f, (GLint location, GLfloat v0, GLfloat v1, GLfloat v2)) \
     X(void, DepthMask, (GLboolean flag)) \
-    X(void, Uniform1f, (GLint location, GLfloat v0))
+    X(void, Uniform1f, (GLint location, GLfloat v0)) \
+        /* Texture presentation */ \
+    X(void, GenTextures, (GLsizei n, GLuint* textures)) \
+    X(void, DeleteTextures, (GLsizei n, const GLuint* textures)) \
+    X(void, BindTexture, (GLenum target, GLuint texture)) \
+    X(void, TexImage2D, (GLenum target, GLint level, GLint internalformat, \
+        GLsizei width, GLsizei height, GLint border, GLenum format, \
+        GLenum type, const void* pixels)) \
+    X(void, TexParameteri, (GLenum target, GLenum pname, GLint param)) \
+    X(void, ActiveTexture, (GLenum texture)) \
+    X(void, Uniform1i, (GLint location, GLint v0))

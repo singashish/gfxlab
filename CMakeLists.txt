@@ -43,6 +43,10 @@ if(WIN32)
         add_subdirectory(src/renderer/vulkan)
     endif()
 
+    if(TARGET gfx_cuda)
+        target_link_libraries(gfx_renderer PUBLIC gfx_cuda)
+    endif()
+
     if(GFX_HAVE_CUDA)
         add_subdirectory(src/renderer/cuda)
     endif()

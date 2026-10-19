@@ -1,11 +1,12 @@
 add_library(gfx_gl STATIC
     gl_context_win32.cpp
+    gl_grid.cpp
     gl_loader_win32.cpp
+    gl_mesh.cpp
+    gl_presenter.cpp
+    gl_renderer.cpp
     gl_shader.cpp
     gl_triangle_demo.cpp
-    gl_grid.cpp
-    gl_renderer.cpp
-    gl_mesh.cpp
 )
 
 target_include_directories(gfx_gl PUBLIC 
