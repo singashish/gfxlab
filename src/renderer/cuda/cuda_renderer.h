@@ -3,7 +3,7 @@
 #include "renderer/renderer.h"
 #include "renderer/opengl/gl_context.h"
 #include "renderer/opengl/gl_presenter.h"
-#include "renderer/cuda/cuda_gl_interop.h"
+#include "renderer/cuda/cuda_gl_image.h"
 
 namespace gfx {
 

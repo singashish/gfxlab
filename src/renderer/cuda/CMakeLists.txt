@@ -16,7 +16,7 @@ target_link_libraries(gfx_cuda PUBLIC
 # OpenGL is unavailable
 if(TARGET gfx_gl)
     target_sources(gfx_cuda PRIVATE
-        cuda_gl_interop.cpp
+        cuda_gl_image.cpp
         cuda_renderer.cpp
         cuda_present.cu
     )

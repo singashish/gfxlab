@@ -37,6 +37,9 @@ bool CudaRenderer::init(void* native_window) {
 }
 
 bool CudaRenderer::resize_targets(int width, int height) {
+    m_width = 0;
+    m_height = 0;
+
     if (width <= 0 || height <= 0) {
         return false;
     }

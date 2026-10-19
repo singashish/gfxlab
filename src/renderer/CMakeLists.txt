@@ -18,3 +18,7 @@ endif()
 if(TARGET gfx_vk)
     target_link_libraries(gfx_renderer PUBLIC gfx_vk)
 endif()
+
+if(TARGET gfx_cuda)
+    target_link_libraries(gfx_renderer PUBLIC gfx_cuda)
+endif()

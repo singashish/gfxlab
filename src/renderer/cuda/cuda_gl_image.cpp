@@ -2,7 +2,7 @@
 #include <windows.h>
 #include <cuda_gl_interop.h>
 
-#include "renderer/cuda/cuda_gl_interop.h"
+#include "renderer/cuda/cuda_gl_image.h"
 #include "renderer/cuda/cuda_api.h"
 #include "core/log.h"
 
