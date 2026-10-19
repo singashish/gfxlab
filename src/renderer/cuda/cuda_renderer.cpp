@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <vector>
+#include <cmath>
 
 namespace gfx {
 
@@ -362,6 +363,27 @@ void CudaRenderer::render(const FrameData& frame) {
                 return;
             }
         }
+    }
+
+    // Pass 4: draw the floor grid over the shaded scene
+    const float tan_half = std::tan(frame.fov_y * 0.5f);
+
+    CudaGridParams grid_params;
+    grid_params.view_proj = view_proj;
+    grid_params.eye = frame.eye;
+    grid_params.forward = frame.basis.forward;
+    grid_params.right =
+        frame.basis.right * (tan_half * aspect);
+    grid_params.up = frame.basis.up * tan_half;
+    grid_params.fade_end = frame.grid_fade_end;
+
+    if (!cuda_draw_grid(
+            color,
+            visibility,
+            m_width,
+            m_height,
+            grid_params)) {
+        return;
     }
 
 #ifndef NDEBUG

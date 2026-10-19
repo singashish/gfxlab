@@ -14,6 +14,15 @@ struct ProjectedVertex {
     float4 view_normal;  // view-space normal
 };
 
+struct CudaGridParams {
+    Mat4 view_proj;
+    Vec3 eye;
+    Vec3 forward;
+    Vec3 right;
+    Vec3 up;
+    float fade_end;
+};
+
 bool cuda_clear(uchar4* color, int width, int height, uchar4 value);
 
 bool cuda_clear_visibility(std::uint64_t* visibility, int width, int height);
@@ -50,5 +59,12 @@ bool cuda_resolve_ids(
                 const std::uint64_t* visibility,
                 int width,
                 int height);
+
+bool cuda_draw_grid(
+                uchar4* color,
+                const std::uint64_t* visibility,
+                int width,
+                int height,
+                CudaGridParams params);
 
 } // namespace gfx

@@ -178,7 +178,7 @@ __global__ void rasterize_triangles_kernel(
     RasterTriangleSetup s{};
 
     if (!setup_triangle(vertices, i0, i1, i2, s)) {
-        return; // use continue instead if inside the pixel loop
+        return;
     }
 
     const std::uint32_t indices[3] = {i0, i1, i2};
@@ -305,7 +305,7 @@ __global__ void shade_item_kernel(
     RasterTriangleSetup s{};
 
     if (!setup_triangle(vertices, i0, i1, i2, s)) {
-        return; // use continue instead if inside the pixel loop
+        return;
     }
 
     const std::uint32_t indices[3] = {i0, i1, i2};
@@ -439,6 +439,281 @@ __global__ void resolve_ids_kernel(
         static_cast<unsigned char>(96u + (hash & 0x9Fu)),
         static_cast<unsigned char>(96u + ((hash >> 8) & 0x9Fu)),
         static_cast<unsigned char>(96u + ((hash >> 16) & 0x9Fu)),
+        255);
+}
+
+__device__ __forceinline__ float grid_smoothstep(
+    float edge0, float edge1, float x) {
+
+    float t = fminf(
+        fmaxf((x - edge0) / (edge1 - edge0), 0.0f),
+        1.0f);
+
+    return t * t * (3.0f - 2.0f * t);
+}
+
+__device__ __forceinline__ float aa_line(
+    float dist_px, float width_px) {
+
+    return fminf(
+        fmaxf(0.5f * width_px + 0.5f - dist_px,
+              0.0f),
+        1.0f);
+}
+
+__device__ __forceinline__ float grid_fract(float x) {
+    return x - floorf(x);
+}
+
+__device__ __forceinline__ bool grid_hit(
+                const CudaGridParams& params,
+                float sx,
+                float sy,
+                int width,
+                int height,
+                Vec3& ray,
+                float& t,
+                Vec3& p) {
+
+    const float ndc_x = 2.0f * sx / width - 1.0f;
+    const float ndc_y = 1.0f - 2.0f * sy / height;
+
+    ray = params.forward
+        + ndc_x * params.right
+        + ndc_y * params.up;
+
+    if (fabsf(ray.z) <= 1.0e-6f) {
+        return false;
+    }
+
+    t = -params.eye.z / ray.z;
+
+    if (t <= 0.0f) {
+        return false;
+    }
+
+    p = params.eye + t * ray;
+    return true;
+}
+
+__device__ __forceinline__ float grid_level(
+                float2 p,
+                float spacing,
+                float width_px,
+                float fw_x,
+                float fw_y) {
+
+    const float cx = p.x / spacing;
+    const float cy = p.y / spacing;
+
+    const float wx = fmaxf(fw_x / spacing, 1.0e-6f);
+    const float wy = fmaxf(fw_y / spacing, 1.0e-6f);
+
+    const float dx =
+        fabsf(grid_fract(cx - 0.5f) - 0.5f) / wx;
+
+    const float dy =
+        fabsf(grid_fract(cy - 0.5f) - 0.5f) / wy;
+
+    const float lod_x =
+        grid_smoothstep(2.0f, 8.0f, 1.0f / wx);
+
+    const float lod_y =
+        grid_smoothstep(2.0f, 8.0f, 1.0f / wy);
+
+    return fmaxf(
+        aa_line(dx, width_px) * lod_x,
+        aa_line(dy, width_px) * lod_y);
+}
+
+__device__ __forceinline__ float4 grid_layer(
+    float4 dst, float3 src_rgb, float src_a) {
+
+    const float a = src_a + dst.w * (1.0f - src_a);
+
+    const float3 rgb = make_float3(
+        (src_rgb.x * src_a +
+         dst.x * dst.w * (1.0f - src_a)) / fmaxf(a, 1.0e-6f),
+
+        (src_rgb.y * src_a +
+         dst.y * dst.w * (1.0f - src_a)) / fmaxf(a, 1.0e-6f),
+
+        (src_rgb.z * src_a +
+         dst.z * dst.w * (1.0f - src_a)) / fmaxf(a, 1.0e-6f));
+
+    return make_float4(rgb.x, rgb.y, rgb.z, a);
+}
+
+__global__ void draw_grid_kernel(
+                uchar4* color,
+                const unsigned long long* visibility,
+                int width,
+                int height,
+                CudaGridParams params) {
+
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height) {
+        return;
+    }
+
+    const std::size_t pixel =
+        static_cast<std::size_t>(y) * width + x;
+
+    // Intersect the ray through the pixel centre with z = 0
+    Vec3 ray{};
+    Vec3 p{};
+    float t = 0.0f;
+
+    if (!grid_hit(
+            params,
+            x + 0.5f,
+            y + 0.5f,
+            width,
+            height,
+            ray,
+            t,
+            p)) {
+        return;
+    }
+
+    // Estimate the world-space footprint of one pixel
+    Vec3 ray_dx{};
+    Vec3 p_dx{};
+    float t_dx = 0.0f;
+
+    Vec3 ray_dy{};
+    Vec3 p_dy{};
+    float t_dy = 0.0f;
+
+    const bool hit_dx = grid_hit(
+        params, x + 1.5f, y + 0.5f,
+        width, height, ray_dx, t_dx, p_dx);
+
+    const bool hit_dy = grid_hit(
+        params, x + 0.5f, y + 1.5f,
+        width, height, ray_dy, t_dy, p_dy);
+
+    float fw_x = 1.0e6f;
+    float fw_y = 1.0e6f;
+
+    if (hit_dx && hit_dy) {
+        fw_x =
+            fabsf(p_dx.x - p.x) +
+            fabsf(p_dy.x - p.x);
+
+        fw_y =
+            fabsf(p_dx.y - p.y) +
+            fabsf(p_dy.y - p.y);
+    }
+
+    fw_x = fmaxf(fw_x, 1.0e-6f);
+    fw_y = fmaxf(fw_y, 1.0e-6f);
+
+    // Match the OpenGL grid shader's spacing and colours
+    const float minor =
+        grid_level(make_float2(p.x, p.y), 1.0f,
+                   1.0f, fw_x, fw_y);
+
+    const float major =
+        grid_level(make_float2(p.x, p.y), 10.0f,
+                   1.0f, fw_x, fw_y);
+
+    const float axis_x =
+        aa_line(fabsf(p.y) / fw_y, 1.25f);
+
+    const float axis_y =
+        aa_line(fabsf(p.x) / fw_x, 1.25f);
+
+    float4 c = make_float4(0, 0, 0, 0);
+
+    c = grid_layer(
+        c, make_float3(0.55f, 0.55f, 0.55f),
+        0.10f * minor);
+
+    c = grid_layer(
+        c, make_float3(0.65f, 0.65f, 0.65f),
+        0.24f * major);
+
+    c = grid_layer(
+        c, make_float3(0.85f, 0.25f, 0.30f),
+        0.75f * axis_x);
+
+    c = grid_layer(
+        c, make_float3(0.45f, 0.78f, 0.25f),
+        0.75f * axis_y);
+
+    // Fade the grid with distance from the camera
+    const float ray_length = sqrtf(
+        ray.x * ray.x +
+        ray.y * ray.y +
+        ray.z * ray.z);
+
+    const float dist = t * ray_length;
+
+    c.w *= 1.0f - grid_smoothstep(
+        0.4f * params.fade_end,
+        params.fade_end,
+        dist);
+
+    // Push only the depth-test position slightly farther away
+    // Keep the true hit point for colour and fade
+    const Vec3 p_depth =
+        params.eye + (t * 1.001f) * ray;
+
+    const Vec4 clip =
+        params.view_proj * make_vec4(p_depth, 1.0f);
+
+    if (fabsf(clip.w) <= 1.0e-6f) {
+        return;
+    }
+
+    const float ndc_z = clip.z / clip.w;
+
+    if (ndc_z < -1.0f ||
+        ndc_z > 1.0f ||
+        c.w < 0.004f) {
+        return;
+    }
+
+    const float grid_depth = ndc_z * 0.5f + 0.5f;
+
+    // The visibility buffer packs depth in the high 32 bits
+    // and the triangle ID in the low 32 bits
+    const unsigned long long packed = visibility[pixel];
+
+    if (packed != ~0ULL) {
+        const unsigned int depth_bits =
+            static_cast<unsigned int>(packed >> 32);
+
+        const float scene_depth = __uint_as_float(depth_bits);
+
+        // GL_LESS: the grid must be closer than the mesh.
+        if (!(grid_depth < scene_depth)) {
+            return;
+        }
+    }
+
+    // Standard SRC_ALPHA, ONE_MINUS_SRC_ALPHA blending
+    const uchar4 dst = color[pixel];
+
+    const float inv_255 = 1.0f / 255.0f;
+    const float one_minus_a = 1.0f - c.w;
+
+    const float out_r =
+        c.x * c.w + dst.x * inv_255 * one_minus_a;
+
+    const float out_g =
+        c.y * c.w + dst.y * inv_255 * one_minus_a;
+
+    const float out_b =
+        c.z * c.w + dst.z * inv_255 * one_minus_a;
+
+    color[pixel] = make_uchar4(
+        to_byte(out_r),
+        to_byte(out_g),
+        to_byte(out_b),
         255);
 }
 
@@ -584,6 +859,34 @@ bool cuda_resolve_ids(
         width, height);
 
     return check_launch("CUDA resolve kernel launch");
+}
+
+bool cuda_draw_grid(
+                uchar4* color,
+                const std::uint64_t* visibility,
+                int width,
+                int height,
+                CudaGridParams params) {
+
+    if (!color || !visibility ||
+        width <= 0 || height <= 0) {
+        LOG_ERROR("CUDA grid: invalid arguments");
+        return false;
+    }
+
+    const dim3 threads(kTile, kTile);
+    const dim3 blocks(
+        (width + kTile - 1) / kTile,
+        (height + kTile - 1) / kTile);
+
+    draw_grid_kernel<<<blocks, threads>>>(
+        color,
+        reinterpret_cast<const unsigned long long*>(visibility),
+        width,
+        height,
+        params);
+
+    return check_launch("CUDA grid kernel launch");
 }
 
 } // namespace gfx
