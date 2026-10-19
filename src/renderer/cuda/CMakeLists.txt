@@ -21,6 +21,10 @@ if(TARGET gfx_gl)
         cuda_mesh.cpp
         cuda_raster.cu
     )
+
+    target_link_libraries(gfx_cuda PUBLIC
+        gfx_gl
+    )
 endif()
 
 add_executable(cuda_info
