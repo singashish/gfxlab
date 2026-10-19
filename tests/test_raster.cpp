@@ -13,54 +13,15 @@ struct Point {
 
 using Triangle = std::array<Point, 3>;
 
-bool covers_pixel(Triangle triangle, int pixel_x, int pixel_y) {
-    int x[3];
-    int y[3];
+gfx::RasterTriangleSetup setup(const Triangle& t) {
+    return gfx::setup_raster_triangle(
+        t[0].x, t[0].y,
+        t[1].x, t[1].y,
+        t[2].x, t[2].y);
+}
 
-    for (int i = 0; i < 3; ++i) {
-        x[i] = gfx::snap_subpixel(triangle[i].x);
-        y[i] = gfx::snap_subpixel(triangle[i].y);
-    }
-
-    long long area = gfx::edge_function(
-        x[0], y[0], x[1], y[1], x[2], y[2]
-    );
-
-    if (area == 0) {
-        return false;
-    }
-
-    // Normalize winding so the signed area is positive
-    if (area < 0) {
-        std::swap(x[1], x[2]);
-        std::swap(y[1], y[2]);
-        area = -area;
-    }
-
-    // Pixel center, in the same 1/16-pixel units
-    const int px = pixel_x * 16 + 8;
-    const int py = pixel_y * 16 + 8;
-
-    const long long e0 = gfx::edge_function(
-        x[1], y[1], x[2], y[2], px, py
-    );
-    const long long e1 = gfx::edge_function(
-        x[2], y[2], x[0], y[0], px, py
-    );
-    const long long e2 = gfx::edge_function(
-        x[0], y[0], x[1], y[1], px, py
-    );
-
-    const long long bias0 =
-        gfx::is_top_left(x[1], y[1], x[2], y[2]) ? 0 : -1;
-    const long long bias1 =
-        gfx::is_top_left(x[2], y[2], x[0], y[0]) ? 0 : -1;
-    const long long bias2 =
-        gfx::is_top_left(x[0], y[0], x[1], y[1]) ? 0 : -1;
-
-    return e0 + bias0 >= 0 &&
-           e1 + bias1 >= 0 &&
-           e2 + bias2 >= 0;
+bool covers_pixel(const Triangle& triangle, int x, int y) {
+    return gfx::raster_triangle_covers_pixel(setup(triangle), x, y);
 }
 
 void test_snap_subpixel() {
@@ -70,25 +31,24 @@ void test_snap_subpixel() {
 }
 
 void test_degenerate_triangle() {
-    const Triangle degenerate{{
+    const Triangle triangle = {{
         {1.0f, 1.0f},
         {2.0f, 2.0f},
         {3.0f, 3.0f}
     }};
 
-    const int ax = gfx::snap_subpixel(degenerate[0].x);
-    const int ay = gfx::snap_subpixel(degenerate[0].y);
-    const int bx = gfx::snap_subpixel(degenerate[1].x);
-    const int by = gfx::snap_subpixel(degenerate[1].y);
-    const int cx = gfx::snap_subpixel(degenerate[2].x);
-    const int cy = gfx::snap_subpixel(degenerate[2].y);
+    const auto result = setup(triangle);
 
-    CHECK(gfx::edge_function(ax, ay, bx, by, cx, cy) == 0);
-    CHECK(!covers_pixel(degenerate, 1, 1));
+    CHECK(!result.valid);
+    CHECK(result.area == 0);
+    CHECK(!covers_pixel(triangle, 1, 1));
 }
 
-void check_quad_split(Triangle first, Triangle second) {
-    // Pixel centers inside the square [2,10] x [2,10]
+void check_quad_split(
+    const Triangle& first,
+    const Triangle& second) {
+
+    // Every sample inside the quad must be covered exactly once
     for (int y = 2; y < 10; ++y) {
         for (int x = 2; x < 10; ++x) {
             const int count =
@@ -109,41 +69,38 @@ void test_quad_diagonals_and_windings() {
     // Diagonal A-C
     check_quad_split(
         Triangle{{a, b, c}},
-        Triangle{{a, c, d}}
-    );
+        Triangle{{a, c, d}});
 
-    // Reverse both windings
+    // Same diagonal, reversed winding
     check_quad_split(
         Triangle{{c, b, a}},
-        Triangle{{d, c, a}}
-    );
+        Triangle{{d, c, a}});
 
-    // Diagonal B-D
+    // Diagonal B-D.
     check_quad_split(
         Triangle{{a, b, d}},
-        Triangle{{b, c, d}}
-    );
+        Triangle{{b, c, d}});
 
+    // Same diagonal, reversed winding
     check_quad_split(
         Triangle{{d, b, a}},
-        Triangle{{d, c, b}}
-    );
+        Triangle{{d, c, b}});
 }
 
 void test_horizontal_shared_edge() {
-    // The shared edge lies exactly through pixel centers at y = 6.5
-    const Triangle upper{{
+    const Triangle upper = {{
         {2.0f, 6.5f},
         {10.0f, 6.5f},
         {6.0f, 2.5f}
     }};
 
-    const Triangle lower{{
+    const Triangle lower = {{
         {10.0f, 6.5f},
         {2.0f, 6.5f},
         {6.0f, 10.5f}
     }};
 
+    // Pixel centres on row 6 lie exactly on the shared edge
     for (int x = 2; x < 10; ++x) {
         const int count =
             static_cast<int>(covers_pixel(upper, x, 6)) +
@@ -152,17 +109,43 @@ void test_horizontal_shared_edge() {
         CHECK(count == 1);
     }
 
-    // Reverse winding independently
-    Triangle upper_reversed{{upper[2], upper[1], upper[0]}};
-    Triangle lower_reversed{{lower[2], lower[1], lower[0]}};
+    // Repeat with both triangles reversed
+    const Triangle upper_reversed = {{
+        upper[2], upper[1], upper[0]
+    }};
+
+    const Triangle lower_reversed = {{
+        lower[2], lower[1], lower[0]
+    }};
 
     for (int x = 2; x < 10; ++x) {
         const int count =
-            static_cast<int>(covers_pixel(upper_reversed, x, 6)) +
-            static_cast<int>(covers_pixel(lower_reversed, x, 6));
+            static_cast<int>(
+                covers_pixel(upper_reversed, x, 6)) +
+            static_cast<int>(
+                covers_pixel(lower_reversed, x, 6));
 
         CHECK(count == 1);
     }
+}
+
+void test_setup_preserves_original_winding() {
+    const auto positive = gfx::setup_raster_triangle(
+        2.0f, 2.0f,
+        10.0f, 2.0f,
+        10.0f, 10.0f);
+
+    const auto negative = gfx::setup_raster_triangle(
+        10.0f, 10.0f,
+        10.0f, 2.0f,
+        2.0f, 2.0f);
+
+    CHECK(positive.valid);
+    CHECK(negative.valid);
+    CHECK(positive.signed_area > 0);
+    CHECK(negative.signed_area < 0);
+    CHECK(positive.area > 0);
+    CHECK(negative.area > 0);
 }
 
 } // namespace
@@ -173,12 +156,13 @@ int main() {
     test_degenerate_triangle();
     test_quad_diagonals_and_windings();
     test_horizontal_shared_edge();
+    test_setup_preserves_original_winding();
 
     if (g_failures == 0) {
-        std::printf("All raster tests passed\n");
+        std::puts("All raster tests passed");
         return 0;
     }
 
-    std::fprintf(stderr, "%d raster test(s) failed\n", g_failures);
+    std::printf("Raster tests failed: %d failure(s)\n", g_failures);
     return 1;
 }

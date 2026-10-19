@@ -8,6 +8,7 @@
 #include "renderer/opengl/gl_presenter.h"
 #include "renderer/cuda/cuda_gl_image.h"
 #include "renderer/cuda/cuda_mesh.h"
+#include "renderer/cuda/cuda_raster.h"
 
 namespace gfx {
 
@@ -41,7 +42,7 @@ private:
     void* m_color = nullptr;
     void* m_visibility = nullptr;
 
-    float4* m_scratch = nullptr;
+    ProjectedVertex* m_scratch = nullptr;
     std::uint32_t m_scratch_capacity = 0;
 
     int m_width = 0;

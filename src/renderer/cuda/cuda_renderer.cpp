@@ -1,21 +1,29 @@
 #include "renderer/cuda/cuda_renderer.h"
 
 #include <cuda_runtime.h>
+
 #include "renderer/cuda/cuda_api.h"
 #include "renderer/cuda/cuda_raster.h"
 #include "renderer/opengl/gl_api.h"
 #include "core/log.h"
 
+#include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace gfx {
+
+namespace {
+
+constexpr bool kDebugTriangleIds = false;
+
+} // namespace
 
 CudaRenderer::~CudaRenderer() {
     if (m_scratch != nullptr) {
         (void)cuda_ok(
             cudaFree(m_scratch),
-            "cudaFree vertex scratch buffer"
-        );
+            "cudaFree projected vertex scratch buffer");
         m_scratch = nullptr;
         m_scratch_capacity = 0;
     }
@@ -23,16 +31,14 @@ CudaRenderer::~CudaRenderer() {
     if (m_visibility != nullptr) {
         (void)cuda_ok(
             cudaFree(m_visibility),
-            "cudaFree visibility buffer"
-        );
+            "cudaFree visibility buffer");
         m_visibility = nullptr;
     }
 
     if (m_color != nullptr) {
         (void)cuda_ok(
             cudaFree(m_color),
-            "cudaFree renderer colour buffer"
-        );
+            "cudaFree renderer colour buffer");
         m_color = nullptr;
     }
 
@@ -77,7 +83,6 @@ bool CudaRenderer::resize_targets(int width, int height) {
         return false;
     }
 
-    // Release the old colour buffer
     if (m_color != nullptr) {
         if (!cuda_ok(cudaFree(m_color), "cudaFree old colour buffer")) {
             return false;
@@ -85,7 +90,6 @@ bool CudaRenderer::resize_targets(int width, int height) {
         m_color = nullptr;
     }
 
-    // Release the old visibility buffer
     if (m_visibility != nullptr) {
         if (!cuda_ok(
                 cudaFree(m_visibility),
@@ -107,12 +111,13 @@ bool CudaRenderer::resize_targets(int width, int height) {
     }
 
     if (!cuda_ok(
-            cudaMalloc(&m_visibility, pixels * sizeof(std::uint64_t)),
+            cudaMalloc(
+                &m_visibility,
+                pixels * sizeof(std::uint64_t)),
             "cudaMalloc visibility buffer")) {
         (void)cuda_ok(
             cudaFree(m_color),
-            "cudaFree colour buffer after visibility allocation failure"
-        );
+            "cudaFree colour buffer after visibility allocation failure");
         m_color = nullptr;
         m_visibility = nullptr;
         return false;
@@ -121,29 +126,21 @@ bool CudaRenderer::resize_targets(int width, int height) {
     m_width = width;
     m_height = height;
 
-    LOG_INFO(
-        "CUDA render targets resized: %dx%d",
-        width, height
-    );
-
+    LOG_INFO("CUDA render targets resized: %dx%d", width, height);
     return true;
 }
 
 bool CudaRenderer::ensure_scratch_capacity(
-                        std::uint32_t vertex_count) {
-    if (vertex_count == 0) {
-        return false;
-    }
+    std::uint32_t vertex_count) {
 
-    if (m_scratch != nullptr &&
-        m_scratch_capacity >= vertex_count) {
+    if (vertex_count <= m_scratch_capacity) {
         return true;
     }
 
     if (m_scratch != nullptr) {
         if (!cuda_ok(
                 cudaFree(m_scratch),
-                "cudaFree old vertex scratch buffer")) {
+                "cudaFree old projected vertex scratch buffer")) {
             return false;
         }
 
@@ -151,14 +148,19 @@ bool CudaRenderer::ensure_scratch_capacity(
         m_scratch_capacity = 0;
     }
 
+    if (vertex_count == 0) {
+        return true;
+    }
+
     const std::size_t bytes =
-        static_cast<std::size_t>(vertex_count) * sizeof(float4);
+        static_cast<std::size_t>(vertex_count) *
+        sizeof(ProjectedVertex);
 
     if (!cuda_ok(
             cudaMalloc(
                 reinterpret_cast<void**>(&m_scratch),
                 bytes),
-            "cudaMalloc vertex scratch buffer")) {
+            "cudaMalloc projected vertex scratch buffer")) {
         m_scratch = nullptr;
         return false;
     }
@@ -182,14 +184,16 @@ void CudaRenderer::render(const FrameData& frame) {
     auto* color = static_cast<uchar4*>(m_color);
     auto* visibility = static_cast<std::uint64_t*>(m_visibility);
 
-    // 1. Clear colour and visibility
-    const uchar4 background = make_uchar4(26, 28, 33, 255);
-
-    if (!cuda_clear(color, m_width, m_height, background)) {
+    if (!color || !visibility) {
+        LOG_ERROR("CUDA renderer: render targets are not allocated");
         return;
     }
 
-    if (!cuda_clear_visibility(visibility, m_width, m_height)) {
+    // 1. Clear colour and visibility
+    const uchar4 background = make_uchar4(26, 28, 33, 255);
+
+    if (!cuda_clear(color, m_width, m_height, background) ||
+        !cuda_clear_visibility(visibility, m_width, m_height)) {
         return;
     }
 
@@ -203,13 +207,19 @@ void CudaRenderer::render(const FrameData& frame) {
         aspect,
         frame.near_plane,
         frame.far_plane,
-        ClipSpace::CLIP_SPACE_OPENGL
-    );
+        ClipSpace::CLIP_SPACE_OPENGL);
 
     const Mat4 view_proj = projection * frame.view;
 
-    // 3. Transform vertices and rasterize each draw item
-    std::uint32_t base = 0;
+    struct DrawRecord {
+        const DeviceMesh* mesh;
+        ProjectedVertex* vertices;
+        std::uint32_t triangle_base;
+    };
+
+    // Pass 1: calculate total vertex capacity and validate triangle IDs
+    std::size_t total_vertices = 0;
+    std::uint64_t total_triangles = 0;
 
     for (const DrawItem& item : frame.draw_list) {
         const DeviceMesh* mesh = m_meshes.find(item.mesh);
@@ -218,46 +228,140 @@ void CudaRenderer::render(const FrameData& frame) {
             continue;
         }
 
-        const std::uint32_t triangle_count = mesh->index_count / 3;
-
-        if (triangle_count >
-            std::numeric_limits<std::uint32_t>::max() - base) {
-            LOG_ERROR("CUDA rasterizer: triangle ID range overflow");
+        if (mesh->index_count % 3 != 0) {
+            LOG_ERROR("CUDA renderer: index count is not a triangle list");
             return;
         }
 
-        if (!ensure_scratch_capacity(mesh->vertex_count)) {
+        if (mesh->vertex_count > 0 && !mesh->positions) {
+            LOG_ERROR("CUDA renderer: mesh has no position buffer");
             return;
         }
 
-        const Mat4 mvp = view_proj * item.model;
-
-        if (!cuda_transform_vertices(
-                *mesh,
-                mvp,
-                m_width,
-                m_height,
-                m_scratch)) {
+        if (mesh->index_count > 0 && !mesh->indices) {
+            LOG_ERROR("CUDA renderer: mesh has no index buffer");
             return;
         }
 
-        if (!cuda_rasterize_triangles(
-                visibility,
-                m_width,
-                m_height,
-                *mesh,
-                m_scratch,
-                base)) {
+        if (mesh->vertex_count >
+            std::numeric_limits<std::size_t>::max() - total_vertices) {
+            LOG_ERROR("CUDA renderer: total vertex count overflow");
             return;
         }
 
-        base += triangle_count;
+        total_vertices += mesh->vertex_count;
+        total_triangles += mesh->index_count / 3;
+
+        if (total_vertices >
+            std::numeric_limits<std::uint32_t>::max()) {
+            LOG_ERROR("CUDA renderer: scratch vertex count overflow");
+            return;
+        }
+
+        // Zero is reserved as the invalid visibility ID
+        if (total_triangles >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::uint32_t>::max()) - 1ULL) {
+            LOG_ERROR("CUDA renderer: triangle ID range overflow");
+            return;
+        }
     }
 
-    // 4. Convert the winning triangle IDs into diagnostic colours
-    if (!cuda_resolve_ids(
-            color, visibility, m_width, m_height)) {
+    if (total_vertices > 0 &&
+        !ensure_scratch_capacity(
+            static_cast<std::uint32_t>(total_vertices))) {
         return;
+    }
+
+    std::vector<DrawRecord> records;
+    records.reserve(frame.draw_list.size());
+
+    // Pass 2: transform and rasterize every draw item
+    // Each mesh retains its own projected-vertex slice
+    std::size_t vertex_offset = 0;
+    std::uint32_t triangle_base = 0;
+
+    for (const DrawItem& item : frame.draw_list) {
+        const DeviceMesh* mesh = m_meshes.find(item.mesh);
+
+        if (mesh == nullptr) {
+            continue;
+        }
+
+        ProjectedVertex* item_vertices =
+            mesh->vertex_count > 0
+                ? m_scratch + vertex_offset
+                : nullptr;
+
+        if (mesh->vertex_count > 0) {
+            const Mat4 mvp = view_proj * item.model;
+            const Mat4 model_view = frame.view * item.model;
+            const Mat4 normal_to_view =
+                frame.view * item.normal_matrix;
+
+            if (!cuda_transform_vertices(
+                    *mesh,
+                    mvp,
+                    model_view,
+                    normal_to_view,
+                    frame.width,
+                    frame.height,
+                    item_vertices)) {
+                return;
+            }
+        }
+
+        if (mesh->index_count > 0) {
+            if (!item_vertices) {
+                LOG_ERROR("CUDA renderer: indexed mesh has no vertices");
+                return;
+            }
+
+            records.push_back({
+                mesh,
+                item_vertices,
+                triangle_base
+            });
+
+            if (!cuda_rasterize_triangles(
+                    visibility,
+                    m_width,
+                    m_height,
+                    *mesh,
+                    item_vertices,
+                    triangle_base)) {
+                return;
+            }
+        }
+
+        vertex_offset += mesh->vertex_count;
+        triangle_base += mesh->index_count / 3;
+    }
+
+    // Pass 3: shade pixels after all items have populated visibility
+    if constexpr (kDebugTriangleIds) {
+        if (!cuda_resolve_ids(
+                color, visibility, m_width, m_height)) {
+            return;
+        }
+    } else {
+        const Vec3 up_view =
+            transform_direction(
+                frame.view, Vec3{0.0f, 0.0f, 1.0f});
+
+        for (const DrawRecord& record : records) {
+            if (!cuda_shade_item(
+                    color,
+                    visibility,
+                    m_width,
+                    m_height,
+                    *record.mesh,
+                    record.vertices,
+                    record.triangle_base,
+                    up_view)) {
+                return;
+            }
+        }
     }
 
 #ifndef NDEBUG
@@ -269,7 +373,7 @@ void CudaRenderer::render(const FrameData& frame) {
     }
 #endif
 
-    // 5. Present through the existing CUDA/OpenGL interop path
+    // Present through the existing CUDA/OpenGL interop path
     if (!m_image.copy_from_device(
             color,
             m_width,
