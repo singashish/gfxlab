@@ -7,7 +7,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(MSVC)
-    add_compile_options(/W4 /permissive- /utf-8)
+    add_compile_options(
+        $<$<COMPILE_LANGUAGE:CXX>:/W4>
+        $<$<COMPILE_LANGUAGE:CXX>:/permissive->
+        $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/W4,/utf-8>
+    )
 endif()
 
 if(WIN32)
@@ -36,6 +41,10 @@ if(WIN32)
 
     if(GFX_HAVE_VULKAN)
         add_subdirectory(src/renderer/vulkan)
+    endif()
+
+    if(GFX_HAVE_CUDA)
+        add_subdirectory(src/renderer/cuda)
     endif()
 
     add_subdirectory(src/renderer)

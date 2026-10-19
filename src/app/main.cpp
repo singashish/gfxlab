@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <vector>
 #include <string>
 #include <filesystem>
 
@@ -51,6 +52,7 @@ std::string resolve_model_path(const std::string& name,
 }
 
 } // namespace
+
 
 int main(int argc, char** argv) {
     LOG_INFO("gfxlab starting...");

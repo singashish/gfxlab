@@ -70,22 +70,33 @@ if(GFX_ENABLE_CUDA)
     check_language(CUDA)
 
     if(CMAKE_CUDA_COMPILER)
-        if(GFX_CUDA_ARCHITECTURES)
-            set(CMAKE_CUDA_ARCHITECTURES
-                "${GFX_CUDA_ARCHITECTURES}"
+        # Finding nvcc alone is insufficient. We also need the
+        # CUDA toolkit, including the CUDA runtime library
+        find_package(CUDAToolkit QUIET)
+
+        if(CUDAToolkit_FOUND)
+            if(GFX_CUDA_ARCHITECTURES)
+                set(CMAKE_CUDA_ARCHITECTURES
+                    "${GFX_CUDA_ARCHITECTURES}"
+                )
+            endif()
+
+            set(CMAKE_CUDA_STANDARD 17)
+            set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+            enable_language(CUDA)
+
+            set(GFX_HAVE_CUDA ON)
+
+            message(STATUS
+                "GFXLab: CUDA compiler found; architectures="
+                "${CMAKE_CUDA_ARCHITECTURES}"
+            )
+        else()
+            message(STATUS
+                "GFXLab: CUDA toolkit not found, backend disabled"
             )
         endif()
-
-        set(CMAKE_CUDA_STANDARD 17)
-        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-
-        enable_language(CUDA)
-
-        set(GFX_HAVE_CUDA ON)
-        message(STATUS
-            "GFXLab: CUDA compiler found; architectures="
-            "${CMAKE_CUDA_ARCHITECTURES}"
-        )
     else()
         message(STATUS
             "GFXLab: CUDA compiler not found, backend disabled"
