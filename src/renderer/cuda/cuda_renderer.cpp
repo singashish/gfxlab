@@ -17,7 +17,7 @@ namespace gfx {
 namespace {
 
 constexpr bool kDebugTriangleIds = false;
-constexpr bool kProfileStages = true;
+constexpr bool kProfileStages = false;
 
 } // namespace
 
