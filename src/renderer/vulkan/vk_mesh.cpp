@@ -34,6 +34,10 @@ void VulkanMeshRenderer::destroy_pipeline() {
             vkDestroyPipeline(m_device, m_pipeline, nullptr);
         }
 
+        if (m_wire_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(m_device, m_wire_pipeline, nullptr);
+        }
+
         if (m_pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(
                 m_device, m_pipeline_layout, nullptr);
@@ -41,6 +45,7 @@ void VulkanMeshRenderer::destroy_pipeline() {
     }
 
     m_pipeline = VK_NULL_HANDLE;
+    m_wire_pipeline = VK_NULL_HANDLE;
     m_pipeline_layout = VK_NULL_HANDLE;
 }
 
@@ -144,6 +149,70 @@ bool VulkanMeshRenderer::init(VkDevice device, VkFormat color_format,
         return false;
     }
 
+    // Load the wireframe shader modules
+    VkShaderModule wire_vertex_shader = load_shader_module(
+        m_device, GFX_SHADER_DIR "/wire.vert.spv");
+
+    if (wire_vertex_shader == VK_NULL_HANDLE) {
+        destroy_pipeline();
+        return false;
+    }
+
+    VkShaderModule wire_fragment_shader = load_shader_module(
+        m_device, GFX_SHADER_DIR "/wire.frag.spv");
+
+    if (wire_fragment_shader == VK_NULL_HANDLE) {
+        vkDestroyShaderModule(
+            m_device, wire_vertex_shader, nullptr);
+        destroy_pipeline();
+        return false;
+    }
+
+    // Reuse the existing mesh vertex binding:
+    // position + normal, six floats (24 bytes) per vertex
+    VkVertexInputBindingDescription wire_binding{};
+    wire_binding.binding = 0;
+    wire_binding.stride = 6 * sizeof(float);
+    wire_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    // Wireframe reads only the position attribute
+    VkVertexInputAttributeDescription wire_position{};
+    wire_position.location = 0;
+    wire_position.binding = 0;
+    wire_position.format = VK_FORMAT_R32G32B32_SFLOAT;
+    wire_position.offset = 0;
+
+    // Create a second pipeline using the EXISTING pipeline layout
+    VulkanPipelineDesc wire_desc{};
+    wire_desc.vert = wire_vertex_shader;
+    wire_desc.frag = wire_fragment_shader;
+    wire_desc.layout = m_pipeline_layout;
+    wire_desc.color_format = color_format;
+    wire_desc.depth_format = depth_format;
+
+    wire_desc.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    wire_desc.bindings = {wire_binding};
+    wire_desc.attributes = {wire_position};
+
+    wire_desc.depth_test = true;
+    wire_desc.depth_write = true;
+    wire_desc.blend = false;
+
+    m_wire_pipeline = create_graphics_pipeline(
+        m_device, wire_desc);
+
+    // Shader modules can be destroyed after pipeline creation
+    vkDestroyShaderModule(
+        m_device, wire_fragment_shader, nullptr);
+    vkDestroyShaderModule(
+        m_device, wire_vertex_shader, nullptr);
+
+    if (m_wire_pipeline == VK_NULL_HANDLE) {
+        destroy_pipeline();
+        return false;
+    }
+
+    LOG_INFO("Vulkan wireframe pipeline created");
     LOG_INFO("Vulkan mesh pipeline created");
     return true;
 }
@@ -176,6 +245,21 @@ MeshId VulkanMeshRenderer::create(const VulkanContext& ctx,
     for (const std::uint32_t index : mesh.indices) {
         if (index >= mesh.positions.size()) {
             LOG_ERROR("mesh contains an out-of-range index");
+            return 0;
+        }
+    }
+
+    // Edges are optional, but a present edge list must be valid
+    if (mesh.edges.size() % 2 != 0 ||
+        mesh.edges.size() >
+            std::numeric_limits<std::uint32_t>::max()) {
+        LOG_ERROR("invalid mesh edge data or edge index count");
+        return 0;
+    }
+
+    for (const std::uint32_t index : mesh.edges) {
+        if (index >= mesh.positions.size()) {
+            LOG_ERROR("mesh contains an out-of-range edge index");
             return 0;
         }
     }
@@ -247,6 +331,36 @@ MeshId VulkanMeshRenderer::create(const VulkanContext& ctx,
             index_bytes)) {
         LOG_ERROR("failed to upload mesh index buffer");
         return 0;
+    }
+
+    // Upload an edge buffer only when the mesh has edges
+    if (!mesh.edges.empty()) {
+        if (mesh.edges.size() >
+            std::numeric_limits<std::size_t>::max() /
+                sizeof(std::uint32_t)) {
+            LOG_ERROR("mesh edge buffer size overflow");
+            return 0;
+        }
+
+        const VkDeviceSize edge_bytes =
+            static_cast<VkDeviceSize>(
+                mesh.edges.size() * sizeof(std::uint32_t));
+
+        gpu_mesh->edge_buffer =
+            std::make_unique<VulkanBuffer>();
+
+        if (!uploader.upload_to_device_buffer(
+                ctx,
+                *gpu_mesh->edge_buffer,
+                VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                mesh.edges.data(),
+                edge_bytes)) {
+            LOG_ERROR("failed to upload mesh edge buffer");
+            return 0;
+        }
+
+        gpu_mesh->edge_index_count =
+            static_cast<std::uint32_t>(mesh.edges.size());
     }
 
     gpu_mesh->index_count =
@@ -348,6 +462,105 @@ void VulkanMeshRenderer::draw(VkCommandBuffer cmd, VkExtent2D extent,
 
         vkCmdDrawIndexed(
             cmd, mesh.index_count, 1, 0, 0, 0);
+    }
+}
+
+void VulkanMeshRenderer::draw_wireframe(VkCommandBuffer cmd,
+                            VkExtent2D extent,
+                            VkDescriptorSet descriptor_set,
+                            const std::vector<DrawItem>& items) {
+
+    if (m_wire_pipeline == VK_NULL_HANDLE ||
+        m_pipeline_layout == VK_NULL_HANDLE ||
+        cmd == VK_NULL_HANDLE ||
+        descriptor_set == VK_NULL_HANDLE ||
+        extent.width == 0 ||
+        extent.height == 0) {
+        return;
+    }
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = extent;
+
+    vkCmdBindPipeline(
+        cmd,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        m_wire_pipeline);
+
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    vkCmdBindDescriptorSets(
+        cmd,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        m_pipeline_layout,
+        0,
+        1,
+        &descriptor_set,
+        0,
+        nullptr);
+
+    const VkDeviceSize offset = 0;
+
+    for (const DrawItem& item : items) {
+        if (item.mesh == 0 ||
+            static_cast<std::size_t>(item.mesh) > m_meshes.size()) {
+            continue;
+        }
+
+        const GpuMesh& mesh =
+            *m_meshes[static_cast<std::size_t>(item.mesh) - 1];
+
+        // A mesh without edges is valid; it contributes no lines
+        if (mesh.vertex_buffer == nullptr ||
+            mesh.edge_buffer == nullptr ||
+            mesh.edge_index_count == 0) {
+            continue;
+        }
+
+        // The layout requires 128 bytes even though the wire shader
+        // only reads the model matrix
+        const MeshPush push{
+            item.model,
+            item.normal_matrix
+        };
+
+        vkCmdPushConstants(
+            cmd,
+            m_pipeline_layout,
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0,
+            sizeof(MeshPush),
+            &push);
+
+        const VkBuffer vertex_buffer =
+            mesh.vertex_buffer->buffer();
+
+        vkCmdBindVertexBuffers(
+            cmd, 0, 1, &vertex_buffer, &offset);
+
+        vkCmdBindIndexBuffer(
+            cmd,
+            mesh.edge_buffer->buffer(),
+            0,
+            VK_INDEX_TYPE_UINT32);
+
+        vkCmdDrawIndexed(
+            cmd,
+            mesh.edge_index_count,
+            1,
+            0,
+            0,
+            0);
     }
 }
 

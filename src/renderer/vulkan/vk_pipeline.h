@@ -11,6 +11,9 @@ struct VulkanPipelineDesc {
     VkShaderModule frag = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
 
+    VkPrimitiveTopology topology =
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
     VkFormat color_format = VK_FORMAT_UNDEFINED;
     VkFormat depth_format = VK_FORMAT_UNDEFINED;
 

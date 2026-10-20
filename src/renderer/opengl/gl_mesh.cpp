@@ -147,19 +147,20 @@ bool GLMesh::upload(const Mesh& mesh) {
         }
     }
 
-    if (mesh.edges.empty() ||
-        mesh.edges.size() % 2 != 0 ||
-        mesh.edges.size() >
-            static_cast<std::size_t>(
-                std::numeric_limits<GLsizei>::max())) {
-        LOG_ERROR("invalid mesh edge data or edge index count");
-        return false;
-    }
-
-    for (const std::uint32_t index : mesh.edges) {
-        if (index >= mesh.positions.size()) {
-            LOG_ERROR("mesh contains an out-of-range edge index");
+    if (!mesh.edges.empty()) {
+        if (mesh.edges.size() % 2 != 0 ||
+            mesh.edges.size() >
+                static_cast<std::size_t>(
+                    std::numeric_limits<GLsizei>::max())) {
+            LOG_ERROR("invalid mesh edge data or edge index count");
             return false;
+        }
+
+        for (const std::uint32_t index : mesh.edges) {
+            if (index >= mesh.positions.size()) {
+                LOG_ERROR("mesh contains an out-of-range edge index");
+                return false;
+            }
         }
     }
 

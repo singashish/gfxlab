@@ -46,7 +46,7 @@ VkPipeline create_graphics_pipeline(VkDevice device,
     VkPipelineInputAssemblyStateCreateInfo input_assembly{};
     input_assembly.sType =
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    input_assembly.topology = desc.topology;
     input_assembly.primitiveRestartEnable = VK_FALSE;
 
     VkPipelineViewportStateCreateInfo viewport_state{};

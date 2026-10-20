@@ -411,7 +411,7 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
 
             // Preserve the original polygon boundary before triangulation.
             // Deduplicate using OBJ position indices, not output vertex indices,
-            // because vertices may be duplicated when normals differ.
+            // because vertices may be duplicated when normals differ
             for (std::size_t i = 0; i < face.size(); ++i) {
                 const std::size_t next = (i + 1) % face.size();
 
@@ -422,6 +422,11 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
                     static_cast<std::uint32_t>(face[i].position);
                 const std::uint32_t pb =
                     static_cast<std::uint32_t>(face[next].position);
+
+                // Skip zero-length edges when a face repeats the same position
+                if (pa == pb) {
+                    continue;
+                }
 
                 const std::uint32_t lo = std::min(pa, pb);
                 const std::uint32_t hi = std::max(pa, pb);

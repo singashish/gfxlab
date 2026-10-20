@@ -87,7 +87,7 @@ void mesh_y_up_to_z_up(Mesh& mesh) {
 }
 
 bool ensure_normals(Mesh& mesh) {
-    // Existing normals are valid only when there is one per vertex
+    // Existing normals are valid only when there is one per vertex.
     // Normalize them and replace zero-length normals with the fallback
     if (!mesh.normals.empty() &&
         mesh.normals.size() == mesh.positions.size()) {
@@ -95,6 +95,7 @@ bool ensure_normals(Mesh& mesh) {
             normal = normalize_or_default(normal);
         }
 
+        // False means normals were already present and usable
         return false;
     }
 
@@ -127,7 +128,9 @@ bool ensure_normals(Mesh& mesh) {
         const std::uint32_t ib = mesh.indices[i + 1];
         const std::uint32_t ic = mesh.indices[i + 2];
 
-        // Defensive validation before indexing the old positions
+        // The OBJ loader validates triangle indices before this function
+        // is called. Failure here indicates malformed input from another
+        // Mesh producer, not that normals were already present
         if (ia >= old_vertex_count ||
             ib >= old_vertex_count ||
             ic >= old_vertex_count) {
@@ -172,11 +175,14 @@ bool ensure_normals(Mesh& mesh) {
     std::vector<std::uint32_t> new_edges;
     new_edges.reserve(mesh.edges.size());
 
+    // An odd number of indices cannot represent complete edge pairs
     if (mesh.edges.size() % 2 != 0) {
         return false;
     }
 
     for (const std::uint32_t old_index : mesh.edges) {
+        // The loader produces valid edge indices. This failure can occur
+        // for a manually constructed or otherwise malformed Mesh
         if (old_index >= old_vertex_count ||
             first_copy[old_index] == kUnmapped) {
             return false;
@@ -190,6 +196,7 @@ bool ensure_normals(Mesh& mesh) {
     mesh.indices = std::move(new_indices);
     mesh.edges = std::move(new_edges);
 
+    // True means normals were generated
     return true;
 }
 

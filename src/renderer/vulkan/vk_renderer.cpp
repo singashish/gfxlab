@@ -477,7 +477,14 @@ void VulkanRenderer::render(const FrameData& frame) {
         m_uniforms.set(frame_index);
 
     if (frame.draw_list.empty()) {
+        // Keep the demo triangles unchanged
         m_triangle.record(slot.cmd, extent);
+    } else if (frame.wireframe) {
+        m_meshes.draw_wireframe(
+            slot.cmd,
+            extent,
+            frame_set,
+            frame.draw_list);
     } else {
         m_meshes.draw(
             slot.cmd,

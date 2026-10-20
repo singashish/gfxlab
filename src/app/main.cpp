@@ -466,7 +466,7 @@ int main(int argc, char** argv) {
             renderer->set_vsync(vsync);
             LOG_INFO("vsync: %s", vsync ? "on" : "off");
         }
-    
+
         // Toggle wireframe with W
         if (in.key_pressed(gfx::Key::GFX_KEY_W)) {
             wireframe = !wireframe;

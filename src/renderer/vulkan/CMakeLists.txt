@@ -7,6 +7,8 @@ gfx_compile_shaders(
     shaders/mesh.frag
     shaders/grid.vert
     shaders/grid.frag
+    shaders/wire.vert
+    shaders/wire.frag
 )
 
 add_library(gfx_vk STATIC
