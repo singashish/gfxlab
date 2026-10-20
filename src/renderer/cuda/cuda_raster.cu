@@ -271,7 +271,7 @@ __global__ void transform_vertices_kernel(
         screen_x, screen_y, depth01, clip.w);
 }
 
-__global__ void cuda_draw_edges_kernel(
+__global__ void draw_edges_kernel(
                 unsigned long long* visibility,
                 int width,
                 int height,
@@ -385,7 +385,7 @@ __global__ void cuda_draw_edges_kernel(
     }
 }
 
-__global__ void cuda_resolve_wire_kernel(
+__global__ void resolve_wire_kernel(
                 uchar4* color,
                 const unsigned long long* visibility,
                 int width,
@@ -1144,7 +1144,7 @@ bool cuda_draw_edges(
     const unsigned int blocks =
         (edge_count + kThreads - 1) / kThreads;
 
-    cuda_draw_edges_kernel<<<blocks, kThreads>>>(
+    draw_edges_kernel<<<blocks, kThreads>>>(
         reinterpret_cast<unsigned long long*>(visibility),
         width,
         height,
@@ -1171,7 +1171,7 @@ bool cuda_resolve_wire(
         (width + kTile - 1) / kTile,
         (height + kTile - 1) / kTile);
 
-    cuda_resolve_wire_kernel<<<blocks, threads>>>(
+    resolve_wire_kernel<<<blocks, threads>>>(
         color,
         reinterpret_cast<const unsigned long long*>(visibility),
         width,

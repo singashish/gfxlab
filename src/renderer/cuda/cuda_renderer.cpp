@@ -413,11 +413,6 @@ void CudaRenderer::render(const FrameData& frame) {
         m_stage_timer.mark(3);
     }
 
-    // Profile marker 3: shading or debug-ID resolution has been submitted
-    if constexpr (kProfileStages) {
-        m_stage_timer.mark(3);
-    }
-
     // Pass 4: draw the floor grid over the shaded scene
     const float tan_half = std::tan(frame.fov_y * 0.5f);
 

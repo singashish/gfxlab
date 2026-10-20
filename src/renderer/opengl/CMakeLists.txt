@@ -5,6 +5,7 @@ add_library(gfx_gl STATIC
     gl_mesh.cpp
     gl_presenter.cpp
     gl_renderer.cpp
+    gl_timer.cpp
     gl_shader.cpp
     gl_triangle_demo.cpp
 )

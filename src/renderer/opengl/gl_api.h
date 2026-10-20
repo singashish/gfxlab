@@ -5,6 +5,7 @@
 #endif
 
 #include <cstddef>
+#include <cstdint>
 
 #if defined(_WIN32)
     #define GFX_GL_CALL __stdcall
@@ -16,6 +17,7 @@
 using GLenum = unsigned int;
 using GLbitfield = unsigned int;
 using GLuint = unsigned int;
+using GLuint64 = std::uint64_t;
 using GLint = int;
 using GLsizei = int;
 using GLboolean = unsigned char;
@@ -52,6 +54,11 @@ constexpr GLenum GL_FLOAT          = 0x1406;
 constexpr GLenum GL_CULL_FACE = 0x0B44;
 constexpr GLenum GL_DEPTH_TEST = 0x0B71;
 constexpr GLenum GL_BLEND = 0x0BE2;
+
+// GPU timer queries
+constexpr GLenum GL_TIME_ELAPSED = 0x88BF;
+constexpr GLenum GL_QUERY_RESULT = 0x8866;
+constexpr GLenum GL_QUERY_RESULT_AVAILABLE = 0x8867;
 
 constexpr GLenum GL_LESS = 0x0201;
 constexpr GLenum GL_LEQUAL = 0x0203;

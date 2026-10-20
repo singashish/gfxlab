@@ -10,6 +10,10 @@ bool GLRenderer::init(void* native_window) {
         return false;
     }
 
+    if (!m_gpu_timer.init()) {
+        return false;
+    }
+
     if (!m_meshes.init()) {
         return false;
     }
@@ -48,6 +52,9 @@ void GLRenderer::render(const FrameData& frame) {
 
     const Mat4 view_proj = projection * frame.view;
 
+    // Start GPU timing
+    m_gpu_timer.begin();
+
     // Configure the framebuffer and clear it
     glViewport(0, 0, frame.width, frame.height);
     glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
@@ -81,8 +88,15 @@ void GLRenderer::render(const FrameData& frame) {
     // Draw the grid after the opaque objects, as before
     m_grid.draw(gp);
 
+    // Stop GPU timing before presentation and vsync
+    m_gpu_timer.end();
+
     // Present the completed frame
     m_context.swap_buffers();
+}
+
+bool GLRenderer::last_gpu_ms(double& ms) {
+    return m_gpu_timer.take_latest(ms);
 }
 
 MeshId GLRenderer::create_mesh(const Mesh& mesh) {

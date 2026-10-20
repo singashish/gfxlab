@@ -60,6 +60,12 @@ public:
     virtual const char* name() const = 0;
     virtual bool init(void* native_window) = 0;
     virtual void render(const FrameData& frame) = 0;
+    // GPU time of the most recent finished frame, in milliseconds
+    // Returns false if no new measurement is available yet
+    virtual bool last_gpu_ms(double& ms) {
+        (void)ms;
+        return false;
+    }
     virtual void set_vsync(bool enabled) = 0;
     virtual MeshId create_mesh(const Mesh& mesh) = 0;
 };

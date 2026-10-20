@@ -16,6 +16,13 @@
     X(void, PolygonMode, (GLenum face, GLenum mode)) \
     X(void, DrawArrays, (GLenum mode, GLint first, GLsizei count)) \
     X(void, DrawElements, (GLenum mode, GLsizei count, GLenum type, const void* indices)) \
+    /* GPU timer queries */ \
+    X(void, GenQueries, (GLsizei n, GLuint* ids)) \
+    X(void, DeleteQueries, (GLsizei n, const GLuint* ids)) \
+    X(void, BeginQuery, (GLenum target, GLuint id)) \
+    X(void, EndQuery, (GLenum target)) \
+    X(void, GetQueryObjectiv, (GLuint id, GLenum pname, GLint* params)) \
+    X(void, GetQueryObjectui64v, (GLuint id, GLenum pname, GLuint64* params)) \
     /* Shaders and programs */ \
     X(GLuint, CreateShader, (GLenum type)) \
     X(void, ShaderSource, (GLuint shader, GLsizei count, const GLchar* const* string, const GLint* length)) \

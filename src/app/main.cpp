@@ -167,6 +167,16 @@ int main(int argc, char** argv) {
     renderer->set_vsync(vsync);
 
     gfx::FrameTimer timer;
+
+    // GPU samples used for the title-bar average
+    double gpu_sum = 0.0;
+    unsigned int gpu_count = 0;
+
+    // Independent accumulators for one-second logging
+    double log_gpu_sum = 0.0;
+    unsigned int log_gpu_count = 0;
+    double log_elapsed_seconds = 0.0;
+
     bool was_minimized = false;
     float spin_angle = 0.0f;
 
@@ -270,31 +280,101 @@ int main(int argc, char** argv) {
 
         renderer->render(frame);
 
+        double gpu_ms = 0.0;
+
+        if (renderer->last_gpu_ms(gpu_ms)) {
+            gpu_sum += gpu_ms;
+            ++gpu_count;
+
+            log_gpu_sum += gpu_ms;
+            ++log_gpu_count;
+        }
+
+        // Update the title at the same cadence as the FPS display
         if (timer.fps_updated() && timer.fps() > 0.0) {
-            char title[128];
+            const double frame_ms = 1000.0 / timer.fps();
+
+            char gpu_text[48];
+
+            if (gpu_count > 0) {
+                const double average_gpu_ms =
+                    gpu_sum / static_cast<double>(gpu_count);
+
+                std::snprintf(
+                    gpu_text,
+                    sizeof(gpu_text),
+                    "GPU %.3f ms",
+                    average_gpu_ms);
+            } else {
+                std::snprintf(
+                    gpu_text,
+                    sizeof(gpu_text),
+                    "GPU --");
+            }
+
+            char title[192];
 
             if (editor.active()) {
                 std::snprintf(
                     title,
                     sizeof(title),
-                    "gfxlab | %.1f FPS | %.4f ms | %s%s%s",
+                    "gfxlab | %s | %.1f FPS | frame %.3f ms | %s | %s%s%s",
+                    renderer->name(),
                     timer.fps(),
-                    1000.0 / timer.fps(),
+                    frame_ms,
+                    gpu_text,
                     mode_name(editor.mode()),
                     axis_name(editor.axis())[0] != '\0' ? " " : "",
-                    axis_name(editor.axis())
-                );
+                    axis_name(editor.axis()));
             } else {
                 std::snprintf(
                     title,
                     sizeof(title),
-                    "gfxlab | %.1f FPS | %.4f ms",
+                    "gfxlab | %s | %.1f FPS | frame %.3f ms | %s",
+                    renderer->name(),
                     timer.fps(),
-                    1000.0 / timer.fps()
-                );
+                    frame_ms,
+                    gpu_text);
             }
 
             window.set_title(title);
+
+            // Start a fresh averaging interval for the next title update
+            gpu_sum = 0.0;
+            gpu_count = 0;
+        }
+
+        // Print one timing summary approximately every second
+        log_elapsed_seconds += timer.delta_seconds();
+
+        if (log_elapsed_seconds >= 1.0) {
+            const double frame_ms =
+                timer.fps() > 0.0
+                    ? 1000.0 / timer.fps()
+                    : 0.0;
+
+            if (log_gpu_count > 0) {
+                const double average_gpu_ms =
+                    log_gpu_sum /
+                    static_cast<double>(log_gpu_count);
+
+                LOG_INFO(
+                    "%s | frame ms %.3f | GPU ms %.3f",
+                    renderer->name(),
+                    frame_ms,
+                    average_gpu_ms);
+            } else {
+                LOG_INFO(
+                    "%s | frame ms %.3f | GPU ms --",
+                    renderer->name(),
+                    frame_ms);
+            }
+
+            log_gpu_sum = 0.0;
+            log_gpu_count = 0;
+
+            // Retain the fractional remainder to reduce timing drift
+            log_elapsed_seconds -= 1.0;
         }
     };
 
