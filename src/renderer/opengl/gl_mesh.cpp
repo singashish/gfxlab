@@ -90,6 +90,33 @@ void main() {
 }
 )GLSL";
 
+constexpr const char* kWireVertexShader = R"GLSL(
+#version 460 core
+
+layout(location = 0) in vec3 a_position;
+
+uniform mat4 u_model;
+uniform mat4 u_view_proj;
+
+void main() {
+    gl_Position =
+        u_view_proj * u_model * vec4(a_position, 1.0);
+}
+)GLSL";
+
+constexpr const char* kWireFragmentShader = R"GLSL(
+#version 460 core
+
+uniform vec3 u_color;
+
+out vec4 frag_color;
+
+void main() {
+    frag_color = vec4(u_color, 1.0);
+}
+
+)GLSL";
+
 } // namespace
 
 GLMesh::~GLMesh() {
@@ -120,9 +147,25 @@ bool GLMesh::upload(const Mesh& mesh) {
         }
     }
 
+    if (mesh.edges.empty() ||
+        mesh.edges.size() % 2 != 0 ||
+        mesh.edges.size() >
+            static_cast<std::size_t>(
+                std::numeric_limits<GLsizei>::max())) {
+        LOG_ERROR("invalid mesh edge data or edge index count");
+        return false;
+    }
+
+    for (const std::uint32_t index : mesh.edges) {
+        if (index >= mesh.positions.size()) {
+            LOG_ERROR("mesh contains an out-of-range edge index");
+            return false;
+        }
+    }
+
     // Interleave each vertex as:
     // position.x, position.y, position.z,
-    // normal.x, normal.y, normal.z.
+    // normal.x, normal.y, normal.z
     constexpr std::size_t kFloatsPerVertex = 6;
 
     if (mesh.positions.size() >
@@ -175,7 +218,25 @@ bool GLMesh::upload(const Mesh& mesh) {
         return false;
     }
 
+    if (mesh.edges.size() >
+        std::numeric_limits<std::size_t>::max() /
+            sizeof(std::uint32_t)) {
+        LOG_ERROR("mesh edge buffer size overflow");
+        return false;
+    }
+
+    const std::size_t edge_buffer_bytes =
+        mesh.edges.size() * sizeof(std::uint32_t);
+
+    if (edge_buffer_bytes >
+        static_cast<std::size_t>(
+            std::numeric_limits<GLsizeiptr>::max())) {
+        LOG_ERROR("mesh edge buffer exceeds OpenGL size limit");
+        return false;
+    }
+
     m_index_count = static_cast<GLsizei>(mesh.indices.size());
+    m_edge_index_count = static_cast<GLsizei>(mesh.edges.size());
 
     // Discard stale OpenGL errors without an unbounded loop
     for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) {
@@ -252,6 +313,49 @@ bool GLMesh::upload(const Mesh& mesh) {
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
+    // Create a separate VAO for wireframe drawing
+    glGenVertexArrays(1, &m_edge_vao);
+    if (m_edge_vao == 0) {
+        LOG_ERROR("failed to create mesh edge VAO");
+        shutdown();
+        return false;
+    }
+
+    glBindVertexArray(m_edge_vao);
+
+    // Reuse the same interleaved vertex buffer
+    // Attribute 0 is position; normals are not needed for wireframe
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(
+        0,
+        3,
+        GL_FLOAT,
+        GL_FALSE,
+        static_cast<GLsizei>(6 * sizeof(float)),
+        nullptr
+    );
+
+    // Create and upload the edge EBO while the edge VAO is bound
+    glGenBuffers(1, &m_edge_ebo);
+    if (m_edge_ebo == 0) {
+        LOG_ERROR("failed to create mesh edge EBO");
+        glBindVertexArray(0);
+        shutdown();
+        return false;
+    }
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_edge_ebo);
+    glBufferData(
+        GL_ELEMENT_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(edge_buffer_bytes),
+        mesh.edges.data(),
+        GL_STATIC_DRAW
+    );
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
     if (glGetError() != GL_NO_ERROR) {
         LOG_ERROR("OpenGL error while uploading mesh");
         shutdown();
@@ -276,6 +380,21 @@ void GLMesh::draw() const {
     glBindVertexArray(0);
 }
 
+void GLMesh::draw_edges() const {
+    if (m_edge_vao == 0 || m_edge_index_count <= 0) {
+        return;
+    }
+
+    glBindVertexArray(m_edge_vao);
+    glDrawElements(
+        GL_LINES,
+        m_edge_index_count,
+        GL_UNSIGNED_INT,
+        nullptr
+    );
+    glBindVertexArray(0);
+}
+
 void GLMesh::shutdown() {
     if (m_vao != 0) {
         glDeleteVertexArrays(1, &m_vao);
@@ -292,7 +411,18 @@ void GLMesh::shutdown() {
         m_ebo = 0;
     }
 
+    if (m_edge_vao != 0) {
+        glDeleteVertexArrays(1, &m_edge_vao);
+        m_edge_vao = 0;
+    }
+
+    if (m_edge_ebo != 0) {
+        glDeleteBuffers(1, &m_edge_ebo);
+        m_edge_ebo = 0;
+    }
+
     m_index_count = 0;
+    m_edge_index_count = 0;
 }
 
 GLMeshRenderer::~GLMeshRenderer() {
@@ -333,6 +463,34 @@ bool GLMeshRenderer::init() {
         return false;
     }
 
+    m_wire_program = gl_create_program(
+        kWireVertexShader,
+        kWireFragmentShader
+    );
+
+    if (m_wire_program == 0) {
+        LOG_ERROR("failed to create wireframe shader program");
+        shutdown();
+        return false;
+    }
+
+    m_wire_view_proj_location =
+        gl_uniform_location(m_wire_program, "u_view_proj");
+
+    m_wire_model_location =
+        gl_uniform_location(m_wire_program, "u_model");
+
+    m_wire_color_location =
+        gl_uniform_location(m_wire_program, "u_color");
+
+    if (m_wire_view_proj_location < 0 ||
+        m_wire_model_location < 0 ||
+        m_wire_color_location < 0) {
+        LOG_ERROR("wireframe shader uniforms are missing");
+        shutdown();
+        return false;
+    }
+
     return true;
 }
 
@@ -357,8 +515,7 @@ MeshId GLMeshRenderer::add(const Mesh& mesh) {
 }
 
 void GLMeshRenderer::draw(const std::vector<DrawItem>& items,
-                          const Mat4& view_proj,
-                          const Mat4& view) const {
+                          const Mat4& view_proj, const Mat4& view) const {
     if (m_program == 0 || items.empty()) {
         return;
     }
@@ -405,6 +562,49 @@ void GLMeshRenderer::draw(const std::vector<DrawItem>& items,
     }
 }
 
+void GLMeshRenderer::draw_wireframe(const std::vector<DrawItem>& items,
+                                    const Mat4& view_proj) const {
+    if (m_wire_program == 0 || items.empty()) {
+        return;
+    }
+
+    glUseProgram(m_wire_program);
+
+    // Shared by all meshes in this frame
+    glUniformMatrix4fv(
+        m_wire_view_proj_location,
+        1,
+        GL_FALSE,
+        &view_proj.col[0].x
+    );
+
+    // Uniform, unlit wire color
+    glUniform3f(
+        m_wire_color_location,
+        0.85f,
+        0.85f,
+        0.85f
+    );
+
+    for (const DrawItem& item : items) {
+        if (item.mesh == 0 ||
+            static_cast<std::size_t>(item.mesh) > m_meshes.size()) {
+            continue;
+        }
+
+        glUniformMatrix4fv(
+            m_wire_model_location,
+            1,
+            GL_FALSE,
+            &item.model.col[0].x
+        );
+
+        m_meshes[
+            static_cast<std::size_t>(item.mesh) - 1
+        ]->draw_edges();
+    }
+}
+
 void GLMeshRenderer::shutdown() {
     // Release GPU meshes while the OpenGL context is alive
     m_meshes.clear();
@@ -414,10 +614,19 @@ void GLMeshRenderer::shutdown() {
         m_program = 0;
     }
 
+    if (m_wire_program != 0) {
+        glDeleteProgram(m_wire_program);
+        m_wire_program = 0;
+    }
+
     m_view_location = -1;
     m_view_proj_location = -1;
     m_model_location = -1;
     m_normal_model_location = -1;
+
+    m_wire_view_proj_location = -1;
+    m_wire_model_location = -1;
+    m_wire_color_location = -1;
 }
 
 } // namespace gfx

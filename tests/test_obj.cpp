@@ -2,6 +2,7 @@
 #include "check.h"
 
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -79,6 +80,7 @@ void test_triangle() {
     CHECK(mesh.positions.size() == 3);
     CHECK(mesh.indices.size() == 3);
     CHECK(mesh.triangle_count() == 1);
+    CHECK(mesh.edges.size() == 6);
     CHECK(!mesh.has_normals());
 
     CHECK(mesh.indices[0] == 0);
@@ -101,12 +103,35 @@ f 1 2 3 4
     CHECK(parse(obj, mesh, error));
     CHECK(mesh.positions.size() == 4);
     CHECK(mesh.indices.size() == 6);
+    CHECK(mesh.edges.size() == 8);
 
     const std::uint32_t expected[] = {0, 1, 2, 0, 2, 3};
 
     for (std::size_t i = 0; i < 6; ++i) {
         CHECK(mesh.indices[i] == expected[i]);
     }
+}
+
+void test_two_quads_share_edge() {
+    const char* obj = R"OBJ(
+v 0 0 0
+v 1 0 0
+v 2 0 0
+v 0 1 0
+v 1 1 0
+v 2 1 0
+f 1 2 5 4
+f 2 3 6 5
+)OBJ";
+
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(parse(obj, mesh, error));
+
+    // Two quads have 8 boundary-edge occurrences,
+    // but their shared edge must only be stored once
+    CHECK(mesh.edges.size() == 14);
 }
 
 void test_negative_indices() {
@@ -274,6 +299,7 @@ void expect_failure(std::string_view obj) {
     CHECK(mesh.positions.empty());
     CHECK(mesh.normals.empty());
     CHECK(mesh.indices.empty());
+    CHECK(mesh.edges.empty());
 }
 
 void test_invalid_inputs() {
@@ -319,6 +345,7 @@ void test_missing_file() {
     CHECK(mesh.positions.empty());
     CHECK(mesh.normals.empty());
     CHECK(mesh.indices.empty());
+    CHECK(mesh.edges.empty());
 }
 
 void test_cube_bounds() {
@@ -448,10 +475,25 @@ void test_cube_without_normals() {
     CHECK(load_obj(cube_no_normals_path, mesh, error));
 
     CHECK(ensure_normals(mesh));
+    CHECK(mesh.edges.size() == 24);
 
     CHECK(mesh.positions.size() == 36);
     CHECK(mesh.indices.size() == 36);
     CHECK(mesh.normals.size() == 36);
+
+    for (const std::uint32_t index : mesh.edges) {
+        CHECK(index < mesh.positions.size());
+
+        if (index >= mesh.positions.size()) {
+            continue;
+        }
+
+        const gfx::Vec3& p = mesh.positions[index];
+
+        CHECK(approx(std::abs(p.x), 1.0));
+        CHECK(approx(std::abs(p.y), 1.0));
+        CHECK(approx(std::abs(p.z), 1.0));
+    }
 
     for (std::size_t i = 0; i < mesh.indices.size(); ++i) {
         CHECK(mesh.indices[i] == i);
@@ -521,12 +563,48 @@ void test_small_triangle_normal() {
     }
 }
 
+void test_cube_has_twelve_edges() {
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(parse(kCubeWithNormals, mesh, error));
+
+    // Six quad faces, each with four edges
+    // Twelve unique edges after removing shared duplicates
+    CHECK(mesh.edges.size() == 24);
+}
+
+void test_ensure_edges_fallback() {
+    gfx::Mesh mesh;
+
+    mesh.positions = {
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {1.0f, 1.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f}
+    };
+
+    // Two triangles form a quad. The shared diagonal is deduplicated,
+    // leaving five unique edges, including that diagonal
+    mesh.indices = {0, 1, 2, 0, 2, 3};
+
+    gfx::ensure_edges(mesh);
+
+    CHECK(mesh.edges.size() == 10);
+
+    // Calling it again must not duplicate existing edges
+    gfx::ensure_edges(mesh);
+
+    CHECK(mesh.edges.size() == 10);
+}
+
 } // namespace
 
 
 int main() {
     test_triangle();
     test_quad_triangulation();
+    test_two_quads_share_edge();
     test_negative_indices();
     test_position_texcoord_normal();
     test_position_double_slash_normal();
@@ -546,6 +624,8 @@ int main() {
     test_cube_without_normals();
     test_cube_with_normals();
     test_small_triangle_normal();
+    test_cube_has_twelve_edges();
+    test_ensure_edges_fallback();
 
     if (g_failures == 0) {
         std::printf("All OBJ tests passed\n");

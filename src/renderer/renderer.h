@@ -43,6 +43,9 @@ struct FrameData {
     // World distance at which the grid completely fades
     float grid_fade_end = 100.0f;
 
+    // Render triangle edges instead of filled triangles
+    bool wireframe = false;
+
     // Temporary demo animation state, replaced by a draw list in M3
     float demo_spin_angle = 0.0f;
 

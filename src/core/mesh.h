@@ -13,6 +13,7 @@ struct Mesh {
     std::vector<Vec3> positions;
     std::vector<Vec3> normals;          // empty if the file had no (complete) normals
     std::vector<std::uint32_t> indices; // 3 per triangle
+    std::vector<std::uint32_t> edges; // 2 indices per unique edge
 
     bool has_normals() const {
         return !normals.empty();
@@ -40,5 +41,8 @@ void mesh_y_up_to_z_up(Mesh& mesh);
 // Makes sure there is one unit-length normal per vertex
 // Returns true if normals had to be generated
 bool ensure_normals(Mesh& mesh);
+
+// Builds deduplicated triangle edges if the mesh has no edge list
+void ensure_edges(Mesh& mesh);
 
 } // namespace gfx

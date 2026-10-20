@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <utility>
 #include <vector>
+#include <limits>
+#include <algorithm>
+#include <set>
 
 namespace gfx {
 
@@ -95,11 +98,23 @@ bool ensure_normals(Mesh& mesh) {
         return false;
     }
 
-    // Without valid per-vertex normals, unweld the mesh so each triangle
-    // can have its own flat normal
+    // Without valid per-vertex normals, unweld the mesh so each
+    // triangle can have its own flat normal
+    const std::size_t old_vertex_count = mesh.positions.size();
+
     std::vector<Vec3> new_positions;
     std::vector<Vec3> new_normals;
     std::vector<std::uint32_t> new_indices;
+
+    // first_copy[old_index] stores the first new vertex corresponding
+    // to that old vertex. Multiple triangles may copy the same vertex
+    const std::uint32_t kUnmapped =
+        std::numeric_limits<std::uint32_t>::max();
+
+    std::vector<std::uint32_t> first_copy(
+        old_vertex_count,
+        kUnmapped
+    );
 
     const std::size_t triangle_count = mesh.indices.size() / 3;
 
@@ -112,12 +127,10 @@ bool ensure_normals(Mesh& mesh) {
         const std::uint32_t ib = mesh.indices[i + 1];
         const std::uint32_t ic = mesh.indices[i + 2];
 
-        // Defensive check: the OBJ loader already validates indices
-        // This prevents out-of-bounds access if another caller supplies
-        // an invalid mesh. False here does not mean normals were present
-        if (ia >= mesh.positions.size() ||
-            ib >= mesh.positions.size() ||
-            ic >= mesh.positions.size()) {
+        // Defensive validation before indexing the old positions
+        if (ia >= old_vertex_count ||
+            ib >= old_vertex_count ||
+            ic >= old_vertex_count) {
             return false;
         }
 
@@ -130,6 +143,17 @@ bool ensure_normals(Mesh& mesh) {
 
         const std::uint32_t base =
             static_cast<std::uint32_t>(new_positions.size());
+
+        // Record the first copy of each original vertex
+        if (first_copy[ia] == kUnmapped) {
+            first_copy[ia] = base;
+        }
+        if (first_copy[ib] == kUnmapped) {
+            first_copy[ib] = base + 1;
+        }
+        if (first_copy[ic] == kUnmapped) {
+            first_copy[ic] = base + 2;
+        }
 
         new_positions.push_back(pa);
         new_positions.push_back(pb);
@@ -144,11 +168,70 @@ bool ensure_normals(Mesh& mesh) {
         new_indices.push_back(base + 2);
     }
 
+    // Validate and remap the edge list before replacing the old arrays
+    std::vector<std::uint32_t> new_edges;
+    new_edges.reserve(mesh.edges.size());
+
+    if (mesh.edges.size() % 2 != 0) {
+        return false;
+    }
+
+    for (const std::uint32_t old_index : mesh.edges) {
+        if (old_index >= old_vertex_count ||
+            first_copy[old_index] == kUnmapped) {
+            return false;
+        }
+
+        new_edges.push_back(first_copy[old_index]);
+    }
+
     mesh.positions = std::move(new_positions);
     mesh.normals = std::move(new_normals);
     mesh.indices = std::move(new_indices);
+    mesh.edges = std::move(new_edges);
 
     return true;
+}
+
+void ensure_edges(Mesh& mesh) {
+    // An existing edge list came from the original polygon topology
+    // Do not replace it with triangle edges, which would add diagonals
+    if (!mesh.edges.empty()) {
+        return;
+    }
+
+    std::set<std::uint64_t> edge_keys;
+
+    for (std::size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+        const std::uint32_t triangle[] = {
+            mesh.indices[i],
+            mesh.indices[i + 1],
+            mesh.indices[i + 2]
+        };
+
+        for (std::size_t j = 0; j < 3; ++j) {
+            const std::uint32_t a = triangle[j];
+            const std::uint32_t b = triangle[(j + 1) % 3];
+
+            if (a >= mesh.positions.size() ||
+                b >= mesh.positions.size() ||
+                a == b) {
+                continue;
+            }
+
+            const std::uint32_t lo = std::min(a, b);
+            const std::uint32_t hi = std::max(a, b);
+
+            const std::uint64_t key =
+                (static_cast<std::uint64_t>(lo) << 32) |
+                static_cast<std::uint64_t>(hi);
+
+            if (edge_keys.insert(key).second) {
+                mesh.edges.push_back(a);
+                mesh.edges.push_back(b);
+            }
+        }
+    }
 }
 
 } // namespace gfx

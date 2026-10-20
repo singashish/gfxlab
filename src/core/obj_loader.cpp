@@ -1,5 +1,6 @@
 #include "core/obj_loader.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <fstream>
@@ -11,6 +12,7 @@
 #include <utility>
 #include <vector>
 #include <iterator>
+#include <set>
 
 namespace gfx {
 namespace {
@@ -24,6 +26,7 @@ void clear_mesh(Mesh& mesh) {
     mesh.positions.clear();
     mesh.normals.clear();
     mesh.indices.clear();
+    mesh.edges.clear();
 }
 
 bool fail(Mesh& out, std::string& error, std::size_t line_number, 
@@ -249,6 +252,7 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
     std::vector<Vec3> source_normals;
 
     std::map<std::pair<int, int>, std::uint32_t> vertex_map;
+    std::set<std::uint64_t> edge_keys;
 
     bool every_corner_has_normal = true;
     bool has_face = false;
@@ -403,6 +407,33 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
 
                 vertex_map.emplace(key, output_index);
                 face_indices.push_back(output_index);
+            }
+
+            // Preserve the original polygon boundary before triangulation.
+            // Deduplicate using OBJ position indices, not output vertex indices,
+            // because vertices may be duplicated when normals differ.
+            for (std::size_t i = 0; i < face.size(); ++i) {
+                const std::size_t next = (i + 1) % face.size();
+
+                const std::uint32_t va = face_indices[i];
+                const std::uint32_t vb = face_indices[next];
+
+                const std::uint32_t pa =
+                    static_cast<std::uint32_t>(face[i].position);
+                const std::uint32_t pb =
+                    static_cast<std::uint32_t>(face[next].position);
+
+                const std::uint32_t lo = std::min(pa, pb);
+                const std::uint32_t hi = std::max(pa, pb);
+
+                const std::uint64_t key =
+                    (static_cast<std::uint64_t>(lo) << 32) |
+                    static_cast<std::uint64_t>(hi);
+
+                if (edge_keys.insert(key).second) {
+                    out.edges.push_back(va);
+                    out.edges.push_back(vb);
+                }
             }
 
             // Fan triangulation:

@@ -123,6 +123,8 @@ int main(int argc, char** argv) {
 
         const bool normals_generated = gfx::ensure_normals(mesh);
 
+        gfx::ensure_edges(mesh);
+
         if (normals_generated) {
             LOG_INFO("normals generated (flat)");
         } else {
@@ -160,6 +162,8 @@ int main(int argc, char** argv) {
     LOG_INFO("renderer: %s", renderer->name());
 
     bool vsync = true;
+    bool wireframe = false;
+
     renderer->set_vsync(vsync);
 
     gfx::FrameTimer timer;
@@ -237,6 +241,7 @@ int main(int argc, char** argv) {
 
         frame.width = window.width();
         frame.height = window.height();
+        frame.wireframe = wireframe;
 
         frame.view = camera.view();
         frame.eye = camera.eye();
@@ -460,6 +465,12 @@ int main(int argc, char** argv) {
             vsync = !vsync;
             renderer->set_vsync(vsync);
             LOG_INFO("vsync: %s", vsync ? "on" : "off");
+        }
+    
+        // Toggle wireframe with W
+        if (in.key_pressed(gfx::Key::GFX_KEY_W)) {
+            wireframe = !wireframe;
+            LOG_INFO("wireframe: %s", wireframe ? "on" : "off");
         }
 
         // ------------------------------------------------------------

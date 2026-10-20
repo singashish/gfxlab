@@ -58,8 +58,11 @@ void GLRenderer::render(const FrameData& frame) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // Draw opaque geometry first
+    // The demo triangles remain solid; wireframe applies to loaded meshes
     if (frame.draw_list.empty()) {
         m_triangle.draw(view_proj, frame.demo_spin_angle);
+    } else if (frame.wireframe) {
+        m_meshes.draw_wireframe(frame.draw_list, view_proj);
     } else {
         m_meshes.draw(frame.draw_list, view_proj, frame.view);
     }
