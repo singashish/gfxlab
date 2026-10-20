@@ -212,7 +212,6 @@ bool VulkanMeshRenderer::init(VkDevice device, VkFormat color_format,
         return false;
     }
 
-    LOG_INFO("Vulkan wireframe pipeline created");
     LOG_INFO("Vulkan mesh pipeline created");
     return true;
 }

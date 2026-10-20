@@ -36,6 +36,33 @@ __device__ __forceinline__ int clamp_int(
     return value < low ? low : (value > high ? high : value);
 }
 
+__device__ __forceinline__ bool clip_test(
+                float p,
+                float q,
+                float& t_enter,
+                float& t_exit) {
+
+    if (p == 0.0f) {
+        return q >= 0.0f;
+    }
+
+    const float r = q / p;
+
+    if (p < 0.0f) {
+        if (r > t_exit) {
+            return false;
+        }
+        t_enter = fmaxf(t_enter, r);
+    } else {
+        if (r < t_enter) {
+            return false;
+        }
+        t_exit = fminf(t_exit, r);
+    }
+
+    return true;
+}
+
 __device__ __forceinline__ bool edge_inside(
     long long edge, bool top_left) {
     return edge + (top_left ? 0LL : -1LL) >= 0;
@@ -242,6 +269,145 @@ __global__ void transform_vertices_kernel(
 
     out[i].screen = make_float4(
         screen_x, screen_y, depth01, clip.w);
+}
+
+__global__ void cuda_draw_edges_kernel(
+                unsigned long long* visibility,
+                int width,
+                int height,
+                DeviceMesh mesh,
+                const ProjectedVertex* vertices) {
+
+    const unsigned int edge =
+        blockIdx.x * blockDim.x + threadIdx.x;
+
+    const unsigned int edge_count =
+        mesh.edge_index_count / 2;
+
+    if (edge >= edge_count) {
+        return;
+    }
+
+    const std::uint32_t i0 = mesh.edges[edge * 2];
+    const std::uint32_t i1 = mesh.edges[edge * 2 + 1];
+
+    const float4 a = vertices[i0].screen;
+    const float4 b = vertices[i1].screen;
+
+    // Step 5 will handle edges crossing the near plane.
+    // For now, reject invalid endpoints.
+    if (!isfinite(a.x) || !isfinite(a.y) ||
+        !isfinite(a.z) || !isfinite(a.w) ||
+        !isfinite(b.x) || !isfinite(b.y) ||
+        !isfinite(b.z) || !isfinite(b.w) ||
+        a.w <= 0.0f || b.w <= 0.0f) {
+        return;
+    }
+
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+
+    if (!isfinite(dx) || !isfinite(dy)) {
+        return;
+    }
+
+    // Liang-Barsky clipping against the viewport.
+    float t_enter = 0.0f;
+    float t_exit = 1.0f;
+
+    if (!clip_test(-dx, a.x, t_enter, t_exit) ||
+        !clip_test( dx, width - a.x, t_enter, t_exit) ||
+        !clip_test(-dy, a.y, t_enter, t_exit) ||
+        !clip_test( dy, height - a.y, t_enter, t_exit) ||
+        t_enter > t_exit) {
+        return;
+    }
+
+    // Interpolate the clipped endpoints, including depth.
+    const float x0 = a.x + t_enter * dx;
+    const float y0 = a.y + t_enter * dy;
+    const float z0 = a.z + t_enter * (b.z - a.z);
+
+    const float x1 = a.x + t_exit * dx;
+    const float y1 = a.y + t_exit * dy;
+    const float z1 = a.z + t_exit * (b.z - a.z);
+
+    if (!isfinite(x0) || !isfinite(y0) ||
+        !isfinite(z0) || !isfinite(x1) ||
+        !isfinite(y1) || !isfinite(z1)) {
+        return;
+    }
+
+    const float line_dx = x1 - x0;
+    const float line_dy = y1 - y0;
+
+    const float max_delta =
+        fmaxf(fabsf(line_dx), fabsf(line_dy));
+
+    // Even a zero-length edge must produce one sample.
+    const int steps = static_cast<int>(ceilf(max_delta));
+
+    for (int i = 0; i <= steps; ++i) {
+        const float t = steps > 0
+            ? static_cast<float>(i) / steps
+            : 0.0f;
+
+        const float x = x0 + t * line_dx;
+        const float y = y0 + t * line_dy;
+        const float z = z0 + t * (z1 - z0);
+
+        if (!isfinite(x) || !isfinite(y) ||
+            !isfinite(z) || z < 0.0f || z > 1.0f) {
+            continue;
+        }
+
+        const int px = static_cast<int>(floorf(x));
+        const int py = static_cast<int>(floorf(y));
+
+        // Clipping to width/height can still produce a coordinate
+        // equal to the dimension itself. Such a pixel is outside.
+        if (px < 0 || px >= width ||
+            py < 0 || py >= height) {
+            continue;
+        }
+
+        const unsigned int depth_bits = __float_as_uint(z);
+
+        constexpr unsigned int kWireId = 1;
+
+        const unsigned long long packed =
+            (static_cast<unsigned long long>(depth_bits) << 32) |
+            static_cast<unsigned long long>(kWireId);
+
+        atomicMin(
+            &visibility[pixel_index(px, py, width)],
+            packed);
+    }
+}
+
+__global__ void cuda_resolve_wire_kernel(
+                uchar4* color,
+                const unsigned long long* visibility,
+                int width,
+                int height) {
+
+    const int x =
+        blockIdx.x * blockDim.x + threadIdx.x;
+    const int y =
+        blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height) {
+        return;
+    }
+
+    const std::size_t pixel = pixel_index(x, y, width);
+
+    if (visibility[pixel] == ~0ULL) {
+        return;
+    }
+
+    color[pixel] = make_uchar4(
+        217, 217, 217, 255);
 }
 
 __global__ void rasterize_triangles_kernel(
@@ -948,6 +1114,70 @@ bool cuda_rasterize_triangles(
             width, height, mesh, vertices, triangle_base);
 
     return check_launch("CUDA large-triangle rasterizer launch");
+}
+
+bool cuda_draw_edges(
+                std::uint64_t* visibility,
+                int width,
+                int height,
+                const DeviceMesh& mesh,
+                const ProjectedVertex* vertices) {
+
+    if (!visibility || width <= 0 || height <= 0) {
+        LOG_ERROR("CUDA edge rasterizer: invalid arguments");
+        return false;
+    }
+
+    if (mesh.edge_index_count == 0) {
+        return true;
+    }
+
+    if (!mesh.edges || !vertices ||
+        mesh.edge_index_count % 2 != 0) {
+        LOG_ERROR("CUDA edge rasterizer: invalid edge data");
+        return false;
+    }
+
+    const unsigned int edge_count =
+        mesh.edge_index_count / 2;
+
+    const unsigned int blocks =
+        (edge_count + kThreads - 1) / kThreads;
+
+    cuda_draw_edges_kernel<<<blocks, kThreads>>>(
+        reinterpret_cast<unsigned long long*>(visibility),
+        width,
+        height,
+        mesh,
+        vertices);
+
+    return check_launch("CUDA edge rasterizer launch");
+}
+
+bool cuda_resolve_wire(
+                uchar4* color,
+                const std::uint64_t* visibility,
+                int width,
+                int height) {
+
+    if (!color || !visibility ||
+        width <= 0 || height <= 0) {
+        LOG_ERROR("CUDA wire resolve: invalid arguments");
+        return false;
+    }
+
+    const dim3 threads(kTile, kTile);
+    const dim3 blocks(
+        (width + kTile - 1) / kTile,
+        (height + kTile - 1) / kTile);
+
+    cuda_resolve_wire_kernel<<<blocks, threads>>>(
+        color,
+        reinterpret_cast<const unsigned long long*>(visibility),
+        width,
+        height);
+
+    return check_launch("CUDA wire resolve kernel launch");
 }
 
 bool cuda_shade_item(

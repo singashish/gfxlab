@@ -44,6 +44,19 @@ bool cuda_rasterize_triangles(
                 const ProjectedVertex* vertices,
                 std::uint32_t triangle_base);
 
+bool cuda_draw_edges(
+                std::uint64_t* visibility,
+                int width,
+                int height,
+                const DeviceMesh& mesh,
+                const ProjectedVertex* vertices);
+
+bool cuda_resolve_wire(
+                uchar4* color,
+                const std::uint64_t* visibility,
+                int width,
+                int height);
+
 bool cuda_shade_item(
                 uchar4* color,
                 const std::uint64_t* visibility,

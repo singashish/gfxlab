@@ -334,20 +334,34 @@ void CudaRenderer::render(const FrameData& frame) {
                 return;
             }
 
-            records.push_back({
-                mesh,
-                item_vertices,
-                triangle_base
-            });
-
-            if (!cuda_rasterize_triangles(
-                    visibility,
-                    m_width,
-                    m_height,
-                    *mesh,
+            if (frame.wireframe) {
+                // Wireframe uses the same transformed vertices,
+                // but writes edge depths instead of triangle IDs
+                if (!cuda_draw_edges(
+                        visibility,
+                        m_width,
+                        m_height,
+                        *mesh,
+                        item_vertices)) {
+                    return;
+                }
+            } else {
+                // Solid mode retains the existing deferred shading path
+                records.push_back({
+                    mesh,
                     item_vertices,
-                    triangle_base)) {
-                return;
+                    triangle_base
+                });
+
+                if (!cuda_rasterize_triangles(
+                        visibility,
+                        m_width,
+                        m_height,
+                        *mesh,
+                        item_vertices,
+                        triangle_base)) {
+                    return;
+                }
             }
         }
 
@@ -360,8 +374,16 @@ void CudaRenderer::render(const FrameData& frame) {
         m_stage_timer.mark(2);
     }
 
-    // Pass 3: shade after all items have populated visibility
-    if constexpr (kDebugTriangleIds) {
+    // Pass 3: resolve wire pixels or shade solid triangles
+    if (frame.wireframe) {
+        if (!cuda_resolve_wire(
+                color,
+                visibility,
+                m_width,
+                m_height)) {
+            return;
+        }
+    } else if constexpr (kDebugTriangleIds) {
         if (!cuda_resolve_ids(
                 color, visibility, m_width, m_height)) {
             return;
@@ -384,6 +406,11 @@ void CudaRenderer::render(const FrameData& frame) {
                 return;
             }
         }
+    }
+
+    // Profile marker 3: shading or wire resolution has been submitted
+    if constexpr (kProfileStages) {
+        m_stage_timer.mark(3);
     }
 
     // Profile marker 3: shading or debug-ID resolution has been submitted

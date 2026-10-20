@@ -11,9 +11,11 @@ struct DeviceMesh {
     Vec3* positions = nullptr;
     Vec3* normals = nullptr;
     std::uint32_t* indices = nullptr;
+    std::uint32_t* edges = nullptr;
 
     std::uint32_t vertex_count = 0;
     std::uint32_t index_count = 0;
+    std::uint32_t edge_index_count = 0;
 };
 
 class CudaMeshStore {

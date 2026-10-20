@@ -30,6 +30,12 @@ void free_device_mesh(DeviceMesh& mesh) {
                       "cudaFree mesh indices");
     }
 
+    if (mesh.edges) {
+        (void)cuda_ok(
+            cudaFree(mesh.edges),
+            "cudaFree mesh edges");
+    }
+
     mesh = {};
 }
 
@@ -114,17 +120,45 @@ MeshId CudaMeshStore::add(const Mesh& mesh) {
         }
     }
 
+    if (!mesh.edges.empty()) {
+        if (mesh.edges.size() % 2 != 0) {
+            LOG_ERROR(
+                "CUDA mesh: edge index count must be even");
+            return 0;
+        }
+
+        if (mesh.edges.size() >
+            std::numeric_limits<std::uint32_t>::max()) {
+            LOG_ERROR(
+                "CUDA mesh: edge index count exceeds supported range");
+            return 0;
+        }
+
+        for (std::uint32_t index : mesh.edges) {
+            if (index >= vertex_count) {
+                LOG_ERROR(
+                    "CUDA mesh: edge index %u exceeds vertex count %u",
+                    index, vertex_count);
+                return 0;
+            }
+        }
+    }
+
     DeviceMesh device{};
     device.vertex_count = vertex_count;
     device.index_count =
         static_cast<std::uint32_t>(mesh.indices.size());
+    device.edge_index_count =
+        static_cast<std::uint32_t>(mesh.edges.size());
 
     if (!upload_array(device.positions, mesh.positions,
                       "CUDA mesh positions upload") ||
         !upload_array(device.normals, mesh.normals,
                       "CUDA mesh normals upload") ||
         !upload_array(device.indices, mesh.indices,
-                      "CUDA mesh indices upload")) {
+                      "CUDA mesh indices upload") ||
+        !upload_array(device.edges, mesh.edges,
+                      "CUDA mesh edges upload")) {
         free_device_mesh(device);
         return 0;
     }
