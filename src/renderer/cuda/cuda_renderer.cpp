@@ -446,7 +446,7 @@ void CudaRenderer::render(const FrameData& frame) {
             }
 
             inst.mesh = *mesh;
-            inst.normal_to_view = frame.view * item.normal_matrix;
+            inst.normal_to_world = item.normal_matrix;
             ++rt_scene.count;
         }
     }
@@ -554,6 +554,16 @@ void CudaRenderer::render(const FrameData& frame) {
         // exactly the depth range the rasterizer keeps
         rt_scene.t_min = frame.near_plane;
         rt_scene.t_max = frame.far_plane;
+
+        // The key light is defined in view space; shadow rays need it in
+        // world space. The view matrix is a rotation plus a translation,
+        // so it always has an inverse
+        Mat4 view_to_world = mat4_identity();
+        (void)mat4_inverse(frame.view, view_to_world);
+
+        rt_scene.key_world = normalize(transform_direction(
+            view_to_world, key_light_view_dir()));
+        rt_scene.background = background;
 
         if (rt_scene.count > 0 &&
             !cuda_ray_trace(

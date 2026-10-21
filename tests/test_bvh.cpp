@@ -148,6 +148,26 @@ void check_against_brute_force(const gfx::Bvh& bvh,
             ++mismatches;
         }
 
+        // The any-hit query (shadow rays) must agree as well: blocked
+        // with no distance limit exactly when there is a closest hit,
+        // never blocked before the closest hit, blocked just after it
+        if (gfx::bvh_occluded(bvh, mesh, origin, dir,
+                              0.0f, 1.0e30f) != brute_hit) {
+            ++mismatches;
+        }
+
+        if (brute_hit) {
+            if (gfx::bvh_occluded(bvh, mesh, origin, dir,
+                                  0.0f, brute_t * 0.999f)) {
+                ++mismatches;
+            }
+
+            if (!gfx::bvh_occluded(bvh, mesh, origin, dir,
+                                   0.0f, brute_t * 1.001f)) {
+                ++mismatches;
+            }
+        }
+
         hits += brute_hit ? 1 : 0;
     }
 

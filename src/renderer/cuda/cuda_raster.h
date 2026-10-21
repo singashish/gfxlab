@@ -47,13 +47,21 @@ struct RasterWork {
     unsigned int capacity = 0;
 };
 
+// The key light of the viewport lighting, in view space: up, to the
+// left and towards the viewer, so it moves with the camera like the
+// OpenGL and Vulkan lighting. Shared by the shading code and the
+// shadow rays so they always agree
+GFX_HD inline Vec3 key_light_view_dir() {
+    return normalize(Vec3{-0.5f, 0.6f, 0.7f});
+}
+
 // One mesh instance as the ray tracer sees it. Rays are moved into the
 // mesh's own space with world_to_object, so the BVH (built once, in
 // object space) stays valid while the model is moved, rotated or scaled
 struct RtInstance {
     DeviceMesh mesh;
     Mat4 world_to_object;  // inverse of the model matrix
-    Mat4 normal_to_view;   // view * normal matrix, as in the rasterizer
+    Mat4 normal_to_world;  // the model's normal matrix
 };
 
 // Passed to the kernel by value (well under the 4 KB parameter limit),
@@ -78,6 +86,12 @@ struct RtScene {
     Vec3 up_view;    // world +Z in view space, for the ambient term
     float t_min;     // near plane
     float t_max;     // far plane
+
+    // Shadows: direction towards the key light in world space (the
+    // light is infinitely far away, like the sun), and the clear colour
+    // that the floor shadow darkens
+    Vec3 key_world;
+    uchar4 background;
 };
 
 struct CudaGridParams {

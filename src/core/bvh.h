@@ -168,6 +168,70 @@ GFX_HD inline bool bvh_trace(const BvhNode* nodes,
     return found;
 }
 
+// Any-hit query for shadow rays: is there ANY triangle along
+// origin + t * dir for t in (t_min, t_max)? It stops at the first hit it
+// finds, so it needs no closest-first ordering and is cheaper than
+// bvh_trace
+GFX_HD inline bool bvh_occluded(const BvhNode* nodes,
+                                const std::uint32_t* tri_indices,
+                                const Vec3* positions,
+                                const std::uint32_t* indices,
+                                Vec3 origin,
+                                Vec3 dir,
+                                float t_min,
+                                float t_max) {
+    if (nodes == nullptr) {
+        return false;
+    }
+
+    const Vec3 inv_dir = ray_inverse_direction(dir);
+
+    std::uint32_t stack[kBvhStackSize];
+    int top = 0;
+    stack[top++] = 0;
+
+    while (top > 0) {
+        const BvhNode& node = nodes[stack[--top]];
+
+        float t_entry = 0.0f;
+
+        if (!ray_hits_box(origin, inv_dir,
+                          node.box_min, node.box_max,
+                          t_max, t_entry)) {
+            continue;
+        }
+
+        if (node.count > 0) {
+            for (std::uint32_t i = 0; i < node.count; ++i) {
+                const std::uint32_t tri =
+                    tri_indices[node.first_or_left + i];
+
+                float t, u, v;
+
+                if (ray_hits_triangle(
+                        origin, dir,
+                        positions[indices[tri * 3 + 0]],
+                        positions[indices[tri * 3 + 1]],
+                        positions[indices[tri * 3 + 2]],
+                        t_min, t_max, t, u, v)) {
+                    return true;
+                }
+            }
+
+            continue;
+        }
+
+        if (top + 2 > kBvhStackSize) {
+            break;  // cannot happen for trees from build_bvh
+        }
+
+        stack[top++] = node.first_or_left;
+        stack[top++] = node.first_or_left + 1;
+    }
+
+    return false;
+}
+
 // Convenience wrapper for CPU code and tests
 inline bool bvh_trace(const Bvh& bvh,
                       const Mesh& mesh,
@@ -183,6 +247,21 @@ inline bool bvh_trace(const Bvh& bvh,
     return bvh_trace(bvh.nodes.data(), bvh.tri_indices.data(),
                      mesh.positions.data(), mesh.indices.data(),
                      origin, dir, t_min, t_max, hit);
+}
+
+inline bool bvh_occluded(const Bvh& bvh,
+                         const Mesh& mesh,
+                         Vec3 origin,
+                         Vec3 dir,
+                         float t_min,
+                         float t_max) {
+    if (bvh.nodes.empty()) {
+        return false;
+    }
+
+    return bvh_occluded(bvh.nodes.data(), bvh.tri_indices.data(),
+                        mesh.positions.data(), mesh.indices.data(),
+                        origin, dir, t_min, t_max);
 }
 
 } // namespace gfx

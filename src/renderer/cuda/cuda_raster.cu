@@ -834,16 +834,22 @@ __device__ __forceinline__ unsigned char to_byte(float c) {
 // the two paths cannot drift apart. n is the view-space normal, already
 // flipped towards the viewer for back faces; view_pos is the shaded
 // point in view space. Ported from the OpenGL mesh shader
+// key_visibility is 1 when the key light reaches the point and 0 when a
+// shadow ray found something in the way. Only the key light's diffuse
+// and highlight are removed; the ambient fill stays, so shadows are
+// dark but never black. The rasterizer always passes 1
 __device__ __forceinline__ uchar4 lit_color(
                 Vec3 n,
                 Vec3 view_pos,
-                Vec3 up_view) {
+                Vec3 up_view,
+                float key_visibility) {
 
     n = normalize(n);
     const Vec3 v = normalize(-view_pos);
-    const Vec3 key_dir = normalize(Vec3{-0.5f, 0.6f, 0.7f});
+    const Vec3 key_dir = key_light_view_dir();
 
-    const float diff = fmaxf(dot(n, key_dir), 0.0f);
+    const float diff =
+        fmaxf(dot(n, key_dir), 0.0f) * key_visibility;
 
     const float hemi = dot(n, up_view) * 0.5f + 0.5f;
 
@@ -987,7 +993,42 @@ __global__ void shade_kernel(
         n = -n;
     }
 
-    color[pixel] = lit_color(n, view_pos, up_view);
+    color[pixel] = lit_color(n, view_pos, up_view, 1.0f);
+}
+
+// Does anything in the scene block the ray origin + t * dir, t > 0?
+// Used for shadow rays, so any hit is enough
+__device__ __forceinline__ bool scene_occluded(
+                const RtScene& scene,
+                Vec3 origin,
+                Vec3 dir) {
+
+    for (int i = 0; i < scene.count; ++i) {
+        const RtInstance& inst = scene.items[i];
+
+        if (bvh_occluded(inst.mesh.bvh_nodes,
+                         inst.mesh.bvh_tri_indices,
+                         inst.mesh.positions,
+                         inst.mesh.indices,
+                         transform_point(inst.world_to_object, origin),
+                         transform_direction(inst.world_to_object, dir),
+                         0.0f,
+                         1.0e30f)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Distance to move a shadow ray's start off the surface, so it does not
+// hit the triangle it starts on ("shadow acne"). Scaled with the size of
+// the coordinates because float precision is relative
+__device__ __forceinline__ float shadow_offset(Vec3 p) {
+    const float largest =
+        fmaxf(fabsf(p.x), fmaxf(fabsf(p.y), fabsf(p.z)));
+
+    return 1.0e-4f * fmaxf(1.0f, largest);
 }
 
 __global__ void ray_trace_kernel(
@@ -1040,8 +1081,32 @@ __global__ void ray_trace_kernel(
         }
     }
 
+    const std::size_t pixel = pixel_index(x, y, width);
+
     if (best_item < 0) {
-        return;  // background: the grid pass draws the floor here
+        // No model here: the camera sees the floor (z = 0) or the sky.
+        // Seen from above, darken the floor where the model blocks the
+        // key light. The grid pass then draws its lines on top
+        if (scene.eye.z > 0.0f && dir.z < 0.0f) {
+            const float t_floor = -scene.eye.z / dir.z;
+
+            if (t_floor > scene.t_min && t_floor < scene.t_max) {
+                Vec3 floor_point = scene.eye + t_floor * dir;
+                floor_point.z = shadow_offset(floor_point);
+
+                if (scene.key_world.z > 0.0f &&
+                    scene_occluded(scene, floor_point, scene.key_world)) {
+                    const uchar4 bg = scene.background;
+                    color[pixel] = make_uchar4(
+                        static_cast<unsigned char>(bg.x * 0.55f),
+                        static_cast<unsigned char>(bg.y * 0.55f),
+                        static_cast<unsigned char>(bg.z * 0.55f),
+                        255);
+                }
+            }
+        }
+
+        return;
     }
 
     const RtInstance& inst = scene.items[best_item];
@@ -1076,17 +1141,38 @@ __global__ void ray_trace_kernel(
         transform_direction(inst.world_to_object, dir);
     const bool front_facing = dot(geometric, local_dir) < 0.0f;
 
-    Vec3 n_view = transform_direction(inst.normal_to_view, n_object);
+    // Shading normal and geometric normal in world space, both turned
+    // towards the side the camera sees
+    Vec3 n_world = transform_direction(inst.normal_to_world, n_object);
+    Vec3 g_world = normalize(
+        transform_direction(inst.normal_to_world, geometric));
 
     if (!front_facing) {
-        n_view = -n_view;
+        n_world = -n_world;
+        g_world = -g_world;
     }
+
+    const Vec3 n_view = transform_direction(scene.view, n_world);
 
     const Vec3 world_hit = scene.eye + best_t * dir;
     const Vec3 view_pos = transform_point(scene.view, world_hit);
 
-    const std::size_t pixel = pixel_index(x, y, width);
-    color[pixel] = lit_color(n_view, view_pos, scene.up_view);
+    // Shadow ray: from the hit point towards the key light. Surfaces
+    // facing away from the light are already unlit by it, so they skip
+    // the ray
+    float key_visibility = 1.0f;
+
+    if (dot(normalize(n_world), scene.key_world) > 0.0f) {
+        const Vec3 shadow_origin =
+            world_hit + g_world * shadow_offset(world_hit);
+
+        if (scene_occluded(scene, shadow_origin, scene.key_world)) {
+            key_visibility = 0.0f;
+        }
+    }
+
+    color[pixel] = lit_color(
+        n_view, view_pos, scene.up_view, key_visibility);
 
     // Same depth the rasterizer would have written, so the grid's
     // depth test treats both paths alike
