@@ -73,16 +73,16 @@ void GLRenderer::render(const FrameData& frame) {
         m_meshes.draw(frame.draw_list, view_proj, frame.view);
     }
 
-    // Build OpenGL-specific grid parameters
-    const float tan_half = std::tan(frame.fov_y * 0.5f);
+    // Build OpenGL-specific grid parameters from the shared ray basis
+    const GridRayBasis grid = make_grid_ray_basis(frame, aspect);
 
     GridParams gp;
     gp.view_proj = view_proj;
-    gp.eye = frame.eye;
-    gp.forward = frame.basis.forward;
-    gp.right = frame.basis.right * (tan_half * aspect);
-    gp.up = frame.basis.up * tan_half;
-    gp.fade_end = frame.grid_fade_end;
+    gp.eye = grid.eye;
+    gp.forward = grid.forward;
+    gp.right = grid.right;
+    gp.up = grid.up;
+    gp.fade_end = grid.fade_end;
 
     // Draw the grid after the opaque objects, as before
     m_grid.draw(gp);

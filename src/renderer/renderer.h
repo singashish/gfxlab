@@ -5,6 +5,7 @@
 #include "core/vec3.h"
 #include "core/mesh.h"
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -52,6 +53,34 @@ struct FrameData {
     // Object instances to render
     std::vector<DrawItem> draw_list;
 };
+
+// Everything the ray-cast floor grid needs from the camera.
+// The ray through a pixel is forward + ndc_x * right + ndc_y * up,
+// so right and up are pre-scaled to the size of the view at
+// distance 1. Shared by all three backends so the maths lives once
+struct GridRayBasis {
+    Vec3 eye;
+    Vec3 forward;
+    Vec3 right;
+    Vec3 up;
+    float fade_end;
+};
+
+// aspect is passed in because a backend may render at a size that
+// differs from frame.width / frame.height for a frame (the Vulkan
+// swapchain extent, for example)
+inline GridRayBasis make_grid_ray_basis(const FrameData& frame,
+                                        float aspect) {
+    const float tan_half = std::tan(frame.fov_y * 0.5f);
+
+    GridRayBasis basis;
+    basis.eye = frame.eye;
+    basis.forward = frame.basis.forward;
+    basis.right = frame.basis.right * (tan_half * aspect);
+    basis.up = frame.basis.up * tan_half;
+    basis.fade_end = frame.grid_fade_end;
+    return basis;
+}
 
 class IRenderer {
 public:

@@ -21,7 +21,8 @@ written in this repository, as they are added.
 
 Early development. **M0 (foundation), M1 (window and input), M2 (OpenGL
 renderer and orbit camera), M3 (models, lighting and object transforms), M4
-(the Vulkan backend) and M5 (the CUDA software rasterizer) are complete.** The app opens a window with a
+(the Vulkan backend), M5 (the CUDA software rasterizer) and M6 (wireframe, GPU
+timing and CUDA clipping) are complete.** The app opens a window with a
 Blender-style viewport: an infinite, anti-aliased floor grid with colored X and
 Y axes that fades with distance, and a mouse-controlled orbit camera. Give it
 an OBJ file on the command line and the model is loaded, lit, placed on the
@@ -30,8 +31,10 @@ Without a file it shows two demo triangles. The scene keeps rendering while the
 window is dragged or resized. It renders with OpenGL by default, with Vulkan
 when started with `--backend=vulkan`, or with a software rasterizer written in
 CUDA when started with `--backend=cuda`, and all three backends produce the
-same picture. The next milestone is M6: polish and a comparison of the three
-backends.
+same picture. **W** switches every backend to a Blender-style wireframe that
+shows the model's original polygon edges, and the title bar shows each
+backend's measured GPU time next to the frame time. The next milestone is M7: a
+CUDA ray tracer.
 
 | Milestone | Goal | State |
 |-----------|------|-------|
@@ -41,7 +44,7 @@ backends.
 | M3 | OBJ loading, lit mesh, object transforms | DONE |
 | M4 | Vulkan backend | DONE |
 | M5 | CUDA rasterizer | DONE |
-| M6 | Polish and backend comparison | |
+| M6 | Polish and backend comparison | DONE |
 | M7 | CUDA ray tracer | |
 
 ### What is in the repository so far
@@ -57,29 +60,38 @@ backends.
   minimize handling, rendering during the drag/resize loop), and a keyboard and
   mouse state tracker with mouse capture and focus-loss handling
 - **`gfx_gl`**: an OpenGL 4.6 core context created through WGL, an own function
-  loader, shader helpers, the ray-cast grid, lit mesh drawing (`GLMesh`), and
+  loader, shader helpers, the ray-cast grid, lit mesh drawing (`GLMesh`), an
+  edge-list wireframe, a non-blocking GPU timer (`GL_TIME_ELAPSED` queries), and
   `GLRenderer`
 - **`gfx_vk`**: the Vulkan 1.3 backend: instance, validation layer and device
   selection (a discrete GPU is preferred), swapchain with live recreation,
   frames in flight, dynamic rendering, a depth buffer, staging uploads, per-frame
   uniform buffers and push constants, a shared pipeline helper, shaders compiled
-  to SPIR-V at build time, and `VulkanRenderer`
+  to SPIR-V at build time, a line-list wireframe pipeline, timestamp-query GPU
+  timing, and `VulkanRenderer`
 - **`gfx_cuda`**: the CUDA backend: a software rasterizer made of kernels
-  (vertex transform, small and large triangle rasterization with fixed-point
-  edge functions and the top-left rule, a 64-bit `atomicMin` visibility buffer,
-  deferred shading that matches the OpenGL lighting, and the grid as a per-pixel
-  ray kernel), CUDA/OpenGL interop to show the result, per-stage GPU timing, and
-  `CudaRenderer`. The `cuda_info` tool reports the CUDA device
-- **`gfx_renderer`**: the backend-neutral `IRenderer` interface, `FrameData`
-  with its draw list, and the `create_renderer()` factory
+  (vertex transform; a triangle setup pass that clips against the near plane
+  and a guard band and fills a worklist; small and large triangle rasterizers
+  with fixed-point edge functions and the top-left rule; a 64-bit `atomicMin`
+  visibility buffer; deferred shading that matches the OpenGL lighting; a
+  clipped line rasterizer for wireframe; and the grid as a per-pixel ray
+  kernel), CUDA/OpenGL interop to show the result, per-frame and per-stage GPU
+  timing, and `CudaRenderer`. The `cuda_info` tool reports the CUDA device
+- **`gfx_renderer`**: the backend-neutral `IRenderer` interface (including
+  `last_gpu_ms` for GPU timing), `FrameData` with its draw list and wireframe
+  flag, the shared grid ray basis, and the `create_renderer()` factory
 - **Tests**: eight unit-test programs (math, input, timer, camera, obj,
   transform, transform_edit, raster) registered with CTest
 - **`gfxlab` app**: opens a 1280x720 window and renders the viewport, loading
-  the OBJ file given on the command line. The title bar shows the FPS, the frame
-  time and the active edit mode. **Esc** cancels an edit, or quits when none is
-  active. `--backend=opengl|vulkan|cuda` selects the renderer
-- **`assets/`**: test models (a cube with and without normals, and a
-  high-resolution Suzanne with flat and smooth shading)
+  the OBJ file given on the command line. The title bar shows the backend, the
+  FPS, the frame time, the average GPU time and the active edit mode, and the
+  console logs the frame and GPU times once per second. **Esc** cancels an edit,
+  or quits when none is active. `--backend=opengl|vulkan|cuda` selects the
+  renderer
+- **`assets/`**: test models (a cube with and without normals, a
+  high-resolution Suzanne with flat and smooth shading, and `suzanne_fl.obj`,
+  Blender's standard Suzanne exported with its quads, for comparing the
+  wireframe with Blender)
 
 ### Controls
 
@@ -93,6 +105,7 @@ backends.
 | Left click during an edit | Confirm |
 | Right click or Esc during an edit | Cancel, restoring the model exactly |
 | **V** | Toggle vsync |
+| **W** | Toggle wireframe (the model's polygon edges, unlit, in every backend) |
 | Esc (no edit active) | Quit |
 
 ## Documentation
@@ -106,6 +119,7 @@ backends.
 | [`docs/m3-design.md`](docs/m3-design.md) | OBJ parser, mesh upload and lighting, normals, transforms and the normal matrix, interactive G/R/S editing, tests, manual checklist |
 | [`docs/m4-design.md`](docs/m4-design.md) | Vulkan backend: instance and device, swapchain, frames in flight and synchronization, memory and uploads, descriptors and push constants, pipelines, the grid, live resizing, differences from OpenGL, manual checklist |
 | [`docs/m5-design.md`](docs/m5-design.md) | CUDA backend: toolchain, CUDA/OpenGL interop, device meshes, the rasterizer (fixed point, edge functions, top-left rule, atomic visibility buffer), deferred shading, the grid kernel, the large-triangle performance fix, known limitations, manual checklist |
+| [`docs/m6-design.md`](docs/m6-design.md) | Polygon-edge wireframe in all three backends, non-blocking GPU timing (GL queries, Vulkan timestamps, CUDA events), the backend comparison and how to read it, the CUDA triangle worklist, near-plane and guard-band clipping, the shared grid ray basis, manual checklist |
 
 ## Requirements
 
@@ -259,10 +273,18 @@ time. In a Debug build it also enables the Khronos validation layer and prints
 is a bug to investigate. The fourth form renders with the CUDA software
 rasterizer; it needs the CUDA Toolkit at build time and an NVIDIA GPU that
 OpenGL also runs on. It logs the CUDA device it uses (`CUDA/OpenGL interop
-device: ...`). With no model it shows only the grid. The `CUDA GPU ms:` line
-that appears once per second in the console is the per-stage GPU timing; set
-`kProfileStages` to `false` in `cuda_renderer.cpp` to measure the plain frame
-rate.
+device: ...`). With no model it shows only the grid. For a per-stage breakdown
+of the CUDA frame, set `kProfileStages` to `true` in `cuda_renderer.cpp`: a
+`CUDA GPU ms: clear ... geometry+raster ... shade ... grid ...` line then
+appears once per second. It waits for the GPU every frame, so leave it `false`
+when measuring frame rates.
+
+The title bar and the once-per-second log line (`<backend> | frame ms ... |
+GPU ms ...`) show two different numbers. The frame time is the wall-clock time
+from one frame to the next, including CPU work, vsync and presentation. The GPU
+time is how long the GPU spent executing the frame's commands. To compare
+backends, use a Release build with vsync off (**V**), the same window size and
+the startup camera.
 
 `builds\build-debug\src\renderer\cuda\cuda_info.exe` prints the CUDA runtime,
 driver and device properties and runs a small kernel. It is the quickest way to
@@ -289,13 +311,16 @@ src/core/            logging, math, cameras, timer, mesh, OBJ parser,
                      transform and its editor                          -> gfx_core
 src/platform/        window and input                                  -> gfx_platform
   win32/             Win32 implementation of the window
-src/renderer/        IRenderer, FrameData, backend factory             -> gfx_renderer
-  opengl/            WGL context, loader, shaders, grid, GLRenderer    -> gfx_gl
+src/renderer/        IRenderer, FrameData, grid ray basis, factory     -> gfx_renderer
+  opengl/            WGL context, loader, shaders, grid, wireframe,
+                     GPU timer, GLRenderer                             -> gfx_gl
   vulkan/            instance/device, swapchain, frames, memory,
-                     pipelines, mesh, grid, VulkanRenderer             -> gfx_vk
+                     pipelines, mesh, wireframe, grid, GPU timer,
+                     VulkanRenderer                                    -> gfx_vk
     shaders/         GLSL sources, compiled to SPIR-V by glslc at build time
-  cuda/              interop, device meshes, rasterizer kernels, stage
-                     timer, CudaRenderer, cuda_info                    -> gfx_cuda
+  cuda/              interop, device meshes, clipping and rasterizer
+                     kernels, GPU and stage timers, CudaRenderer,
+                     cuda_info                                         -> gfx_cuda
 src/app/             application entry point                           -> gfxlab
 assets/              test models (.obj)
 tests/               unit tests                                        -> test_math, test_input, test_timer,

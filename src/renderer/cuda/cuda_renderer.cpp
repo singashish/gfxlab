@@ -529,16 +529,15 @@ void CudaRenderer::render(const FrameData& frame) {
     }
 
     // Pass 4: draw the floor grid over the shaded scene
-    const float tan_half = std::tan(frame.fov_y * 0.5f);
+    const GridRayBasis grid = make_grid_ray_basis(frame, aspect);
 
     CudaGridParams grid_params;
     grid_params.view_proj = view_proj;
-    grid_params.eye = frame.eye;
-    grid_params.forward = frame.basis.forward;
-    grid_params.right =
-        frame.basis.right * (tan_half * aspect);
-    grid_params.up = frame.basis.up * tan_half;
-    grid_params.fade_end = frame.grid_fade_end;
+    grid_params.eye = grid.eye;
+    grid_params.forward = grid.forward;
+    grid_params.right = grid.right;
+    grid_params.up = grid.up;
+    grid_params.fade_end = grid.fade_end;
 
     if (!cuda_draw_grid(
             color,

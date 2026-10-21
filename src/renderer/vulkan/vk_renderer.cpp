@@ -321,22 +321,17 @@ void VulkanRenderer::render(const FrameData& frame) {
 
     const Mat4 view_proj = projection * frame.view;
 
-    const float tan_half = std::tan(frame.fov_y * 0.5f);
-
-    const Vec3 right =
-        frame.basis.right * (tan_half * aspect);
-
-    const Vec3 up =
-        frame.basis.up * tan_half;
+    // The swapchain extent decides the aspect ratio here
+    const GridRayBasis grid = make_grid_ray_basis(frame, aspect);
 
     const FrameUniforms uniforms{
         frame.view,
         view_proj,
-        make_vec4(frame.eye, 0.0f),
-        make_vec4(frame.basis.forward, 0.0f),
-        make_vec4(right, 0.0f),
-        make_vec4(up, 0.0f),
-        Vec4{frame.grid_fade_end, 0.0f, 0.0f, 0.0f}
+        make_vec4(grid.eye, 0.0f),
+        make_vec4(grid.forward, 0.0f),
+        make_vec4(grid.right, 0.0f),
+        make_vec4(grid.up, 0.0f),
+        Vec4{grid.fade_end, 0.0f, 0.0f, 0.0f}
     };
 
     if (!m_uniforms.update(frame_index, uniforms)) {

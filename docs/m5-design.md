@@ -434,9 +434,9 @@ Run all of these with `--backend=cuda`, in Debug and then Release.
 
 | Item | Notes |
 |---|---|
-| **No near-plane clipping** | A triangle with any vertex behind the camera (`w <= 0`) or with a screen coordinate beyond ±16384 pixels is dropped entirely, instead of being clipped. Walking the camera into a large model makes triangles vanish earlier than in OpenGL. Clipping against the near plane is planned for M6 |
+| **No near-plane clipping** | A triangle with any vertex behind the camera (`w <= 0`) or with a screen coordinate beyond ±16384 pixels is dropped entirely, instead of being clipped. Walking the camera into a large model makes triangles vanish earlier than in OpenGL. Fixed in M6: triangles and edges are now clipped against the near plane and a guard band (see `m6-design.md`) |
 | **No anti-aliasing** | One sample per pixel at the pixel centre; edges are aliased. Only the grid is anti-aliased, analytically |
-| **Large-triangle launch overhead** | The large kernel launches a block for every triangle and slice, about 500,000 mostly empty blocks for Suzanne. A compaction pass would remove them (M6) |
+| **Large-triangle launch overhead** | The large kernel launches a block for every triangle and slice, about 500,000 mostly empty blocks for Suzanne. Fixed in M6 by a triangle setup pass that fills a worklist (see `m6-design.md`) |
 | **Bounding-box rasterization** | Every thread tests every pixel of the bounding box. Thin diagonal triangles waste work; tiled or hierarchical rasterizers avoid this |
 | **Atomic contention** | Many triangles covering the same pixel serialize on one `atomicMin`. Fine for this scene |
 | **Depth precision** | Depth is a 32-bit float in `[0, 1]`, the same precision as the other backends, but ties are resolved by triangle id, not by draw order |
