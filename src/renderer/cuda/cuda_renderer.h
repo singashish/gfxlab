@@ -63,6 +63,9 @@ private:
     // Debug builds report a worklist overflow only once
     bool m_overflow_reported = false;
 
+    // The ray tracer handles up to kMaxRtInstances items; warn once
+    bool m_rt_limit_reported = false;
+
     int m_width = 0;
     int m_height = 0;
 };

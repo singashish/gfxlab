@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 
+#include <chrono>
 #include <limits>
 
 #include "core/log.h"
@@ -34,6 +35,18 @@ void free_device_mesh(DeviceMesh& mesh) {
         (void)cuda_ok(
             cudaFree(mesh.edges),
             "cudaFree mesh edges");
+    }
+
+    if (mesh.bvh_nodes) {
+        (void)cuda_ok(
+            cudaFree(mesh.bvh_nodes),
+            "cudaFree mesh BVH nodes");
+    }
+
+    if (mesh.bvh_tri_indices) {
+        (void)cuda_ok(
+            cudaFree(mesh.bvh_tri_indices),
+            "cudaFree mesh BVH triangle indices");
     }
 
     mesh = {};
@@ -144,8 +157,27 @@ MeshId CudaMeshStore::add(const Mesh& mesh) {
         }
     }
 
+    // Build the ray-tracing BVH once, on the CPU, then upload it as two
+    // flat arrays. The GPU walks the same structure with bvh_trace()
+    const auto build_start = std::chrono::steady_clock::now();
+    const Bvh bvh = build_bvh(mesh);
+    const auto build_end = std::chrono::steady_clock::now();
+
+    const BvhStats stats = bvh_stats(bvh);
+
+    LOG_INFO(
+        "CUDA mesh BVH: %u nodes, %u leaves, max depth %u, "
+        "largest leaf %u, built in %.1f ms",
+        stats.node_count,
+        stats.leaf_count,
+        stats.max_depth,
+        stats.max_leaf_size,
+        std::chrono::duration<double, std::milli>(
+            build_end - build_start).count());
+
     DeviceMesh device{};
     device.vertex_count = vertex_count;
+    device.bvh_node_count = stats.node_count;
     device.index_count =
         static_cast<std::uint32_t>(mesh.indices.size());
     device.edge_index_count =
@@ -158,7 +190,11 @@ MeshId CudaMeshStore::add(const Mesh& mesh) {
         !upload_array(device.indices, mesh.indices,
                       "CUDA mesh indices upload") ||
         !upload_array(device.edges, mesh.edges,
-                      "CUDA mesh edges upload")) {
+                      "CUDA mesh edges upload") ||
+        !upload_array(device.bvh_nodes, bvh.nodes,
+                      "CUDA mesh BVH nodes upload") ||
+        !upload_array(device.bvh_tri_indices, bvh.tri_indices,
+                      "CUDA mesh BVH triangle indices upload")) {
         free_device_mesh(device);
         return 0;
     }

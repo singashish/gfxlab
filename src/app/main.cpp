@@ -163,6 +163,7 @@ int main(int argc, char** argv) {
 
     bool vsync = true;
     bool wireframe = false;
+    bool ray_trace = false;
 
     renderer->set_vsync(vsync);
 
@@ -252,6 +253,7 @@ int main(int argc, char** argv) {
         frame.width = window.width();
         frame.height = window.height();
         frame.wireframe = wireframe;
+        frame.ray_trace = ray_trace;
 
         frame.view = camera.view();
         frame.eye = camera.eye();
@@ -314,12 +316,20 @@ int main(int argc, char** argv) {
 
             char title[192];
 
+            // Only the CUDA backend ray traces; say so in the title
+            const char* mode_suffix =
+                (ray_trace && !wireframe &&
+                 backend == gfx::RendererBackend::GFX_BACKEND_CUDA)
+                    ? " (ray traced)"
+                    : "";
+
             if (editor.active()) {
                 std::snprintf(
                     title,
                     sizeof(title),
-                    "gfxlab | %s | %.1f FPS | frame %.3f ms | %s | %s%s%s",
+                    "gfxlab | %s%s | %.1f FPS | frame %.3f ms | %s | %s%s%s",
                     renderer->name(),
+                    mode_suffix,
                     timer.fps(),
                     frame_ms,
                     gpu_text,
@@ -330,8 +340,9 @@ int main(int argc, char** argv) {
                 std::snprintf(
                     title,
                     sizeof(title),
-                    "gfxlab | %s | %.1f FPS | frame %.3f ms | %s",
+                    "gfxlab | %s%s | %.1f FPS | frame %.3f ms | %s",
                     renderer->name(),
+                    mode_suffix,
                     timer.fps(),
                     frame_ms,
                     gpu_text);
@@ -551,6 +562,19 @@ int main(int argc, char** argv) {
         if (in.key_pressed(gfx::Key::GFX_KEY_W)) {
             wireframe = !wireframe;
             LOG_INFO("wireframe: %s", wireframe ? "on" : "off");
+        }
+
+        // Toggle ray tracing with T (CUDA backend only)
+        if (in.key_pressed(gfx::Key::GFX_KEY_T)) {
+            ray_trace = !ray_trace;
+
+            if (backend == gfx::RendererBackend::GFX_BACKEND_CUDA) {
+                LOG_INFO("ray tracing: %s", ray_trace ? "on" : "off");
+            } else {
+                LOG_INFO("ray tracing is only available with "
+                         "--backend=cuda");
+                ray_trace = false;
+            }
         }
 
         // ------------------------------------------------------------

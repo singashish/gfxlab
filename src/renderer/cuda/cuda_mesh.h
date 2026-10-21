@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/bvh.h"
 #include "renderer/renderer.h"
 
 #include <cstdint>
@@ -16,6 +17,12 @@ struct DeviceMesh {
     std::uint32_t vertex_count = 0;
     std::uint32_t index_count = 0;
     std::uint32_t edge_index_count = 0;
+
+    // BVH built on the CPU when the mesh is added, used by the
+    // ray tracer. Node 0 is the root
+    BvhNode* bvh_nodes = nullptr;
+    std::uint32_t* bvh_tri_indices = nullptr;
+    std::uint32_t bvh_node_count = 0;
 };
 
 class CudaMeshStore {

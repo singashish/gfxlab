@@ -47,6 +47,11 @@ struct FrameData {
     // Render polygon edges instead of filled triangles
     bool wireframe = false;
 
+    // Ray trace the solid view instead of rasterizing it.
+    // Only the CUDA backend implements it; the others ignore it.
+    // Wireframe takes priority over ray tracing
+    bool ray_trace = false;
+
     // Temporary demo animation state, replaced by a draw list in M3
     float demo_spin_angle = 0.0f;
 

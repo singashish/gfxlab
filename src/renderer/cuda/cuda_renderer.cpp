@@ -389,7 +389,12 @@ void CudaRenderer::render(const FrameData& frame) {
     // Few triangles are clipped in practice, so reserve twice the
     // triangle count plus headroom; the overflow counter catches the
     // rare worst case
-    const bool solid = !frame.wireframe && total_triangles > 0;
+    // Ray tracing replaces rasterization in solid mode only;
+    // wireframe always uses the line rasterizer
+    const bool trace = frame.ray_trace && !frame.wireframe;
+
+    const bool solid =
+        !frame.wireframe && !trace && total_triangles > 0;
 
     if (solid) {
         const std::uint64_t record_capacity =
@@ -410,11 +415,51 @@ void CudaRenderer::render(const FrameData& frame) {
         }
     }
 
+    // Ray tracing: collect the instances; no vertex work is needed
+    RtScene rt_scene{};
+
+    if (trace) {
+        for (const DrawItem& item : frame.draw_list) {
+            const DeviceMesh* mesh = m_meshes.find(item.mesh);
+
+            if (mesh == nullptr || mesh->bvh_node_count == 0) {
+                continue;
+            }
+
+            if (rt_scene.count >= kMaxRtInstances) {
+                if (!m_rt_limit_reported) {
+                    LOG_WARN(
+                        "CUDA ray tracer: only the first %d draw items "
+                        "are ray traced",
+                        kMaxRtInstances);
+                    m_rt_limit_reported = true;
+                }
+                break;
+            }
+
+            RtInstance& inst = rt_scene.items[rt_scene.count];
+
+            // A model scaled to zero on an axis cannot be inverted;
+            // it has no visible surface either, so skip it
+            if (!mat4_inverse(item.model, inst.world_to_object)) {
+                continue;
+            }
+
+            inst.mesh = *mesh;
+            inst.normal_to_view = frame.view * item.normal_matrix;
+            ++rt_scene.count;
+        }
+    }
+
     // Transform every draw item, then draw its edges (wireframe)
     // or append its triangles to the worklist (solid)
     std::size_t vertex_offset = 0;
 
     for (const DrawItem& item : frame.draw_list) {
+        if (trace) {
+            break;  // handled by the ray tracer below
+        }
+
         const DeviceMesh* mesh = m_meshes.find(item.mesh);
 
         if (mesh == nullptr) {
@@ -493,7 +538,33 @@ void CudaRenderer::render(const FrameData& frame) {
     }
 
     // Pass 3: resolve wire pixels or shade solid triangles
-    if (frame.wireframe) {
+    if (trace) {
+        const GridRayBasis rays = make_grid_ray_basis(frame, aspect);
+
+        rt_scene.view = frame.view;
+        rt_scene.view_proj = view_proj;
+        rt_scene.eye = rays.eye;
+        rt_scene.forward = rays.forward;
+        rt_scene.right = rays.right;
+        rt_scene.up = rays.up;
+        rt_scene.up_view = transform_direction(
+            frame.view, Vec3{0.0f, 0.0f, 1.0f});
+
+        // Rays start at the near plane and stop at the far plane,
+        // exactly the depth range the rasterizer keeps
+        rt_scene.t_min = frame.near_plane;
+        rt_scene.t_max = frame.far_plane;
+
+        if (rt_scene.count > 0 &&
+            !cuda_ray_trace(
+                color,
+                visibility,
+                m_width,
+                m_height,
+                rt_scene)) {
+            return;
+        }
+    } else if (frame.wireframe) {
         if (!cuda_resolve_wire(
                 color,
                 visibility,

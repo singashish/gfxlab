@@ -1,6 +1,7 @@
 #include "renderer/cuda/cuda_raster.h"
 
 #include "core/log.h"
+#include "core/bvh.h"
 #include "core/raster_math.h"
 #include "renderer/cuda/cuda_api.h"
 
@@ -829,6 +830,50 @@ __device__ __forceinline__ unsigned char to_byte(float c) {
     return static_cast<unsigned char>(value);
 }
 
+// The viewport lighting, shared by the rasterizer and the ray tracer so
+// the two paths cannot drift apart. n is the view-space normal, already
+// flipped towards the viewer for back faces; view_pos is the shaded
+// point in view space. Ported from the OpenGL mesh shader
+__device__ __forceinline__ uchar4 lit_color(
+                Vec3 n,
+                Vec3 view_pos,
+                Vec3 up_view) {
+
+    n = normalize(n);
+    const Vec3 v = normalize(-view_pos);
+    const Vec3 key_dir = normalize(Vec3{-0.5f, 0.6f, 0.7f});
+
+    const float diff = fmaxf(dot(n, key_dir), 0.0f);
+
+    const float hemi = dot(n, up_view) * 0.5f + 0.5f;
+
+    const Vec3 ambient_low{0.10f, 0.10f, 0.12f};
+    const Vec3 ambient_high{0.30f, 0.32f, 0.36f};
+
+    const Vec3 ambient = {
+        ambient_low.x + (ambient_high.x - ambient_low.x) * hemi,
+        ambient_low.y + (ambient_high.y - ambient_low.y) * hemi,
+        ambient_low.z + (ambient_high.z - ambient_low.z) * hemi
+    };
+
+    const Vec3 h = normalize(key_dir + v);
+
+    const float spec = diff > 0.0f
+        ? powf(fmaxf(dot(n, h), 0.0f), 32.0f) * 0.25f
+        : 0.0f;
+
+    const Vec3 base{0.72f, 0.74f, 0.78f};
+
+    const float r = fminf(
+        base.x * (ambient.x + 0.75f * diff) + spec, 1.0f);
+    const float g = fminf(
+        base.y * (ambient.y + 0.75f * diff) + spec, 1.0f);
+    const float b = fminf(
+        base.z * (ambient.z + 0.75f * diff) + spec, 1.0f);
+
+    return make_uchar4(to_byte(r), to_byte(g), to_byte(b), 255);
+}
+
 __global__ void shade_kernel(
                 uchar4* color,
                 const unsigned long long* visibility,
@@ -942,40 +987,118 @@ __global__ void shade_kernel(
         n = -n;
     }
 
-    n = normalize(n);
-    const Vec3 v = normalize(-view_pos);
-    const Vec3 key_dir = normalize(Vec3{-0.5f, 0.6f, 0.7f});
+    color[pixel] = lit_color(n, view_pos, up_view);
+}
 
-    const float diff = fmaxf(dot(n, key_dir), 0.0f);
+__global__ void ray_trace_kernel(
+                uchar4* color,
+                unsigned long long* visibility,
+                int width,
+                int height,
+                RtScene scene) {
 
-    const float hemi = dot(n, up_view) * 0.5f + 0.5f;
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    const Vec3 ambient_low{0.10f, 0.10f, 0.12f};
-    const Vec3 ambient_high{0.30f, 0.32f, 0.36f};
+    if (x >= width || y >= height) {
+        return;
+    }
 
-    const Vec3 ambient = {
-        ambient_low.x + (ambient_high.x - ambient_low.x) * hemi,
-        ambient_low.y + (ambient_high.y - ambient_low.y) * hemi,
-        ambient_low.z + (ambient_high.z - ambient_low.z) * hemi
-    };
+    // Camera ray through the pixel centre (row 0 is the top)
+    const float ndc_x = 2.0f * (x + 0.5f) / width - 1.0f;
+    const float ndc_y = 1.0f - 2.0f * (y + 0.5f) / height;
 
-    const Vec3 h = normalize(key_dir + v);
+    const Vec3 dir =
+        scene.forward + ndc_x * scene.right + ndc_y * scene.up;
 
-    const float spec = diff > 0.0f
-        ? powf(fmaxf(dot(n, h), 0.0f), 32.0f) * 0.25f
-        : 0.0f;
+    // Closest hit over every instance. The direction is moved into
+    // object space without normalizing it, so t means the same
+    // distance in both spaces and hits can be compared directly
+    float best_t = scene.t_max;
+    int best_item = -1;
+    BvhHit best{};
 
-    const Vec3 base{0.72f, 0.74f, 0.78f};
+    for (int i = 0; i < scene.count; ++i) {
+        const RtInstance& inst = scene.items[i];
 
-    const float r = fminf(
-        base.x * (ambient.x + 0.75f * diff) + spec, 1.0f);
-    const float g = fminf(
-        base.y * (ambient.y + 0.75f * diff) + spec, 1.0f);
-    const float b = fminf(
-        base.z * (ambient.z + 0.75f * diff) + spec, 1.0f);
+        const Vec3 origin =
+            transform_point(inst.world_to_object, scene.eye);
+        const Vec3 local_dir =
+            transform_direction(inst.world_to_object, dir);
 
-    color[pixel] = make_uchar4(
-        to_byte(r), to_byte(g), to_byte(b), 255);
+        BvhHit hit;
+
+        if (bvh_trace(inst.mesh.bvh_nodes,
+                      inst.mesh.bvh_tri_indices,
+                      inst.mesh.positions,
+                      inst.mesh.indices,
+                      origin, local_dir,
+                      scene.t_min, best_t, hit)) {
+            best_t = hit.t;
+            best = hit;
+            best_item = i;
+        }
+    }
+
+    if (best_item < 0) {
+        return;  // background: the grid pass draws the floor here
+    }
+
+    const RtInstance& inst = scene.items[best_item];
+    const DeviceMesh& mesh = inst.mesh;
+
+    const std::uint32_t i0 = mesh.indices[best.triangle * 3 + 0];
+    const std::uint32_t i1 = mesh.indices[best.triangle * 3 + 1];
+    const std::uint32_t i2 = mesh.indices[best.triangle * 3 + 2];
+
+    const Vec3 p0 = mesh.positions[i0];
+    const Vec3 p1 = mesh.positions[i1];
+    const Vec3 p2 = mesh.positions[i2];
+
+    // Geometric normal in object space, from the triangle's winding
+    const Vec3 geometric = cross(p1 - p0, p2 - p0);
+
+    // Interpolated vertex normal (barycentrics u, v from the hit)
+    const float w0 = 1.0f - best.u - best.v;
+
+    Vec3 n_object = geometric;
+
+    if (mesh.normals) {
+        n_object = mesh.normals[i0] * w0 +
+                   mesh.normals[i1] * best.u +
+                   mesh.normals[i2] * best.v;
+    }
+
+    // Front-facing when the ray arrives against the counter-clockwise
+    // normal. The sign of this dot product is the same in object and
+    // world space, so the object-space direction can be used
+    const Vec3 local_dir =
+        transform_direction(inst.world_to_object, dir);
+    const bool front_facing = dot(geometric, local_dir) < 0.0f;
+
+    Vec3 n_view = transform_direction(inst.normal_to_view, n_object);
+
+    if (!front_facing) {
+        n_view = -n_view;
+    }
+
+    const Vec3 world_hit = scene.eye + best_t * dir;
+    const Vec3 view_pos = transform_point(scene.view, world_hit);
+
+    const std::size_t pixel = pixel_index(x, y, width);
+    color[pixel] = lit_color(n_view, view_pos, scene.up_view);
+
+    // Same depth the rasterizer would have written, so the grid's
+    // depth test treats both paths alike
+    const Vec4 clip = scene.view_proj * make_vec4(world_hit, 1.0f);
+
+    float depth01 = (clip.z / clip.w) * 0.5f + 0.5f;
+    depth01 = fminf(fmaxf(depth01, 0.0f), 1.0f);
+
+    visibility[pixel] =
+        (static_cast<unsigned long long>(__float_as_uint(depth01))
+             << 32) |
+        1ULL;
 }
 
 __global__ void resolve_ids_kernel(
@@ -1509,6 +1632,32 @@ bool cuda_shade(
         width, height, work, up_view);
 
     return check_launch("CUDA shade kernel launch");
+}
+
+bool cuda_ray_trace(
+                uchar4* color,
+                std::uint64_t* visibility,
+                int width,
+                int height,
+                const RtScene& scene) {
+
+    if (!color || !visibility || width <= 0 || height <= 0 ||
+        scene.count < 0 || scene.count > kMaxRtInstances) {
+        LOG_ERROR("CUDA ray tracer: invalid arguments");
+        return false;
+    }
+
+    const dim3 threads(kTile, kTile);
+    const dim3 blocks(
+        (width + kTile - 1) / kTile,
+        (height + kTile - 1) / kTile);
+
+    ray_trace_kernel<<<blocks, threads>>>(
+        color,
+        reinterpret_cast<unsigned long long*>(visibility),
+        width, height, scene);
+
+    return check_launch("CUDA ray trace kernel launch");
 }
 
 bool cuda_resolve_ids(

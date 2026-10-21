@@ -47,6 +47,39 @@ struct RasterWork {
     unsigned int capacity = 0;
 };
 
+// One mesh instance as the ray tracer sees it. Rays are moved into the
+// mesh's own space with world_to_object, so the BVH (built once, in
+// object space) stays valid while the model is moved, rotated or scaled
+struct RtInstance {
+    DeviceMesh mesh;
+    Mat4 world_to_object;  // inverse of the model matrix
+    Mat4 normal_to_view;   // view * normal matrix, as in the rasterizer
+};
+
+// Passed to the kernel by value (well under the 4 KB parameter limit),
+// so nothing has to be copied to the GPU each frame
+constexpr int kMaxRtInstances = 8;
+
+struct RtScene {
+    RtInstance items[kMaxRtInstances];
+    int count;
+
+    Mat4 view;       // world -> view, for lighting
+    Mat4 view_proj;  // for the depth the grid tests against
+
+    // Camera rays, the same basis the grid uses: the ray through a
+    // pixel is forward + ndc_x * right + ndc_y * up. Its view-space z
+    // is exactly -1, so a ray distance t equals the view depth
+    Vec3 eye;
+    Vec3 forward;
+    Vec3 right;
+    Vec3 up;
+
+    Vec3 up_view;    // world +Z in view space, for the ambient term
+    float t_min;     // near plane
+    float t_max;     // far plane
+};
+
 struct CudaGridParams {
     Mat4 view_proj;
     Vec3 eye;
@@ -111,6 +144,16 @@ bool cuda_shade(
                 int height,
                 const RasterWork& work,
                 Vec3 up_view);
+
+// One thread per pixel: closest hit over all instances, shaded with
+// the same lighting as the rasterizer. Writes colour and the visibility
+// buffer (depth + id 1) so the grid composites unchanged
+bool cuda_ray_trace(
+                uchar4* color,
+                std::uint64_t* visibility,
+                int width,
+                int height,
+                const RtScene& scene);
 
 bool cuda_resolve_ids(
                 uchar4* color,

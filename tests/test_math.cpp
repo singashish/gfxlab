@@ -300,6 +300,37 @@ int main() {
     CHECK(approx(gfx::to_radians(90.0f), gfx::kPi / 2.0f));
 
 
+    // General inverse: M * inverse(M) is the identity, and points
+    // round-trip through a translate * rotate * non-uniform scale
+    {
+        const gfx::Mat4 m =
+            gfx::mat4_translate({1.0f, -2.0f, 3.0f}) *
+            gfx::mat4_rotate({0.0f, 0.6f, 0.8f}, 0.7f) *
+            gfx::mat4_scale({2.0f, 0.5f, 3.0f});
+
+        gfx::Mat4 inv{};
+        CHECK(gfx::mat4_inverse(m, inv));
+
+        const gfx::Mat4 product = m * inv;
+        const gfx::Mat4 identity = gfx::mat4_identity();
+
+        for (int c = 0; c < 4; ++c) {
+            CHECK(approx(product.col[c].x, identity.col[c].x, 1e-5));
+            CHECK(approx(product.col[c].y, identity.col[c].y, 1e-5));
+            CHECK(approx(product.col[c].z, identity.col[c].z, 1e-5));
+            CHECK(approx(product.col[c].w, identity.col[c].w, 1e-5));
+        }
+
+        const Vec3 p{0.3f, -1.2f, 4.5f};
+        CHECK(approx_vec(
+            gfx::transform_point(inv, gfx::transform_point(m, p)), p));
+
+        // A singular matrix (zero scale on one axis) has no inverse
+        gfx::Mat4 unused{};
+        CHECK(!gfx::mat4_inverse(
+            gfx::mat4_scale({1.0f, 0.0f, 1.0f}), unused));
+    }
+
     if (g_failures == 0) {
         std::printf("All math tests passed\n");
         return 0;
