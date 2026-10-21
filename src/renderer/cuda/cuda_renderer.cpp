@@ -53,10 +53,15 @@ bool CudaRenderer::init(void* native_window) {
         return false;
     }
 
-    // The OpenGL context must be current before querying interop devices
+    // The OpenGL context must be current before
+    // querying interop devices
     if (!cuda_select_gl_device()) {
         return false;
     }
+
+    // Frame timing is optional;
+    // keep rendering if event creation fails
+    (void)m_gpu_timer.init();
 
     if constexpr (kProfileStages) {
         if (!m_stage_timer.init()) {
@@ -196,6 +201,9 @@ void CudaRenderer::render(const FrameData& frame) {
         LOG_ERROR("CUDA renderer: render targets are not allocated");
         return;
     }
+
+    // Start before clearing colour and visibility
+    (void)m_gpu_timer.begin();
 
     // Profile marker 0: start of measured GPU work
     if constexpr (kProfileStages) {
@@ -459,12 +467,20 @@ void CudaRenderer::render(const FrameData& frame) {
         return;
     }
 
+    // Include CUDA/OpenGL interop copy cost in the frame measurement
+    // The small OpenGL presentation blit is intentionally excluded
+    m_gpu_timer.end();
+
     m_presenter.draw(m_width, m_height);
     m_context.swap_buffers();
 }
 
 void CudaRenderer::set_vsync(bool enabled) {
     m_context.set_vsync(enabled);
+}
+
+bool CudaRenderer::last_gpu_ms(double& ms) {
+    return m_gpu_timer.take_latest(ms);
 }
 
 MeshId CudaRenderer::create_mesh(const Mesh& mesh) {

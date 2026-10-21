@@ -17,9 +17,10 @@ target_link_libraries(gfx_cuda PUBLIC
 if(TARGET gfx_gl)
     target_sources(gfx_cuda PRIVATE
         cuda_gl_image.cpp
-        cuda_renderer.cpp
+        cuda_gpu_timer.cpp
         cuda_mesh.cpp
         cuda_raster.cu
+        cuda_renderer.cpp
         cuda_timer.cpp
     )
 

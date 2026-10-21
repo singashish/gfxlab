@@ -39,7 +39,7 @@ bool GLGpuTimer::init() {
                 static_cast<GLsizei>(kSlots),
                 queries);
 
-            LOG_ERROR("OpenGL GPU timer: failed to create queries");
+            LOG_WARN("OpenGL GPU timer: failed to create queries");
             return false;
         }
     }
@@ -71,8 +71,8 @@ void GLGpuTimer::begin() {
             &available);
 
         if (available == 0) {
-            // Do not wait for the GPU. Try another slot next frame
-            m_current = (m_current + 1) % kSlots;
+            // Keep checking the oldest pending slot next frame
+            // Never wait for the GPU or skip ahead in the ring
             return;
         }
 

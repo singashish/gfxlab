@@ -7,6 +7,7 @@
 #include "renderer/vulkan/vk_grid.h"
 #include "renderer/vulkan/vk_mesh.h"
 #include "renderer/vulkan/vk_swapchain.h"
+#include "renderer/vulkan/vk_timer.h"
 #include "renderer/vulkan/vk_triangle_demo.h"
 #include "renderer/vulkan/vk_uniforms.h"
 #include "renderer/vulkan/vk_upload.h"
@@ -22,6 +23,7 @@ public:
     VulkanRenderer& operator=(const VulkanRenderer&) = delete;
 
     const char* name() const override;
+    bool last_gpu_ms(double& ms) override;
     bool init(void* native_window) override;
     void render(const FrameData& frame) override;
     void set_vsync(bool enabled) override;
@@ -34,6 +36,7 @@ private:
     // Order is important: dependent GPU resources are destroyed
     // before the context
     VulkanContext m_context;
+    VulkanGpuTimer m_gpu_timer;
     VulkanSwapchain m_swapchain;
     VulkanDepthBuffer m_depth;
     VulkanFrames m_frames;

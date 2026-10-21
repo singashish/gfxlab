@@ -23,6 +23,7 @@ add_library(gfx_vk STATIC
     vk_renderer.cpp
     vk_shader.cpp
     vk_swapchain.cpp
+    vk_timer.cpp
     vk_triangle_demo.cpp
     vk_uniforms.cpp
     vk_upload.cpp

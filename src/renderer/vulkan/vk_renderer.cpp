@@ -59,6 +59,10 @@ const char* VulkanRenderer::name() const {
     return "Vulkan 1.3";
 }
 
+bool VulkanRenderer::last_gpu_ms(double& ms) {
+    return m_gpu_timer.take_latest(ms);
+}
+
 bool VulkanRenderer::init_pipelines(VkFormat color_format,
                                     VkFormat depth_format) {
 
@@ -99,6 +103,13 @@ bool VulkanRenderer::init(void* native_window) {
     if (!m_context.create(native_window)) {
         return false;
     }
+
+    // Timing is optional; unsupported timestamps
+    // must not stop rendering
+    (void)m_gpu_timer.init(
+        m_context.physical_device(),
+        m_context.device(),
+        m_context.queue_family());
 
     RECT rect{};
 
@@ -287,6 +298,10 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
+    // The previous submission using this slot has completed
+    // Its timestamps can now be read without waiting
+    m_gpu_timer.collect(frame_index);
+
     const VkExtent2D extent = m_swapchain.extent();
 
     if (extent.width == 0 || extent.height == 0) {
@@ -394,6 +409,8 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
+    m_gpu_timer.begin(slot.cmd, frame_index);
+
     // 4. Transition the swapchain image into a layout suitable for
     // rendering. The destination stage matches the stage the submit
     // waits on for image_available, so the layout change happens only
@@ -498,6 +515,8 @@ void VulkanRenderer::render(const FrameData& frame) {
     m_grid.draw(slot.cmd, extent, frame_set);
 
     vkCmdEndRendering(slot.cmd);
+
+    m_gpu_timer.end(slot.cmd, frame_index);
 
     // 9. Transition the color image for presentation
     transition_image(

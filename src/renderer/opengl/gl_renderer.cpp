@@ -10,9 +10,8 @@ bool GLRenderer::init(void* native_window) {
         return false;
     }
 
-    if (!m_gpu_timer.init()) {
-        return false;
-    }
+    // GPU timing is optional; rendering must still work without it
+    (void)m_gpu_timer.init();
 
     if (!m_meshes.init()) {
         return false;

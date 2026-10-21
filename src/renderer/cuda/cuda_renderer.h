@@ -7,6 +7,7 @@
 #include "renderer/opengl/gl_context.h"
 #include "renderer/opengl/gl_presenter.h"
 #include "renderer/cuda/cuda_gl_image.h"
+#include "renderer/cuda/cuda_gpu_timer.h"
 #include "renderer/cuda/cuda_mesh.h"
 #include "renderer/cuda/cuda_raster.h"
 #include "renderer/cuda/cuda_timer.h"
@@ -28,6 +29,7 @@ public:
     bool init(void* native_window) override;
     void render(const FrameData& frame) override;
     void set_vsync(bool enabled) override;
+    bool last_gpu_ms(double& ms) override;
     MeshId create_mesh(const Mesh& mesh) override;
 
 private:
@@ -41,6 +43,7 @@ private:
     CudaMeshStore m_meshes;
 
     CudaStageTimer m_stage_timer;
+    CudaGpuTimer m_gpu_timer;
 
     void* m_color = nullptr;
     void* m_visibility = nullptr;
