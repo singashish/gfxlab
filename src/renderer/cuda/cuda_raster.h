@@ -47,10 +47,9 @@ struct RasterWork {
     unsigned int capacity = 0;
 };
 
-// The key light of the viewport lighting, in view space: up, to the
+// The key light of the rasterized viewport, in view space: up, to the
 // left and towards the viewer, so it moves with the camera like the
-// OpenGL and Vulkan lighting. Shared by the shading code and the
-// shadow rays so they always agree
+// OpenGL and Vulkan lighting. The ray tracer uses a sun instead
 GFX_HD inline Vec3 key_light_view_dir() {
     return normalize(Vec3{-0.5f, 0.6f, 0.7f});
 }
@@ -87,11 +86,14 @@ struct RtScene {
     float t_min;     // near plane
     float t_max;     // far plane
 
-    // Shadows: direction towards the key light in world space (the
-    // light is infinitely far away, like the sun), and the clear colour
-    // that the floor shadow darkens
-    Vec3 key_world;
-    uchar4 background;
+    // The sun: direction towards it in world space (for shadow rays)
+    // and the same direction in view space (for the lighting). It is
+    // infinitely far away, so one direction serves every pixel
+    Vec3 sun_world;
+    Vec3 sun_view;
+
+    // False when the sun is off: no shadow rays are traced
+    bool shadows;
 };
 
 struct CudaGridParams {

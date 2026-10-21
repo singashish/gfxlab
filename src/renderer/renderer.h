@@ -52,6 +52,13 @@ struct FrameData {
     // Wireframe takes priority over ray tracing
     bool ray_trace = false;
 
+    // Direction towards the sun in world space (unit length). Used only
+    // by the ray tracer, which lights the scene with this sun instead of
+    // the camera-attached key light, so shadows stay put while orbiting.
+    // With sun_enabled off it uses the camera light, without shadows
+    Vec3 sun_dir = {0.0f, 0.0f, 1.0f};
+    bool sun_enabled = true;
+
     // Temporary demo animation state, replaced by a draw list in M3
     float demo_spin_angle = 0.0f;
 

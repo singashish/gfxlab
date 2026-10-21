@@ -555,15 +555,19 @@ void CudaRenderer::render(const FrameData& frame) {
         rt_scene.t_min = frame.near_plane;
         rt_scene.t_max = frame.far_plane;
 
-        // The key light is defined in view space; shadow rays need it in
-        // world space. The view matrix is a rotation plus a translation,
-        // so it always has an inverse
-        Mat4 view_to_world = mat4_identity();
-        (void)mat4_inverse(frame.view, view_to_world);
-
-        rt_scene.key_world = normalize(transform_direction(
-            view_to_world, key_light_view_dir()));
-        rt_scene.background = background;
+        if (frame.sun_enabled) {
+            // The sun is fixed in the world: shadow rays use it as it
+            // is, the lighting needs it in view space like the normals
+            rt_scene.sun_world = normalize(frame.sun_dir);
+            rt_scene.sun_view = normalize(
+                transform_direction(frame.view, rt_scene.sun_world));
+            rt_scene.shadows = true;
+        } else {
+            // Sun off: light like the rasterizer, without shadows
+            rt_scene.sun_view = key_light_view_dir();
+            rt_scene.sun_world = rt_scene.sun_view;
+            rt_scene.shadows = false;
+        }
 
         if (rt_scene.count > 0 &&
             !cuda_ray_trace(

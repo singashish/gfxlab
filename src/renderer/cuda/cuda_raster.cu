@@ -834,6 +834,8 @@ __device__ __forceinline__ unsigned char to_byte(float c) {
 // the two paths cannot drift apart. n is the view-space normal, already
 // flipped towards the viewer for back faces; view_pos is the shaded
 // point in view space. Ported from the OpenGL mesh shader
+// key_dir is the direction towards the key light in view space: the
+// camera-attached light for the rasterizer, the sun for the ray tracer.
 // key_visibility is 1 when the key light reaches the point and 0 when a
 // shadow ray found something in the way. Only the key light's diffuse
 // and highlight are removed; the ambient fill stays, so shadows are
@@ -842,11 +844,11 @@ __device__ __forceinline__ uchar4 lit_color(
                 Vec3 n,
                 Vec3 view_pos,
                 Vec3 up_view,
+                Vec3 key_dir,
                 float key_visibility) {
 
     n = normalize(n);
     const Vec3 v = normalize(-view_pos);
-    const Vec3 key_dir = key_light_view_dir();
 
     const float diff =
         fmaxf(dot(n, key_dir), 0.0f) * key_visibility;
@@ -993,7 +995,8 @@ __global__ void shade_kernel(
         n = -n;
     }
 
-    color[pixel] = lit_color(n, view_pos, up_view, 1.0f);
+    color[pixel] = lit_color(
+        n, view_pos, up_view, key_light_view_dir(), 1.0f);
 }
 
 // Does anything in the scene block the ray origin + t * dir, t > 0?
@@ -1084,29 +1087,7 @@ __global__ void ray_trace_kernel(
     const std::size_t pixel = pixel_index(x, y, width);
 
     if (best_item < 0) {
-        // No model here: the camera sees the floor (z = 0) or the sky.
-        // Seen from above, darken the floor where the model blocks the
-        // key light. The grid pass then draws its lines on top
-        if (scene.eye.z > 0.0f && dir.z < 0.0f) {
-            const float t_floor = -scene.eye.z / dir.z;
-
-            if (t_floor > scene.t_min && t_floor < scene.t_max) {
-                Vec3 floor_point = scene.eye + t_floor * dir;
-                floor_point.z = shadow_offset(floor_point);
-
-                if (scene.key_world.z > 0.0f &&
-                    scene_occluded(scene, floor_point, scene.key_world)) {
-                    const uchar4 bg = scene.background;
-                    color[pixel] = make_uchar4(
-                        static_cast<unsigned char>(bg.x * 0.55f),
-                        static_cast<unsigned char>(bg.y * 0.55f),
-                        static_cast<unsigned char>(bg.z * 0.55f),
-                        255);
-                }
-            }
-        }
-
-        return;
+        return;  // background: the grid pass draws the floor here
     }
 
     const RtInstance& inst = scene.items[best_item];
@@ -1157,22 +1138,22 @@ __global__ void ray_trace_kernel(
     const Vec3 world_hit = scene.eye + best_t * dir;
     const Vec3 view_pos = transform_point(scene.view, world_hit);
 
-    // Shadow ray: from the hit point towards the key light. Surfaces
-    // facing away from the light are already unlit by it, so they skip
-    // the ray
-    float key_visibility = 1.0f;
+    // Shadow ray: from the hit point towards the sun. Surfaces facing
+    // away from the sun are already unlit by it, so they skip the ray
+    float sun_visibility = 1.0f;
 
-    if (dot(normalize(n_world), scene.key_world) > 0.0f) {
+    if (scene.shadows &&
+        dot(normalize(n_world), scene.sun_world) > 0.0f) {
         const Vec3 shadow_origin =
             world_hit + g_world * shadow_offset(world_hit);
 
-        if (scene_occluded(scene, shadow_origin, scene.key_world)) {
-            key_visibility = 0.0f;
+        if (scene_occluded(scene, shadow_origin, scene.sun_world)) {
+            sun_visibility = 0.0f;
         }
     }
 
     color[pixel] = lit_color(
-        n_view, view_pos, scene.up_view, key_visibility);
+        n_view, view_pos, scene.up_view, scene.sun_view, sun_visibility);
 
     // Same depth the rasterizer would have written, so the grid's
     // depth test treats both paths alike

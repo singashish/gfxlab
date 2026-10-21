@@ -10,6 +10,7 @@
 #include "renderer/renderer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -165,6 +166,19 @@ int main(int argc, char** argv) {
     bool wireframe = false;
     bool ray_trace = false;
 
+    // Sun for the ray tracer, as two angles in degrees: azimuth around
+    // the Z axis (0 = +X, 90 = +Y) and elevation above the floor.
+    // The default lights the front of the model from the default camera
+    float sun_azimuth = 250.0f;
+    float sun_elevation = 45.0f;
+
+    // L turns the sun on and off. Off, the ray tracer uses the same
+    // camera-attached light as the rasterizer, without shadows
+    bool sun_enabled = true;
+
+    // True while a right-button drag is moving the sun
+    bool sun_dragging = false;
+
     renderer->set_vsync(vsync);
 
     gfx::FrameTimer timer;
@@ -254,6 +268,18 @@ int main(int argc, char** argv) {
         frame.height = window.height();
         frame.wireframe = wireframe;
         frame.ray_trace = ray_trace;
+        frame.sun_enabled = sun_enabled;
+
+        {
+            const float az = gfx::to_radians(sun_azimuth);
+            const float el = gfx::to_radians(sun_elevation);
+
+            frame.sun_dir = {
+                std::cos(el) * std::cos(az),
+                std::cos(el) * std::sin(az),
+                std::sin(el)
+            };
+        }
 
         frame.view = camera.view();
         frame.eye = camera.eye();
@@ -316,12 +342,26 @@ int main(int argc, char** argv) {
 
             char title[192];
 
-            // Only the CUDA backend ray traces; say so in the title
-            const char* mode_suffix =
-                (ray_trace && !wireframe &&
-                 backend == gfx::RendererBackend::GFX_BACKEND_CUDA)
-                    ? " (ray traced)"
-                    : "";
+            // Only the CUDA backend ray traces; say so in the title,
+            // together with the sun's angles
+            char mode_suffix[64] = "";
+
+            if (ray_trace && !wireframe &&
+                backend == gfx::RendererBackend::GFX_BACKEND_CUDA) {
+                if (sun_enabled) {
+                    std::snprintf(
+                        mode_suffix,
+                        sizeof(mode_suffix),
+                        " (ray traced, sun %.0f / %.0f deg)",
+                        sun_azimuth,
+                        sun_elevation);
+                } else {
+                    std::snprintf(
+                        mode_suffix,
+                        sizeof(mode_suffix),
+                        " (ray traced, sun off)");
+                }
+            }
 
             if (editor.active()) {
                 std::snprintf(
@@ -440,6 +480,44 @@ int main(int argc, char** argv) {
         }
 
         camera.zoom(in.scroll());
+
+        // Right-button drag moves the sun while ray tracing: left/right
+        // turns it around the scene, up/down raises and lowers it.
+        // Right click also cancels a G/R/S edit, so a drag only starts
+        // when the button goes down with no edit active
+        if (in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_RIGHT)) {
+            sun_dragging =
+                ray_trace && sun_enabled && !wireframe &&
+                !was_editing_at_frame_start;
+        }
+
+        if (!in.mouse_down(gfx::MouseButton::GFX_MOUSE_RIGHT)) {
+            if (sun_dragging) {
+                LOG_INFO("sun: azimuth %.0f deg, elevation %.0f deg",
+                         sun_azimuth, sun_elevation);
+            }
+
+            sun_dragging = false;
+        }
+
+        if (sun_dragging) {
+            constexpr float kSunDegreesPerPixel = 0.25f;
+
+            // Dragging right moves a sun on the camera's side of the
+            // scene to the right; dragging up raises it
+            sun_azimuth += in.mouse_dx() * kSunDegreesPerPixel;
+            sun_elevation -= in.mouse_dy() * kSunDegreesPerPixel;
+
+            // Keep the azimuth in [0, 360) and the sun above the floor
+            sun_azimuth = std::fmod(sun_azimuth, 360.0f);
+
+            if (sun_azimuth < 0.0f) {
+                sun_azimuth += 360.0f;
+            }
+
+            sun_elevation =
+                std::min(std::max(sun_elevation, 5.0f), 90.0f);
+        }
 
         if (window.was_resized()) {
             const int width = window.width();
@@ -575,6 +653,12 @@ int main(int argc, char** argv) {
                          "--backend=cuda");
                 ray_trace = false;
             }
+        }
+
+        // Toggle the ray tracer's sun with L
+        if (in.key_pressed(gfx::Key::GFX_KEY_L)) {
+            sun_enabled = !sun_enabled;
+            LOG_INFO("sun: %s", sun_enabled ? "on" : "off");
         }
 
         // ------------------------------------------------------------
