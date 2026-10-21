@@ -179,6 +179,9 @@ int main(int argc, char** argv) {
     // True while a right-button drag is moving the sun
     bool sun_dragging = false;
 
+    // O turns the ray tracer's ambient occlusion on and off
+    bool ambient_occlusion = true;
+
     renderer->set_vsync(vsync);
 
     gfx::FrameTimer timer;
@@ -269,6 +272,7 @@ int main(int argc, char** argv) {
         frame.wireframe = wireframe;
         frame.ray_trace = ray_trace;
         frame.sun_enabled = sun_enabled;
+        frame.ambient_occlusion = ambient_occlusion;
 
         {
             const float az = gfx::to_radians(sun_azimuth);
@@ -348,18 +352,22 @@ int main(int argc, char** argv) {
 
             if (ray_trace && !wireframe &&
                 backend == gfx::RendererBackend::GFX_BACKEND_CUDA) {
+                const char* ao_text = ambient_occlusion ? ", AO" : "";
+
                 if (sun_enabled) {
                     std::snprintf(
                         mode_suffix,
                         sizeof(mode_suffix),
-                        " (ray traced, sun %.0f / %.0f deg)",
+                        " (ray traced, sun %.0f / %.0f deg%s)",
                         sun_azimuth,
-                        sun_elevation);
+                        sun_elevation,
+                        ao_text);
                 } else {
                     std::snprintf(
                         mode_suffix,
                         sizeof(mode_suffix),
-                        " (ray traced, sun off)");
+                        " (ray traced, sun off%s)",
+                        ao_text);
                 }
             }
 
@@ -653,6 +661,13 @@ int main(int argc, char** argv) {
                          "--backend=cuda");
                 ray_trace = false;
             }
+        }
+
+        // Toggle the ray tracer's ambient occlusion with O
+        if (in.key_pressed(gfx::Key::GFX_KEY_O)) {
+            ambient_occlusion = !ambient_occlusion;
+            LOG_INFO("ambient occlusion: %s",
+                     ambient_occlusion ? "on" : "off");
         }
 
         // Toggle the ray tracer's sun with L

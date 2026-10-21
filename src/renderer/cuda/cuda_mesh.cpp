@@ -178,6 +178,11 @@ MeshId CudaMeshStore::add(const Mesh& mesh) {
     DeviceMesh device{};
     device.vertex_count = vertex_count;
     device.bvh_node_count = stats.node_count;
+
+    if (!bvh.nodes.empty()) {
+        device.bounds_min = bvh.nodes[0].box_min;
+        device.bounds_max = bvh.nodes[0].box_max;
+    }
     device.index_count =
         static_cast<std::uint32_t>(mesh.indices.size());
     device.edge_index_count =

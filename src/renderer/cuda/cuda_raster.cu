@@ -78,11 +78,6 @@ __device__ __forceinline__ bool clip_test(
     return true;
 }
 
-__device__ __forceinline__ bool edge_inside(
-    long long edge, bool top_left) {
-    return edge + (top_left ? 0LL : -1LL) >= 0;
-}
-
 // One source of truth for rasterization and shading
 // sx/sy and order are normalized to positive area, while
 // signed_area retains the original winding
@@ -839,13 +834,15 @@ __device__ __forceinline__ unsigned char to_byte(float c) {
 // key_visibility is 1 when the key light reaches the point and 0 when a
 // shadow ray found something in the way. Only the key light's diffuse
 // and highlight are removed; the ambient fill stays, so shadows are
-// dark but never black. The rasterizer always passes 1
+// dark but never black. ambient_scale is the ambient occlusion factor
+// (1 = fully open, 0 = fully enclosed). The rasterizer passes 1 for both
 __device__ __forceinline__ uchar4 lit_color(
                 Vec3 n,
                 Vec3 view_pos,
                 Vec3 up_view,
                 Vec3 key_dir,
-                float key_visibility) {
+                float key_visibility,
+                float ambient_scale) {
 
     n = normalize(n);
     const Vec3 v = normalize(-view_pos);
@@ -858,11 +855,11 @@ __device__ __forceinline__ uchar4 lit_color(
     const Vec3 ambient_low{0.10f, 0.10f, 0.12f};
     const Vec3 ambient_high{0.30f, 0.32f, 0.36f};
 
-    const Vec3 ambient = {
+    const Vec3 ambient = Vec3{
         ambient_low.x + (ambient_high.x - ambient_low.x) * hemi,
         ambient_low.y + (ambient_high.y - ambient_low.y) * hemi,
         ambient_low.z + (ambient_high.z - ambient_low.z) * hemi
-    };
+    } * ambient_scale;
 
     const Vec3 h = normalize(key_dir + v);
 
@@ -996,15 +993,18 @@ __global__ void shade_kernel(
     }
 
     color[pixel] = lit_color(
-        n, view_pos, up_view, key_light_view_dir(), 1.0f);
+        n, view_pos, up_view, key_light_view_dir(), 1.0f, 1.0f);
 }
 
-// Does anything in the scene block the ray origin + t * dir, t > 0?
-// Used for shadow rays, so any hit is enough
+// Does anything in the scene block the ray origin + t * dir for
+// 0 < t < t_max? Used for shadow and AO rays, so any hit is enough.
+// dir is unit length in world space, so t_max is a world distance; the
+// object-space direction is not renormalized, so t means the same there
 __device__ __forceinline__ bool scene_occluded(
                 const RtScene& scene,
                 Vec3 origin,
-                Vec3 dir) {
+                Vec3 dir,
+                float t_max) {
 
     for (int i = 0; i < scene.count; ++i) {
         const RtInstance& inst = scene.items[i];
@@ -1016,7 +1016,7 @@ __device__ __forceinline__ bool scene_occluded(
                          transform_point(inst.world_to_object, origin),
                          transform_direction(inst.world_to_object, dir),
                          0.0f,
-                         1.0e30f)) {
+                         t_max)) {
             return true;
         }
     }
@@ -1032,6 +1032,46 @@ __device__ __forceinline__ float shadow_offset(Vec3 p) {
         fmaxf(fabsf(p.x), fmaxf(fabsf(p.y), fabsf(p.z)));
 
     return 1.0e-4f * fmaxf(1.0f, largest);
+}
+
+// PCG hash: turns any 32-bit number into a well-scrambled one. Chained,
+// it gives each pixel and sample its own repeatable random sequence
+__device__ __forceinline__ unsigned int pcg_hash(unsigned int v) {
+    const unsigned int state = v * 747796405u + 2891336453u;
+    const unsigned int word =
+        ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// Next random number in [0, 1) from the seed, advancing the seed
+__device__ __forceinline__ float random01(unsigned int& seed) {
+    seed = pcg_hash(seed);
+    return static_cast<float>(seed >> 8) * (1.0f / 16777216.0f);
+}
+
+// A random direction above the surface with normal n (unit length),
+// cosine-weighted: directions near the normal are picked more often,
+// matching how much each direction contributes to ambient light
+__device__ __forceinline__ Vec3 cosine_hemisphere(
+                Vec3 n,
+                float u1,
+                float u2) {
+
+    // Two tangents perpendicular to n (Duff et al. 2017, branchless)
+    const float sign = copysignf(1.0f, n.z);
+    const float a = -1.0f / (sign + n.z);
+    const float b = n.x * n.y * a;
+
+    const Vec3 t{1.0f + sign * n.x * n.x * a, sign * b, -sign * n.x};
+    const Vec3 bt{b, sign + n.y * n.y * a, -n.y};
+
+    // A uniform point on a disc, lifted onto the hemisphere
+    const float r = sqrtf(u1);
+    const float phi = 6.2831853f * u2;
+
+    return t * (r * cosf(phi)) +
+           bt * (r * sinf(phi)) +
+           n * sqrtf(fmaxf(0.0f, 1.0f - u1));
 }
 
 __global__ void ray_trace_kernel(
@@ -1147,13 +1187,62 @@ __global__ void ray_trace_kernel(
         const Vec3 shadow_origin =
             world_hit + g_world * shadow_offset(world_hit);
 
-        if (scene_occluded(scene, shadow_origin, scene.sun_world)) {
+        if (scene_occluded(
+                scene, shadow_origin, scene.sun_world, 1.0e30f)) {
             sun_visibility = 0.0f;
         }
     }
 
+    // Ambient occlusion: short random rays over the hemisphere above the
+    // point. The fraction that escape is how open the point is. New rays
+    // are added to the running total for this pixel each frame
+    float ao = 1.0f;
+
+    if (scene.ao) {
+        const Vec3 n_unit = normalize(n_world);
+        const Vec3 ao_origin =
+            world_hit + g_world * shadow_offset(world_hit);
+
+        float escaped = scene.ao_samples_before > 0
+            ? scene.ao_accum[pixel]
+            : 0.0f;
+
+        for (int i = 0; i < scene.ao_rays; ++i) {
+            unsigned int seed = pcg_hash(
+                static_cast<unsigned int>(pixel) ^
+                pcg_hash(scene.ao_samples_before +
+                         static_cast<unsigned int>(i)));
+
+            const float u1 = random01(seed);
+            const float u2 = random01(seed);
+
+            const Vec3 d = cosine_hemisphere(n_unit, u1, u2);
+
+            // A direction that dips below the actual triangle (possible
+            // where smooth normals bend away from it) counts as blocked
+            if (dot(d, g_world) <= 0.0f) {
+                continue;
+            }
+
+            if (!scene_occluded(scene, ao_origin, d, scene.ao_radius)) {
+                escaped += 1.0f;
+            }
+        }
+
+        const unsigned int total =
+            scene.ao_samples_before +
+            static_cast<unsigned int>(scene.ao_rays);
+
+        if (scene.ao_rays > 0) {
+            scene.ao_accum[pixel] = escaped;
+        }
+
+        ao = total > 0 ? escaped / static_cast<float>(total) : 1.0f;
+    }
+
     color[pixel] = lit_color(
-        n_view, view_pos, scene.up_view, scene.sun_view, sun_visibility);
+        n_view, view_pos, scene.up_view, scene.sun_view, sun_visibility,
+        ao);
 
     // Same depth the rasterizer would have written, so the grid's
     // depth test treats both paths alike
@@ -1709,7 +1798,8 @@ bool cuda_ray_trace(
                 const RtScene& scene) {
 
     if (!color || !visibility || width <= 0 || height <= 0 ||
-        scene.count < 0 || scene.count > kMaxRtInstances) {
+        scene.count < 0 || scene.count > kMaxRtInstances ||
+        (scene.ao && !scene.ao_accum)) {
         LOG_ERROR("CUDA ray tracer: invalid arguments");
         return false;
     }

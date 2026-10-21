@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 #include <cstdint>
+#include <vector>
 
 #include "renderer/renderer.h"
 #include "renderer/opengl/gl_context.h"
@@ -65,6 +66,13 @@ private:
 
     // The ray tracer handles up to kMaxRtInstances items; warn once
     bool m_rt_limit_reported = false;
+
+    // Ambient occlusion accumulation: one float per pixel, the number of
+    // AO samples per pixel already in it, and a snapshot of everything
+    // that affects the picture so a change can restart the accumulation
+    float* m_ao_accum = nullptr;
+    unsigned int m_ao_samples = 0;
+    std::vector<float> m_rt_signature;
 
     int m_width = 0;
     int m_height = 0;

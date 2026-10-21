@@ -19,14 +19,27 @@ struct ProjectedVertex {
 // One triangle that survived setup, ready for rasterization and shading.
 // All per-vertex arrays are in the setup's positive-area order, so
 // screen[k] belongs to (setup.sx[k], setup.sy[k])
+//
+// float4 must start on a 16-byte boundary, so the float4 arrays come
+// first and the struct ends with explicit padding: its size is a
+// multiple of 16 with no filler hidden by the compiler (MSVC warns
+// about hidden filler with C4324). The static_assert below keeps it so
 struct RasterTri {
-    RasterTriangleSetup setup;  // snapped coordinates, original signed area
-    int min_x, max_x, min_y, max_y; // pixel bounds, clamped to the screen
-
     float4 screen[3];        // x, y, depth01, clip-space w
     float4 view_pos[3];
     float4 view_normal[3];
+
+    RasterTriangleSetup setup;  // snapped coordinates, original signed area
+    int min_x, max_x, min_y, max_y; // pixel bounds, clamped to the screen
+    int padding[2];
 };
+
+static_assert(sizeof(RasterTri) ==
+                  9 * sizeof(float4) + sizeof(RasterTriangleSetup) +
+                      6 * sizeof(int),
+              "RasterTri must not contain compiler-added padding");
+static_assert(sizeof(RasterTri) % 16 == 0,
+              "RasterTri must keep 16-byte alignment in arrays");
 
 // Per-frame counters, written only by the GPU.
 // Note: "small" is a macro in <windows.h> (rpcndr.h), so the
@@ -94,6 +107,17 @@ struct RtScene {
 
     // False when the sun is off: no shadow rays are traced
     bool shadows;
+
+    // Ambient occlusion, accumulated over frames while nothing changes.
+    // ao_accum holds, per pixel, how many AO rays so far escaped
+    // without hitting anything; ao_samples_before is how many rays per
+    // pixel are already in it (0 = start over this frame) and ao_rays
+    // how many to add now (0 = converged, reuse the stored result)
+    bool ao;
+    float* ao_accum;
+    unsigned int ao_samples_before;
+    int ao_rays;
+    float ao_radius;  // world-space reach of AO rays
 };
 
 struct CudaGridParams {

@@ -59,6 +59,10 @@ struct FrameData {
     Vec3 sun_dir = {0.0f, 0.0f, 1.0f};
     bool sun_enabled = true;
 
+    // Ray tracer only: darken creases and contact areas with ambient
+    // occlusion, refined over frames while nothing moves
+    bool ambient_occlusion = true;
+
     // Temporary demo animation state, replaced by a draw list in M3
     float demo_spin_angle = 0.0f;
 

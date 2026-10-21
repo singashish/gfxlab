@@ -312,7 +312,6 @@ int main() {
         CHECK(gfx::mat4_inverse(m, inv));
 
         const gfx::Mat4 product = m * inv;
-        const gfx::Mat4 identity = gfx::mat4_identity();
 
         for (int c = 0; c < 4; ++c) {
             CHECK(approx(product.col[c].x, identity.col[c].x, 1e-5));

@@ -16,6 +16,47 @@ namespace gfx {
 
 namespace {
 
+// Ambient occlusion: rays per pixel added each frame, and the total
+// after which the result is considered converged and no more are traced
+constexpr int kAoRaysPerFrame = 4;
+constexpr unsigned int kAoMaxSamples = 1024;
+
+// AO rays reach this fraction of the largest model's diagonal
+constexpr float kAoRadiusFraction = 0.2f;
+
+void append_matrix(std::vector<float>& out, const Mat4& m) {
+    for (int c = 0; c < 4; ++c) {
+        out.push_back(m.col[c].x);
+        out.push_back(m.col[c].y);
+        out.push_back(m.col[c].z);
+        out.push_back(m.col[c].w);
+    }
+}
+
+// Length of the world-space diagonal of an object-space box after the
+// model transform (all eight corners, since rotation changes the extent)
+float world_diagonal(const DeviceMesh& mesh, const Mat4& model) {
+    Vec3 lo{1.0e30f, 1.0e30f, 1.0e30f};
+    Vec3 hi{-1.0e30f, -1.0e30f, -1.0e30f};
+
+    for (int i = 0; i < 8; ++i) {
+        const Vec3 corner{
+            (i & 1) ? mesh.bounds_max.x : mesh.bounds_min.x,
+            (i & 2) ? mesh.bounds_max.y : mesh.bounds_min.y,
+            (i & 4) ? mesh.bounds_max.z : mesh.bounds_min.z
+        };
+
+        const Vec3 p = transform_point(model, corner);
+
+        lo = {std::fmin(lo.x, p.x), std::fmin(lo.y, p.y),
+              std::fmin(lo.z, p.z)};
+        hi = {std::fmax(hi.x, p.x), std::fmax(hi.y, p.y),
+              std::fmax(hi.z, p.z)};
+    }
+
+    return length(hi - lo);
+}
+
 constexpr bool kDebugTriangleIds = false;
 constexpr bool kProfileStages = false;
 
@@ -23,6 +64,13 @@ constexpr bool kProfileStages = false;
 
 CudaRenderer::~CudaRenderer() {
     free_raster_work();
+
+    if (m_ao_accum != nullptr) {
+        (void)cuda_ok(
+            cudaFree(m_ao_accum),
+            "cudaFree ambient occlusion buffer");
+        m_ao_accum = nullptr;
+    }
 
     if (m_raster.counts != nullptr) {
         (void)cuda_ok(
@@ -144,6 +192,19 @@ bool CudaRenderer::resize_targets(int width, int height) {
         m_visibility = nullptr;
     }
 
+    // The AO accumulation is per pixel, so a new size starts it over
+    if (m_ao_accum != nullptr) {
+        if (!cuda_ok(
+                cudaFree(m_ao_accum),
+                "cudaFree old ambient occlusion buffer")) {
+            return false;
+        }
+        m_ao_accum = nullptr;
+    }
+
+    m_ao_samples = 0;
+    m_rt_signature.clear();
+
     const std::size_t pixels =
         static_cast<std::size_t>(width) *
         static_cast<std::size_t>(height);
@@ -165,6 +226,21 @@ bool CudaRenderer::resize_targets(int width, int height) {
             "cudaFree colour buffer after visibility allocation failure");
         m_color = nullptr;
         m_visibility = nullptr;
+        return false;
+    }
+
+    if (!cuda_ok(
+            cudaMalloc(
+                reinterpret_cast<void**>(&m_ao_accum),
+                pixels * sizeof(float)),
+            "cudaMalloc ambient occlusion buffer")) {
+        (void)cuda_ok(cudaFree(m_visibility),
+                      "cudaFree visibility buffer after AO failure");
+        (void)cuda_ok(cudaFree(m_color),
+                      "cudaFree colour buffer after AO failure");
+        m_color = nullptr;
+        m_visibility = nullptr;
+        m_ao_accum = nullptr;
         return false;
     }
 
@@ -415,8 +491,12 @@ void CudaRenderer::render(const FrameData& frame) {
         }
     }
 
-    // Ray tracing: collect the instances; no vertex work is needed
+    // Ray tracing: collect the instances; no vertex work is needed.
+    // The signature records everything that changes the traced picture,
+    // so ambient occlusion can keep accumulating only while it is stable
     RtScene rt_scene{};
+    std::vector<float> signature;
+    float largest_diagonal = 0.0f;
 
     if (trace) {
         for (const DrawItem& item : frame.draw_list) {
@@ -448,6 +528,10 @@ void CudaRenderer::render(const FrameData& frame) {
             inst.mesh = *mesh;
             inst.normal_to_world = item.normal_matrix;
             ++rt_scene.count;
+
+            append_matrix(signature, item.model);
+            largest_diagonal = std::fmax(
+                largest_diagonal, world_diagonal(*mesh, item.model));
         }
     }
 
@@ -569,14 +653,43 @@ void CudaRenderer::render(const FrameData& frame) {
             rt_scene.shadows = false;
         }
 
-        if (rt_scene.count > 0 &&
-            !cuda_ray_trace(
-                color,
-                visibility,
-                m_width,
-                m_height,
-                rt_scene)) {
-            return;
+        // Ambient occlusion: restart whenever anything that affects the
+        // picture changed since the last frame, otherwise keep adding
+        // rays until kAoMaxSamples, then reuse the converged result
+        append_matrix(signature, frame.view);
+        append_matrix(signature, view_proj);
+        signature.push_back(rt_scene.sun_world.x);
+        signature.push_back(rt_scene.sun_world.y);
+        signature.push_back(rt_scene.sun_world.z);
+        signature.push_back(frame.sun_enabled ? 1.0f : 0.0f);
+        signature.push_back(frame.ambient_occlusion ? 1.0f : 0.0f);
+
+        if (signature != m_rt_signature) {
+            m_rt_signature = signature;
+            m_ao_samples = 0;
+        }
+
+        rt_scene.ao = frame.ambient_occlusion;
+        rt_scene.ao_accum = m_ao_accum;
+        rt_scene.ao_samples_before = m_ao_samples;
+        rt_scene.ao_rays =
+            (frame.ambient_occlusion && m_ao_samples < kAoMaxSamples)
+                ? kAoRaysPerFrame
+                : 0;
+        rt_scene.ao_radius = kAoRadiusFraction * largest_diagonal;
+
+        if (rt_scene.count > 0) {
+            if (!cuda_ray_trace(
+                    color,
+                    visibility,
+                    m_width,
+                    m_height,
+                    rt_scene)) {
+                return;
+            }
+
+            m_ao_samples +=
+                static_cast<unsigned int>(rt_scene.ao_rays);
         }
     } else if (frame.wireframe) {
         if (!cuda_resolve_wire(

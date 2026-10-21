@@ -23,6 +23,11 @@ struct DeviceMesh {
     BvhNode* bvh_nodes = nullptr;
     std::uint32_t* bvh_tri_indices = nullptr;
     std::uint32_t bvh_node_count = 0;
+
+    // Object-space bounding box (the BVH root), kept on the host side of
+    // this struct so the renderer can size effects to the model
+    Vec3 bounds_min = {0.0f, 0.0f, 0.0f};
+    Vec3 bounds_max = {0.0f, 0.0f, 0.0f};
 };
 
 class CudaMeshStore {

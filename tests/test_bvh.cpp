@@ -1,3 +1,12 @@
+// The tests deliberately use rays parallel to an axis (a zero direction
+// component makes ray_inverse_direction return infinity, which the slab
+// test relies on) and rays parallel to a triangle (rejected before any
+// division). After inlining, MSVC's optimizer cannot see those guards
+// and reports C4723 "potential divide by 0" in Release builds
+#ifdef _MSC_VER
+#pragma warning(disable : 4723)
+#endif
+
 #include "core/bvh.h"
 #include "core/mesh.h"
 #include "core/obj_loader.h"
