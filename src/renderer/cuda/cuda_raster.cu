@@ -115,6 +115,13 @@ __device__ __forceinline__ bool triangle_pixel_bounds(
     const int min_sy = min(s.sy[0], min(s.sy[1], s.sy[2]));
     const int max_sy = max(s.sy[0], max(s.sy[1], s.sy[2]));
 
+    // Entirely outside the screen: clamping alone would squash the
+    // box onto the border and keep the triangle alive
+    if (max_sx < 0 || max_sy < 0 ||
+        min_sx > width * 16 || min_sy > height * 16) {
+        return false;
+    }
+
     min_x = clamp_int(
         static_cast<int>(floorf(min_sx / 16.0f)),
         0, width - 1);
@@ -142,8 +149,7 @@ __device__ __forceinline__ void rasterize_pixel(
                 const RasterTriangleSetup& s,
                 const float4* v,
                 float inv_area,
-                std::uint32_t triangle_base,
-                unsigned int tri) {
+                unsigned int id) {
 
     const int px = x * 16 + 8;
     const int py = y * 16 + 8;
@@ -175,7 +181,6 @@ __device__ __forceinline__ void rasterize_pixel(
     }
 
     const unsigned int depth_bits = __float_as_uint(z);
-    const unsigned int id = triangle_base + tri + 1;
 
     const unsigned long long packed =
         (static_cast<unsigned long long>(depth_bits) << 32) |
@@ -410,137 +415,168 @@ __global__ void resolve_wire_kernel(
         217, 217, 217, 255);
 }
 
-__global__ void rasterize_triangles_kernel(
-                unsigned long long* visibility,
+__global__ void setup_triangles_kernel(
+                RasterWork work,
                 int width,
                 int height,
                 DeviceMesh mesh,
-                const ProjectedVertex* vertices,
-                std::uint32_t triangle_base) {
+                const ProjectedVertex* vertices) {
 
     const unsigned int tri =
         blockIdx.x * blockDim.x + threadIdx.x;
 
     const unsigned int triangle_count = mesh.index_count / 3;
 
-    if (tri >= triangle_count || tri >= UINT_MAX - triangle_base) {
+    if (tri >= triangle_count) {
         return;
     }
 
-    const std::uint32_t i0 = mesh.indices[tri * 3 + 0];
-    const std::uint32_t i1 = mesh.indices[tri * 3 + 1];
-    const std::uint32_t i2 = mesh.indices[tri * 3 + 2];
+    const std::uint32_t indices[3] = {
+        mesh.indices[tri * 3 + 0],
+        mesh.indices[tri * 3 + 1],
+        mesh.indices[tri * 3 + 2]
+    };
 
     RasterTriangleSetup s{};
 
-    if (!setup_triangle(vertices, i0, i1, i2, s)) {
+    if (!setup_triangle(
+            vertices, indices[0], indices[1], indices[2], s)) {
         return;
     }
 
     int min_x, max_x, min_y, max_y;
 
+    // Off-screen triangles are culled here, once
     if (!triangle_pixel_bounds(
             s, width, height,
             min_x, max_x, min_y, max_y)) {
         return;
     }
 
+    const unsigned int idx =
+        atomicAdd(&work.counts->record_count, 1u);
+
+    if (idx >= work.capacity) {
+        atomicAdd(&work.counts->overflow_count, 1u);
+        return;
+    }
+
+    RasterTri& r = work.records[idx];
+    r.setup = s;
+    r.min_x = min_x;
+    r.max_x = max_x;
+    r.min_y = min_y;
+    r.max_y = max_y;
+
+    // Store the vertices in the setup's positive-area order
+    #pragma unroll
+    for (int k = 0; k < 3; ++k) {
+        const ProjectedVertex& v = vertices[indices[s.order[k]]];
+        r.screen[k] = v.screen;
+        r.view_pos[k] = v.view_pos;
+        r.view_normal[k] = v.view_normal;
+    }
+
     const long long area_px =
         static_cast<long long>(max_x - min_x + 1) *
         static_cast<long long>(max_y - min_y + 1);
 
-    // Large triangles are handled by the sliced kernel
+    // Both lists have the same capacity as the records,
+    // and each record is appended to exactly one list
     if (area_px > kLargeTriangleArea) {
-        return;
+        const unsigned int slot =
+            atomicAdd(&work.counts->large_count, 1u);
+        work.large_list[slot] = idx;
+    } else {
+        const unsigned int slot =
+            atomicAdd(&work.counts->small_count, 1u);
+        work.small_list[slot] = idx;
     }
+}
 
-    const std::uint32_t indices[3] = {i0, i1, i2};
+__device__ __forceinline__ void load_record_screen(
+                const RasterTri& r,
+                float4 (&v)[3],
+                float& inv_area) {
 
-    const float4 v[3] = {
-        vertices[indices[s.order[0]]].screen,
-        vertices[indices[s.order[1]]].screen,
-        vertices[indices[s.order[2]]].screen
-    };
+    v[0] = r.screen[0];
+    v[1] = r.screen[1];
+    v[2] = r.screen[2];
 
-    const float inv_area =
-        1.0f / static_cast<float>(s.area);
+    inv_area = 1.0f / static_cast<float>(r.setup.area);
+}
 
-    for (int y = min_y; y <= max_y; ++y) {
-        for (int x = min_x; x <= max_x; ++x) {
-            rasterize_pixel(
-                visibility, width, x, y, s, v,
-                inv_area, triangle_base, tri);
+// Fixed-size grid: each thread walks the small list with a grid stride.
+// The count is read from device memory; the CPU never sees it
+__global__ void rasterize_small_kernel(
+                unsigned long long* visibility,
+                int width,
+                RasterWork work) {
+
+    const unsigned int count = work.counts->small_count;
+    const unsigned int stride = gridDim.x * blockDim.x;
+
+    for (unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+         i < count;
+         i += stride) {
+
+        const unsigned int idx = work.small_list[i];
+        const RasterTri& r = work.records[idx];
+
+        float4 v[3];
+        float inv_area;
+        load_record_screen(r, v, inv_area);
+
+        for (int y = r.min_y; y <= r.max_y; ++y) {
+            for (int x = r.min_x; x <= r.max_x; ++x) {
+                rasterize_pixel(
+                    visibility, width, x, y, r.setup, v,
+                    inv_area, idx + 1);
+            }
         }
     }
 }
 
-__global__ void rasterize_large_triangles_kernel(
+// Fixed-size grid: blocks walk the (large triangle, row slice) pairs.
+// Threads of a block share the columns of each row
+__global__ void rasterize_large_kernel(
                 unsigned long long* visibility,
                 int width,
-                int height,
-                DeviceMesh mesh,
-                const ProjectedVertex* vertices,
-                std::uint32_t triangle_base) {
+                RasterWork work) {
 
-    // Each block handles one triangle and one row slice
-    const unsigned int tri = blockIdx.x;
-    const unsigned int triangle_count = mesh.index_count / 3;
+    const unsigned int count = work.counts->large_count;
 
-    if (tri >= triangle_count || tri >= UINT_MAX - triangle_base) {
-        return;
-    }
+    const unsigned long long items =
+        static_cast<unsigned long long>(count) * kLargeSlices;
 
-    const std::uint32_t i0 = mesh.indices[tri * 3 + 0];
-    const std::uint32_t i1 = mesh.indices[tri * 3 + 1];
-    const std::uint32_t i2 = mesh.indices[tri * 3 + 2];
+    for (unsigned long long item = blockIdx.x;
+         item < items;
+         item += gridDim.x) {
 
-    RasterTriangleSetup s{};
+        const unsigned int list_slot =
+            static_cast<unsigned int>(item / kLargeSlices);
+        const int slice =
+            static_cast<int>(item % kLargeSlices);
 
-    if (!setup_triangle(vertices, i0, i1, i2, s)) {
-        return;
-    }
+        const unsigned int idx = work.large_list[list_slot];
+        const RasterTri& r = work.records[idx];
 
-    int min_x, max_x, min_y, max_y;
+        float4 v[3];
+        float inv_area;
+        load_record_screen(r, v, inv_area);
 
-    if (!triangle_pixel_bounds(
-            s, width, height,
-            min_x, max_x, min_y, max_y)) {
-        return;
-    }
+        for (int y = r.min_y + slice;
+             y <= r.max_y;
+             y += static_cast<int>(kLargeSlices)) {
 
-    // Keep this calculation identical to the small kernel
-    const long long area_px =
-        static_cast<long long>(max_x - min_x + 1) *
-        static_cast<long long>(max_y - min_y + 1);
+            for (int x = r.min_x + static_cast<int>(threadIdx.x);
+                 x <= r.max_x;
+                 x += static_cast<int>(blockDim.x)) {
 
-    if (area_px <= kLargeTriangleArea) {
-        return;
-    }
-
-    const std::uint32_t indices[3] = {i0, i1, i2};
-
-    const float4 v[3] = {
-        vertices[indices[s.order[0]]].screen,
-        vertices[indices[s.order[1]]].screen,
-        vertices[indices[s.order[2]]].screen
-    };
-
-    const float inv_area =
-        1.0f / static_cast<float>(s.area);
-
-    // Each block owns a different subset of rows
-    for (int y = min_y + static_cast<int>(blockIdx.y);
-         y <= max_y;
-         y += static_cast<int>(gridDim.y)) {
-
-        // Threads within the block share each row
-        for (int x = min_x + static_cast<int>(threadIdx.x);
-             x <= max_x;
-             x += static_cast<int>(blockDim.x)) {
-
-            rasterize_pixel(
-                visibility, width, x, y, s, v,
-                inv_area, triangle_base, tri);
+                rasterize_pixel(
+                    visibility, width, x, y, r.setup, v,
+                    inv_area, idx + 1);
+            }
         }
     }
 }
@@ -551,14 +587,12 @@ __device__ __forceinline__ unsigned char to_byte(float c) {
     return static_cast<unsigned char>(value);
 }
 
-__global__ void shade_item_kernel(
+__global__ void shade_kernel(
                 uchar4* color,
                 const unsigned long long* visibility,
                 int width,
                 int height,
-                DeviceMesh mesh,
-                const ProjectedVertex* vertices,
-                std::uint32_t triangle_base,
+                RasterWork work,
                 Vec3 up_view) {
 
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -582,33 +616,25 @@ __global__ void shade_item_kernel(
         return;
     }
 
-    const std::uint32_t global_tri = id - 1;
-    const std::uint32_t triangle_count = mesh.index_count / 3;
+    const std::uint32_t idx = id - 1;
 
-    // The winning triangle may belong to a different draw item
-    if (global_tri < triangle_base ||
-        global_tri - triangle_base >= triangle_count) {
+    // Records beyond the capacity were never written
+    const unsigned int written = min(
+        work.counts->record_count, work.capacity);
+
+    if (idx >= written) {
         return;
     }
 
-    const std::uint32_t tri = global_tri - triangle_base;
+    // Named rec, not r: the lighting code below uses r for red
+    const RasterTri& rec = work.records[idx];
+    const RasterTriangleSetup& s = rec.setup;
 
-    const std::uint32_t i0 = mesh.indices[tri * 3 + 0];
-    const std::uint32_t i1 = mesh.indices[tri * 3 + 1];
-    const std::uint32_t i2 = mesh.indices[tri * 3 + 2];
-
-    RasterTriangleSetup s{};
-
-    if (!setup_triangle(vertices, i0, i1, i2, s)) {
-        return;
-    }
-
-    const std::uint32_t indices[3] = {i0, i1, i2};
-
+    // Same layout as a projected vertex, already in setup order
     const ProjectedVertex p[3] = {
-        vertices[indices[s.order[0]]],
-        vertices[indices[s.order[1]]],
-        vertices[indices[s.order[2]]]
+        {rec.screen[0], rec.view_pos[0], rec.view_normal[0]},
+        {rec.screen[1], rec.view_pos[1], rec.view_normal[1]},
+        {rec.screen[2], rec.view_pos[2], rec.view_normal[2]}
     };
 
     const int px = x * 16 + 8;
@@ -1076,42 +1102,73 @@ bool cuda_transform_vertices(
     return check_launch("CUDA vertex transform kernel launch");
 }
 
-bool cuda_rasterize_triangles(
-                std::uint64_t* visibility,
+bool cuda_reset_raster_counts(RasterCounts* counts) {
+    if (!counts) {
+        LOG_ERROR("CUDA raster counts: null pointer");
+        return false;
+    }
+
+    // Stream 0 keeps the reset ordered with the kernels around it
+    return cuda_ok(
+        cudaMemsetAsync(counts, 0, sizeof(RasterCounts), 0),
+        "cudaMemsetAsync raster counts");
+}
+
+bool cuda_setup_triangles(
+                const RasterWork& work,
                 int width,
                 int height,
                 const DeviceMesh& mesh,
-                const ProjectedVertex* vertices,
-                std::uint32_t triangle_base) {
+                const ProjectedVertex* vertices) {
 
-    if (!visibility || !mesh.indices || !vertices ||
+    if (!work.records || !work.small_list || !work.large_list ||
+        !work.counts || work.capacity == 0 ||
+        !mesh.indices || !vertices ||
         width <= 0 || height <= 0 ||
         mesh.index_count < 3 || mesh.index_count % 3 != 0) {
-        LOG_ERROR("CUDA triangle rasterizer: invalid arguments");
+        LOG_ERROR("CUDA triangle setup: invalid arguments");
         return false;
     }
 
     const unsigned int triangle_count = mesh.index_count / 3;
-
-    // Pass 1: small triangles, one thread per triangle
-    const unsigned int small_blocks =
+    const unsigned int blocks =
         (triangle_count + kThreads - 1) / kThreads;
 
-    rasterize_triangles_kernel<<<small_blocks, kThreads>>>(
+    setup_triangles_kernel<<<blocks, kThreads>>>(
+        work, width, height, mesh, vertices);
+
+    return check_launch("CUDA triangle setup kernel launch");
+}
+
+bool cuda_rasterize_worklist(
+                std::uint64_t* visibility,
+                int width,
+                const RasterWork& work,
+                int sm_count) {
+
+    if (!visibility || width <= 0 ||
+        !work.records || !work.small_list ||
+        !work.large_list || !work.counts) {
+        LOG_ERROR("CUDA worklist rasterizer: invalid arguments");
+        return false;
+    }
+
+    // A few resident blocks per SM is enough to keep every SM busy.
+    // Blocks that find no work exit immediately
+    const unsigned int sms =
+        sm_count > 0 ? static_cast<unsigned int>(sm_count) : 1u;
+
+    rasterize_small_kernel<<<sms * 4, kThreads>>>(
         reinterpret_cast<unsigned long long*>(visibility),
-        width, height, mesh, vertices, triangle_base);
+        width, work);
 
     if (!check_launch("CUDA small-triangle rasterizer launch")) {
         return false;
     }
 
-    // Pass 2: large triangles, many threads per triangle
-    const dim3 large_blocks(triangle_count, kLargeSlices);
-
-    rasterize_large_triangles_kernel<<<
-        large_blocks, kLargeThreads>>>(
-            reinterpret_cast<unsigned long long*>(visibility),
-            width, height, mesh, vertices, triangle_base);
+    rasterize_large_kernel<<<sms * 8, kLargeThreads>>>(
+        reinterpret_cast<unsigned long long*>(visibility),
+        width, work);
 
     return check_launch("CUDA large-triangle rasterizer launch");
 }
@@ -1180,20 +1237,17 @@ bool cuda_resolve_wire(
     return check_launch("CUDA wire resolve kernel launch");
 }
 
-bool cuda_shade_item(
+bool cuda_shade(
                 uchar4* color,
                 const std::uint64_t* visibility,
                 int width,
                 int height,
-                const DeviceMesh& mesh,
-                const ProjectedVertex* vertices,
-                std::uint32_t triangle_base,
+                const RasterWork& work,
                 Vec3 up_view) {
 
-    if (!color || !visibility || !mesh.indices || !vertices ||
-        width <= 0 || height <= 0 ||
-        mesh.index_count == 0 || mesh.index_count % 3 != 0) {
-        LOG_ERROR("CUDA shade item: invalid arguments");
+    if (!color || !visibility || !work.records || !work.counts ||
+        width <= 0 || height <= 0) {
+        LOG_ERROR("CUDA shade: invalid arguments");
         return false;
     }
 
@@ -1202,12 +1256,12 @@ bool cuda_shade_item(
         (width + kTile - 1) / kTile,
         (height + kTile - 1) / kTile);
 
-    shade_item_kernel<<<blocks, threads>>>(
+    shade_kernel<<<blocks, threads>>>(
         color,
         reinterpret_cast<const unsigned long long*>(visibility),
-        width, height, mesh, vertices, triangle_base, up_view);
+        width, height, work, up_view);
 
-    return check_launch("CUDA shade item kernel launch");
+    return check_launch("CUDA shade kernel launch");
 }
 
 bool cuda_resolve_ids(

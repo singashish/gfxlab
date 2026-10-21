@@ -22,6 +22,15 @@ constexpr bool kProfileStages = false;
 } // namespace
 
 CudaRenderer::~CudaRenderer() {
+    free_raster_work();
+
+    if (m_raster.counts != nullptr) {
+        (void)cuda_ok(
+            cudaFree(m_raster.counts),
+            "cudaFree raster counters");
+        m_raster.counts = nullptr;
+    }
+
     if (m_scratch != nullptr) {
         (void)cuda_ok(
             cudaFree(m_scratch),
@@ -56,6 +65,29 @@ bool CudaRenderer::init(void* native_window) {
     // The OpenGL context must be current before
     // querying interop devices
     if (!cuda_select_gl_device()) {
+        return false;
+    }
+
+    // The worklist rasterizers launch a fixed grid sized by the SM count
+    int device = 0;
+
+    if (!cuda_ok(cudaGetDevice(&device), "cudaGetDevice") ||
+        !cuda_ok(
+            cudaDeviceGetAttribute(
+                &m_sm_count,
+                cudaDevAttrMultiProcessorCount,
+                device),
+            "cudaDeviceGetAttribute SM count")) {
+        return false;
+    }
+
+    // The counters are tiny and live for the whole renderer
+    if (!cuda_ok(
+            cudaMalloc(
+                reinterpret_cast<void**>(&m_raster.counts),
+                sizeof(RasterCounts)),
+            "cudaMalloc raster counters")) {
+        m_raster.counts = nullptr;
         return false;
     }
 
@@ -182,6 +214,66 @@ bool CudaRenderer::ensure_scratch_capacity(
     return true;
 }
 
+void CudaRenderer::free_raster_work() {
+    if (m_raster.records != nullptr) {
+        (void)cuda_ok(
+            cudaFree(m_raster.records),
+            "cudaFree raster records");
+        m_raster.records = nullptr;
+    }
+
+    if (m_raster.small_list != nullptr) {
+        (void)cuda_ok(
+            cudaFree(m_raster.small_list),
+            "cudaFree small triangle list");
+        m_raster.small_list = nullptr;
+    }
+
+    if (m_raster.large_list != nullptr) {
+        (void)cuda_ok(
+            cudaFree(m_raster.large_list),
+            "cudaFree large triangle list");
+        m_raster.large_list = nullptr;
+    }
+
+    m_raster.capacity = 0;
+}
+
+bool CudaRenderer::ensure_raster_capacity(
+    std::uint32_t triangle_count) {
+
+    if (triangle_count <= m_raster.capacity) {
+        return true;
+    }
+
+    // Grow-only, like the scratch buffer. The counters are kept
+    free_raster_work();
+
+    const std::size_t count = triangle_count;
+
+    if (!cuda_ok(
+            cudaMalloc(
+                reinterpret_cast<void**>(&m_raster.records),
+                count * sizeof(RasterTri)),
+            "cudaMalloc raster records") ||
+        !cuda_ok(
+            cudaMalloc(
+                reinterpret_cast<void**>(&m_raster.small_list),
+                count * sizeof(unsigned int)),
+            "cudaMalloc small triangle list") ||
+        !cuda_ok(
+            cudaMalloc(
+                reinterpret_cast<void**>(&m_raster.large_list),
+                count * sizeof(unsigned int)),
+            "cudaMalloc large triangle list")) {
+        free_raster_work();
+        return false;
+    }
+
+    m_raster.capacity = triangle_count;
+    return true;
+}
+
 void CudaRenderer::render(const FrameData& frame) {
     if (frame.width <= 0 || frame.height <= 0) {
         return;
@@ -236,12 +328,6 @@ void CudaRenderer::render(const FrameData& frame) {
         ClipSpace::CLIP_SPACE_OPENGL);
 
     const Mat4 view_proj = projection * frame.view;
-
-    struct DrawRecord {
-        const DeviceMesh* mesh;
-        ProjectedVertex* vertices;
-        std::uint32_t triangle_base;
-    };
 
     // Calculate total vertex capacity and validate triangle IDs
     std::size_t total_vertices = 0;
@@ -299,12 +385,21 @@ void CudaRenderer::render(const FrameData& frame) {
         return;
     }
 
-    std::vector<DrawRecord> records;
-    records.reserve(frame.draw_list.size());
+    // Solid mode: one record per triangle at most (until clipping
+    // in Step 7 can split a triangle into several)
+    const bool solid = !frame.wireframe && total_triangles > 0;
 
-    // Transform and rasterize every draw item
+    if (solid) {
+        if (!ensure_raster_capacity(
+                static_cast<std::uint32_t>(total_triangles)) ||
+            !cuda_reset_raster_counts(m_raster.counts)) {
+            return;
+        }
+    }
+
+    // Transform every draw item, then draw its edges (wireframe)
+    // or append its triangles to the worklist (solid)
     std::size_t vertex_offset = 0;
-    std::uint32_t triangle_base = 0;
 
     for (const DrawItem& item : frame.draw_list) {
         const DeviceMesh* mesh = m_meshes.find(item.mesh);
@@ -354,27 +449,29 @@ void CudaRenderer::render(const FrameData& frame) {
                     return;
                 }
             } else {
-                // Solid mode retains the existing deferred shading path
-                records.push_back({
-                    mesh,
-                    item_vertices,
-                    triangle_base
-                });
-
-                if (!cuda_rasterize_triangles(
-                        visibility,
+                // Setup only: rasterization runs once for all items
+                if (!cuda_setup_triangles(
+                        m_raster,
                         m_width,
                         m_height,
                         *mesh,
-                        item_vertices,
-                        triangle_base)) {
+                        item_vertices)) {
                     return;
                 }
             }
         }
 
         vertex_offset += mesh->vertex_count;
-        triangle_base += mesh->index_count / 3;
+    }
+
+    // Rasterize the whole worklist in one go
+    if (solid &&
+        !cuda_rasterize_worklist(
+            visibility,
+            m_width,
+            m_raster,
+            m_sm_count)) {
+        return;
     }
 
     // Profile marker 2: transform and rasterize have been submitted
@@ -396,23 +493,20 @@ void CudaRenderer::render(const FrameData& frame) {
                 color, visibility, m_width, m_height)) {
             return;
         }
-    } else {
+    } else if (solid) {
         const Vec3 up_view =
             transform_direction(
                 frame.view, Vec3{0.0f, 0.0f, 1.0f});
 
-        for (const DrawRecord& record : records) {
-            if (!cuda_shade_item(
-                    color,
-                    visibility,
-                    m_width,
-                    m_height,
-                    *record.mesh,
-                    record.vertices,
-                    record.triangle_base,
-                    up_view)) {
-                return;
-            }
+        // One pass: every pixel shades the record that won it
+        if (!cuda_shade(
+                color,
+                visibility,
+                m_width,
+                m_height,
+                m_raster,
+                up_view)) {
+            return;
         }
     }
 
@@ -455,6 +549,27 @@ void CudaRenderer::render(const FrameData& frame) {
             cudaDeviceSynchronize(),
             "CUDA frame execution")) {
         return;
+    }
+
+    // The device is idle here, so reading the counters costs nothing extra
+    if (solid && !m_overflow_reported) {
+        RasterCounts counts{};
+
+        if (cuda_ok(
+                cudaMemcpy(
+                    &counts,
+                    m_raster.counts,
+                    sizeof(counts),
+                    cudaMemcpyDeviceToHost),
+                "cudaMemcpy raster counters") &&
+            counts.overflow_count > 0) {
+            LOG_WARN(
+                "CUDA worklist overflow: %u triangles dropped "
+                "(capacity %u)",
+                counts.overflow_count,
+                m_raster.capacity);
+            m_overflow_reported = true;
+        }
     }
 #endif
 

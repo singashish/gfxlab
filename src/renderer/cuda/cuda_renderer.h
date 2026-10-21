@@ -35,6 +35,8 @@ public:
 private:
     bool resize_targets(int width, int height);
     bool ensure_scratch_capacity(std::uint32_t vertex_count);
+    bool ensure_raster_capacity(std::uint32_t triangle_count);
+    void free_raster_work();
 
     // Declaration order is intentional
     GLContext m_context;
@@ -50,6 +52,16 @@ private:
 
     ProjectedVertex* m_scratch = nullptr;
     std::uint32_t m_scratch_capacity = 0;
+
+    // Triangle worklist: records, small/large lists and GPU counters.
+    // m_raster.capacity is the number of records the buffers can hold
+    RasterWork m_raster{};
+
+    // Number of SMs, used to size the grid-stride rasterizer kernels
+    int m_sm_count = 0;
+
+    // Debug builds report a worklist overflow only once
+    bool m_overflow_reported = false;
 
     int m_width = 0;
     int m_height = 0;

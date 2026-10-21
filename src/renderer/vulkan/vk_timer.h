@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderer/vulkan/vk_api.h"
+#include "renderer/vulkan/vk_frames.h"
 
 #include <array>
 #include <cstdint>
@@ -9,7 +10,8 @@ namespace gfx {
 
 class VulkanGpuTimer {
 public:
-    static constexpr std::uint32_t kSlots = 2;
+    static constexpr std::uint32_t kSlots =
+                            VulkanFrames::kFramesInFlight;
 
     VulkanGpuTimer() = default;
     ~VulkanGpuTimer();
