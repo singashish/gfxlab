@@ -19,6 +19,7 @@ if(TARGET gfx_gl)
         cuda_gl_image.cpp
         cuda_gpu_timer.cpp
         cuda_mesh.cpp
+        cuda_ray_stats.cpp
         cuda_raster.cu
         cuda_renderer.cpp
         cuda_timer.cpp

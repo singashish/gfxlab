@@ -118,6 +118,10 @@ struct RtScene {
     unsigned int ao_samples_before;
     int ao_rays;
     float ao_radius;  // world-space reach of AO rays
+
+    // Optional statistics: [0] camera rays, [1] shadow rays, [2] AO rays
+    // traced this frame. Null to skip counting
+    unsigned long long* ray_counts;
 };
 
 struct CudaGridParams {

@@ -21,6 +21,11 @@ namespace {
 constexpr int kAoRaysPerFrame = 4;
 constexpr unsigned int kAoMaxSamples = 1024;
 
+// Measuring aid: when true, ambient occlusion restarts every frame, so
+// every frame traces kAoRaysPerFrame AO rays per pixel and its cost can
+// be timed. The picture stays noisy. Keep false for normal use
+constexpr bool kBenchmarkAo = false;
+
 // AO rays reach this fraction of the largest model's diagonal
 constexpr float kAoRadiusFraction = 0.2f;
 
@@ -139,9 +144,10 @@ bool CudaRenderer::init(void* native_window) {
         return false;
     }
 
-    // Frame timing is optional;
+    // Frame timing and ray statistics are optional;
     // keep rendering if event creation fails
     (void)m_gpu_timer.init();
+    (void)m_ray_stats.init();
 
     if constexpr (kProfileStages) {
         if (!m_stage_timer.init()) {
@@ -664,7 +670,7 @@ void CudaRenderer::render(const FrameData& frame) {
         signature.push_back(frame.sun_enabled ? 1.0f : 0.0f);
         signature.push_back(frame.ambient_occlusion ? 1.0f : 0.0f);
 
-        if (signature != m_rt_signature) {
+        if (signature != m_rt_signature || kBenchmarkAo) {
             m_rt_signature = signature;
             m_ao_samples = 0;
         }
@@ -679,6 +685,8 @@ void CudaRenderer::render(const FrameData& frame) {
         rt_scene.ao_radius = kAoRadiusFraction * largest_diagonal;
 
         if (rt_scene.count > 0) {
+            rt_scene.ray_counts = m_ray_stats.begin_frame();
+
             if (!cuda_ray_trace(
                     color,
                     visibility,
@@ -688,9 +696,13 @@ void CudaRenderer::render(const FrameData& frame) {
                 return;
             }
 
+            m_ray_stats.end_frame();
+
             m_ao_samples +=
                 static_cast<unsigned int>(rt_scene.ao_rays);
         }
+
+        m_ray_stats.report(m_ao_samples, kAoMaxSamples);
     } else if (frame.wireframe) {
         if (!cuda_resolve_wire(
                 color,

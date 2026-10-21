@@ -1074,19 +1074,21 @@ __device__ __forceinline__ Vec3 cosine_hemisphere(
            n * sqrtf(fmaxf(0.0f, 1.0f - u1));
 }
 
-__global__ void ray_trace_kernel(
+// Everything the ray tracer does for one pixel. The three counters
+// return how many rays of each kind it traced, for the statistics
+__device__ __forceinline__ void trace_pixel(
                 uchar4* color,
                 unsigned long long* visibility,
+                int x,
+                int y,
                 int width,
                 int height,
-                RtScene scene) {
+                const RtScene& scene,
+                unsigned int& primary_rays,
+                unsigned int& shadow_rays,
+                unsigned int& ao_rays_traced) {
 
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (x >= width || y >= height) {
-        return;
-    }
+    primary_rays = 1;
 
     // Camera ray through the pixel centre (row 0 is the top)
     const float ndc_x = 2.0f * (x + 0.5f) / width - 1.0f;
@@ -1187,6 +1189,8 @@ __global__ void ray_trace_kernel(
         const Vec3 shadow_origin =
             world_hit + g_world * shadow_offset(world_hit);
 
+        ++shadow_rays;
+
         if (scene_occluded(
                 scene, shadow_origin, scene.sun_world, 1.0e30f)) {
             sun_visibility = 0.0f;
@@ -1224,6 +1228,8 @@ __global__ void ray_trace_kernel(
                 continue;
             }
 
+            ++ao_rays_traced;
+
             if (!scene_occluded(scene, ao_origin, d, scene.ao_radius)) {
                 escaped += 1.0f;
             }
@@ -1255,6 +1261,61 @@ __global__ void ray_trace_kernel(
         (static_cast<unsigned long long>(__float_as_uint(depth01))
              << 32) |
         1ULL;
+}
+
+__global__ void ray_trace_kernel(
+                uchar4* color,
+                unsigned long long* visibility,
+                int width,
+                int height,
+                RtScene scene) {
+
+    // Ray statistics: each thread counts its own rays, the block adds
+    // them up in fast shared memory, and one thread per block adds the
+    // block's totals to the global counters. That is 3 global atomics
+    // per 256 pixels instead of up to 3 per pixel
+    __shared__ unsigned int block_counts[3];
+
+    const bool first_thread = threadIdx.x == 0 && threadIdx.y == 0;
+
+    if (first_thread) {
+        block_counts[0] = 0;
+        block_counts[1] = 0;
+        block_counts[2] = 0;
+    }
+
+    __syncthreads();
+
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    unsigned int primary = 0;
+    unsigned int shadow = 0;
+    unsigned int ao = 0;
+
+    // No early return before __syncthreads below: every thread of the
+    // block, including those outside the image, must reach it
+    if (x < width && y < height) {
+        trace_pixel(color, visibility, x, y, width, height, scene,
+                    primary, shadow, ao);
+    }
+
+    if (scene.ray_counts != nullptr) {
+        if (primary) atomicAdd(&block_counts[0], primary);
+        if (shadow)  atomicAdd(&block_counts[1], shadow);
+        if (ao)      atomicAdd(&block_counts[2], ao);
+    }
+
+    __syncthreads();
+
+    if (first_thread && scene.ray_counts != nullptr) {
+        atomicAdd(&scene.ray_counts[0],
+                  static_cast<unsigned long long>(block_counts[0]));
+        atomicAdd(&scene.ray_counts[1],
+                  static_cast<unsigned long long>(block_counts[1]));
+        atomicAdd(&scene.ray_counts[2],
+                  static_cast<unsigned long long>(block_counts[2]));
+    }
 }
 
 __global__ void resolve_ids_kernel(

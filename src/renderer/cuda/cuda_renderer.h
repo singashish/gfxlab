@@ -11,6 +11,7 @@
 #include "renderer/cuda/cuda_gpu_timer.h"
 #include "renderer/cuda/cuda_mesh.h"
 #include "renderer/cuda/cuda_raster.h"
+#include "renderer/cuda/cuda_ray_stats.h"
 #include "renderer/cuda/cuda_timer.h"
 
 namespace gfx {
@@ -47,6 +48,7 @@ private:
 
     CudaStageTimer m_stage_timer;
     CudaGpuTimer m_gpu_timer;
+    CudaRayStats m_ray_stats;
 
     void* m_color = nullptr;
     void* m_visibility = nullptr;
