@@ -32,3 +32,10 @@ add_test(NAME transform_edit COMMAND test_transform_edit)
 add_executable(test_raster test_raster.cpp)
 target_link_libraries(test_raster PRIVATE gfx_core)
 add_test(NAME raster COMMAND test_raster)
+
+add_executable(test_bvh test_bvh.cpp)
+target_link_libraries(test_bvh PRIVATE gfx_core)
+target_compile_definitions(test_bvh PRIVATE
+    GFX_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets"
+)
+add_test(NAME bvh COMMAND test_bvh)

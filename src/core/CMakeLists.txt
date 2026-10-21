@@ -1,4 +1,5 @@
 add_library(gfx_core STATIC
+    bvh.cpp
     log.cpp
     mesh.cpp
     obj_loader.cpp

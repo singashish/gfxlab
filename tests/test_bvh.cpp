@@ -1,0 +1,311 @@
+#include "core/bvh.h"
+#include "core/mesh.h"
+#include "core/obj_loader.h"
+#include "core/ray.h"
+#include "check.h"
+
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+namespace {
+
+using gfx::Vec3;
+
+// Small deterministic random generator, so failures are repeatable
+struct Lcg {
+    std::uint32_t state = 12345u;
+
+    float next01() {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<float>(state >> 8) / 16777216.0f;
+    }
+
+    float range(float lo, float hi) {
+        return lo + (hi - lo) * next01();
+    }
+
+    Vec3 point(float lo, float hi) {
+        return {range(lo, hi), range(lo, hi), range(lo, hi)};
+    }
+};
+
+// Reference answer: test every triangle
+bool brute_force(const gfx::Mesh& mesh,
+                 Vec3 origin,
+                 Vec3 dir,
+                 float& best_t) {
+    bool found = false;
+    best_t = 1.0e30f;
+
+    for (std::size_t t = 0; t < mesh.triangle_count(); ++t) {
+        float hit_t, u, v;
+
+        if (gfx::ray_hits_triangle(
+                origin, dir,
+                mesh.positions[mesh.indices[t * 3 + 0]],
+                mesh.positions[mesh.indices[t * 3 + 1]],
+                mesh.positions[mesh.indices[t * 3 + 2]],
+                0.0f, best_t, hit_t, u, v)) {
+            best_t = hit_t;
+            found = true;
+        }
+    }
+
+    return found;
+}
+
+gfx::Mesh random_soup(std::uint32_t triangles, Lcg& rng) {
+    gfx::Mesh mesh;
+
+    for (std::uint32_t t = 0; t < triangles; ++t) {
+        const Vec3 centre = rng.point(-10.0f, 10.0f);
+
+        for (int k = 0; k < 3; ++k) {
+            mesh.positions.push_back(centre + rng.point(-1.0f, 1.0f));
+            mesh.indices.push_back(static_cast<std::uint32_t>(
+                mesh.positions.size() - 1));
+        }
+    }
+
+    return mesh;
+}
+
+bool box_contains(Vec3 outer_min, Vec3 outer_max,
+                  Vec3 inner_min, Vec3 inner_max) {
+    return inner_min.x >= outer_min.x && inner_min.y >= outer_min.y &&
+           inner_min.z >= outer_min.z && inner_max.x <= outer_max.x &&
+           inner_max.y <= outer_max.y && inner_max.z <= outer_max.z;
+}
+
+// Structural checks that hold for any correct BVH
+void check_structure(const gfx::Bvh& bvh, const gfx::Mesh& mesh) {
+    const std::size_t triangle_count = mesh.triangle_count();
+
+    CHECK(bvh.tri_indices.size() == triangle_count);
+    CHECK(bvh.nodes.size() <= triangle_count * 2);
+
+    std::vector<int> seen(triangle_count, 0);
+
+    for (const gfx::BvhNode& node : bvh.nodes) {
+        if (node.count > 0) {
+            // Every triangle of a leaf lies inside the leaf's box
+            for (std::uint32_t i = 0; i < node.count; ++i) {
+                const std::uint32_t tri =
+                    bvh.tri_indices[node.first_or_left + i];
+
+                ++seen[tri];
+
+                for (int k = 0; k < 3; ++k) {
+                    const Vec3 p = mesh.positions[mesh.indices[tri * 3 + k]];
+                    CHECK(box_contains(node.box_min, node.box_max, p, p));
+                }
+            }
+        } else {
+            // Inner node: both children are inside it
+            const gfx::BvhNode& l = bvh.nodes[node.first_or_left];
+            const gfx::BvhNode& r = bvh.nodes[node.first_or_left + 1];
+
+            CHECK(box_contains(node.box_min, node.box_max,
+                               l.box_min, l.box_max));
+            CHECK(box_contains(node.box_min, node.box_max,
+                               r.box_min, r.box_max));
+        }
+    }
+
+    // Every triangle belongs to exactly one leaf
+    for (int count : seen) {
+        CHECK(count == 1);
+    }
+}
+
+// Random rays through the mesh's region: BVH and brute force must agree
+void check_against_brute_force(const gfx::Bvh& bvh,
+                               const gfx::Mesh& mesh,
+                               float extent,
+                               int rays,
+                               Lcg& rng) {
+    int mismatches = 0;
+    int hits = 0;
+
+    for (int i = 0; i < rays; ++i) {
+        const Vec3 origin = rng.point(-extent * 1.5f, extent * 1.5f);
+        const Vec3 target = rng.point(-extent * 0.5f, extent * 0.5f);
+        const Vec3 dir = gfx::normalize(target - origin);
+
+        float brute_t = 0.0f;
+        const bool brute_hit = brute_force(mesh, origin, dir, brute_t);
+
+        gfx::BvhHit hit{};
+        const bool bvh_hit = gfx::bvh_trace(
+            bvh, mesh, origin, dir, 0.0f, 1.0e30f, hit);
+
+        if (brute_hit != bvh_hit ||
+            (brute_hit && std::fabs(brute_t - hit.t) >
+                              1.0e-4f * std::max(1.0f, brute_t))) {
+            ++mismatches;
+        }
+
+        hits += brute_hit ? 1 : 0;
+    }
+
+    CHECK(mismatches == 0);
+
+    // Make sure the test actually exercised hits as well as misses
+    CHECK(hits > rays / 10);
+    CHECK(hits < rays);
+}
+
+void test_ray_triangle() {
+    const Vec3 a{0, 0, 0};
+    const Vec3 b{1, 0, 0};
+    const Vec3 c{0, 1, 0};
+
+    float t, u, v;
+
+    // Straight down onto the triangle from z = 2
+    CHECK(gfx::ray_hits_triangle({0.25f, 0.25f, 2}, {0, 0, -1},
+                                 a, b, c, 0.0f, 100.0f, t, u, v));
+    CHECK(approx(t, 2.0));
+    CHECK(approx(u, 0.25));
+    CHECK(approx(v, 0.25));
+
+    // From below: the test is two-sided
+    CHECK(gfx::ray_hits_triangle({0.25f, 0.25f, -3}, {0, 0, 1},
+                                 a, b, c, 0.0f, 100.0f, t, u, v));
+    CHECK(approx(t, 3.0));
+
+    // Outside the triangle
+    CHECK(!gfx::ray_hits_triangle({0.75f, 0.75f, 2}, {0, 0, -1},
+                                  a, b, c, 0.0f, 100.0f, t, u, v));
+
+    // Parallel to the triangle's plane
+    CHECK(!gfx::ray_hits_triangle({0.25f, 0.25f, 2}, {1, 0, 0},
+                                  a, b, c, 0.0f, 100.0f, t, u, v));
+
+    // Pointing away
+    CHECK(!gfx::ray_hits_triangle({0.25f, 0.25f, 2}, {0, 0, 1},
+                                  a, b, c, 0.0f, 100.0f, t, u, v));
+
+    // Beyond t_max
+    CHECK(!gfx::ray_hits_triangle({0.25f, 0.25f, 2}, {0, 0, -1},
+                                  a, b, c, 0.0f, 1.5f, t, u, v));
+}
+
+void test_ray_box() {
+    const Vec3 lo{-1, -1, -1};
+    const Vec3 hi{1, 1, 1};
+    float t_entry = 0.0f;
+
+    const Vec3 dir{1, 0, 0};
+    const Vec3 inv = gfx::ray_inverse_direction(dir);
+
+    CHECK(gfx::ray_hits_box({-5, 0, 0}, inv, lo, hi, 100.0f, t_entry));
+    CHECK(approx(t_entry, 4.0));
+
+    // Origin inside the box: entry distance is 0
+    CHECK(gfx::ray_hits_box({0, 0, 0}, inv, lo, hi, 100.0f, t_entry));
+    CHECK(approx(t_entry, 0.0));
+
+    // Misses above the box (a zero direction component gives infinities)
+    CHECK(!gfx::ray_hits_box({-5, 0, 3}, inv, lo, hi, 100.0f, t_entry));
+
+    // Box behind the ray
+    CHECK(!gfx::ray_hits_box({5, 0, 0}, inv, lo, hi, 100.0f, t_entry));
+
+    // Box farther than t_max
+    CHECK(!gfx::ray_hits_box({-5, 0, 0}, inv, lo, hi, 3.0f, t_entry));
+}
+
+void test_empty_mesh() {
+    gfx::Mesh mesh;
+    const gfx::Bvh bvh = gfx::build_bvh(mesh);
+
+    CHECK(bvh.nodes.empty());
+    CHECK(bvh.tri_indices.empty());
+
+    gfx::BvhHit hit{};
+    CHECK(!gfx::bvh_trace(bvh, mesh, {0, 0, 0}, {0, 0, 1},
+                          0.0f, 100.0f, hit));
+}
+
+void test_single_triangle() {
+    gfx::Mesh mesh;
+    mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    mesh.indices = {0, 1, 2};
+
+    const gfx::Bvh bvh = gfx::build_bvh(mesh);
+
+    CHECK(bvh.nodes.size() == 1);
+    CHECK(bvh.nodes[0].count == 1);
+
+    gfx::BvhHit hit{};
+    CHECK(gfx::bvh_trace(bvh, mesh, {0.2f, 0.2f, 5}, {0, 0, -1},
+                         0.0f, 100.0f, hit));
+    CHECK(approx(hit.t, 5.0));
+    CHECK(hit.triangle == 0);
+}
+
+void test_random_soup() {
+    Lcg rng;
+    const gfx::Mesh mesh = random_soup(2000, rng);
+    const gfx::Bvh bvh = gfx::build_bvh(mesh);
+
+    check_structure(bvh, mesh);
+
+    const gfx::BvhStats stats = gfx::bvh_stats(bvh);
+    CHECK(stats.leaf_count > 2000 / 8);
+    CHECK(stats.max_depth <= 48);
+
+    check_against_brute_force(bvh, mesh, 10.0f, 3000, rng);
+}
+
+void test_suzanne() {
+    gfx::Mesh mesh;
+    std::string error;
+
+    const std::string path =
+        std::string(GFX_ASSETS_DIR) + "/suzanne_s.obj";
+
+    CHECK(gfx::load_obj(path, mesh, error));
+
+    if (mesh.triangle_count() == 0) {
+        return;
+    }
+
+    const gfx::Bvh bvh = gfx::build_bvh(mesh);
+    check_structure(bvh, mesh);
+
+    const gfx::BvhStats stats = gfx::bvh_stats(bvh);
+
+    std::printf(
+        "suzanne_s.obj: %zu triangles, %u nodes, %u leaves, "
+        "max depth %u, largest leaf %u\n",
+        mesh.triangle_count(), stats.node_count, stats.leaf_count,
+        stats.max_depth, stats.max_leaf_size);
+
+    Lcg rng;
+    rng.state = 777u;
+    check_against_brute_force(bvh, mesh, 1.5f, 1000, rng);
+}
+
+} // namespace
+
+int main() {
+    test_ray_triangle();
+    test_ray_box();
+    test_empty_mesh();
+    test_single_triangle();
+    test_random_soup();
+    test_suzanne();
+
+    if (g_failures == 0) {
+        std::printf("All BVH tests passed\n");
+        return 0;
+    }
+
+    std::printf("%d BVH test failure(s)\n", g_failures);
+    return 1;
+}
