@@ -35,7 +35,7 @@ public:
 private:
     bool resize_targets(int width, int height);
     bool ensure_scratch_capacity(std::uint32_t vertex_count);
-    bool ensure_raster_capacity(std::uint32_t triangle_count);
+    bool ensure_raster_capacity(std::uint32_t record_count);
     void free_raster_work();
 
     // Declaration order is intentional

@@ -240,16 +240,16 @@ void CudaRenderer::free_raster_work() {
 }
 
 bool CudaRenderer::ensure_raster_capacity(
-    std::uint32_t triangle_count) {
+    std::uint32_t record_count) {
 
-    if (triangle_count <= m_raster.capacity) {
+    if (record_count <= m_raster.capacity) {
         return true;
     }
 
     // Grow-only, like the scratch buffer. The counters are kept
     free_raster_work();
 
-    const std::size_t count = triangle_count;
+    const std::size_t count = record_count;
 
     if (!cuda_ok(
             cudaMalloc(
@@ -270,7 +270,7 @@ bool CudaRenderer::ensure_raster_capacity(
         return false;
     }
 
-    m_raster.capacity = triangle_count;
+    m_raster.capacity = record_count;
     return true;
 }
 
@@ -385,13 +385,26 @@ void CudaRenderer::render(const FrameData& frame) {
         return;
     }
 
-    // Solid mode: one record per triangle at most (until clipping
-    // in Step 7 can split a triangle into several)
+    // Solid mode: clipping can split one triangle into up to six.
+    // Few triangles are clipped in practice, so reserve twice the
+    // triangle count plus headroom; the overflow counter catches the
+    // rare worst case
     const bool solid = !frame.wireframe && total_triangles > 0;
 
     if (solid) {
+        const std::uint64_t record_capacity =
+            total_triangles * 2ULL + 1024ULL;
+
+        // Zero is reserved as the invalid visibility ID
+        if (record_capacity >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::uint32_t>::max()) - 1ULL) {
+            LOG_ERROR("CUDA renderer: worklist capacity overflow");
+            return;
+        }
+
         if (!ensure_raster_capacity(
-                static_cast<std::uint32_t>(total_triangles)) ||
+                static_cast<std::uint32_t>(record_capacity)) ||
             !cuda_reset_raster_counts(m_raster.counts)) {
             return;
         }

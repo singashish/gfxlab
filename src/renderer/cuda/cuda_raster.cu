@@ -20,6 +20,20 @@ constexpr long long kLargeTriangleArea = 1024;
 constexpr unsigned int kLargeSlices = 32;
 constexpr unsigned int kLargeThreads = 128;
 
+// Clipping: the near plane plus four guard-band planes
+constexpr int kClipPlanes = 5;
+
+// Each plane can add at most one vertex to a convex polygon
+constexpr int kMaxClipVertices = 3 + kClipPlanes;
+
+// Guard band in NDC units: clipped vertices stay inside
+// +/- kMaxScreenCoordinate pixels, with a 2x safety margin
+float guard_band(int width, int height) {
+    const int largest = width > height ? width : height;
+    return 0.5f * (2.0f * kMaxScreenCoordinate /
+                   static_cast<float>(largest) - 1.0f);
+}
+
 bool check_launch(const char* operation) {
     return cuda_ok(cudaGetLastError(), operation);
 }
@@ -72,17 +86,17 @@ __device__ __forceinline__ bool edge_inside(
 // sx/sy and order are normalized to positive area, while
 // signed_area retains the original winding
 __device__ __forceinline__ bool setup_triangle(
-                const ProjectedVertex* vertices,
-                std::uint32_t i0,
-                std::uint32_t i1,
-                std::uint32_t i2,
+                const float4& a,
+                const float4& b,
+                const float4& c,
                 RasterTriangleSetup& result) {
 
-    const std::uint32_t indices[3] = {i0, i1, i2};
+    const float4 points[3] = {a, b, c};
 
+    // Safety net: after clipping these checks should never fail
     #pragma unroll
     for (int i = 0; i < 3; ++i) {
-        const float4 p = vertices[indices[i]].screen;
+        const float4 p = points[i];
 
         if (!isfinite(p.x) || !isfinite(p.y) ||
             !isfinite(p.z) || !isfinite(p.w) ||
@@ -94,11 +108,79 @@ __device__ __forceinline__ bool setup_triangle(
     }
 
     result = setup_raster_triangle(
-        vertices[i0].screen.x, vertices[i0].screen.y,
-        vertices[i1].screen.x, vertices[i1].screen.y,
-        vertices[i2].screen.x, vertices[i2].screen.y);
+        a.x, a.y,
+        b.x, b.y,
+        c.x, c.y);
 
     return result.valid;
+}
+
+// Perspective divide and viewport transform. Row 0 is the top of the
+// screen. The single place where clip space becomes screen space
+__device__ __forceinline__ float4 clip_to_screen(
+                const float4& clip,
+                int width,
+                int height) {
+
+    const float inv_w = 1.0f / clip.w;
+    const float ndc_x = clip.x * inv_w;
+    const float ndc_y = clip.y * inv_w;
+    const float ndc_z = clip.z * inv_w;
+
+    return make_float4(
+        (ndc_x * 0.5f + 0.5f) * width,
+        (1.0f - (ndc_y * 0.5f + 0.5f)) * height,
+        ndc_z * 0.5f + 0.5f,
+        clip.w);
+}
+
+// Signed distance to a clip plane: >= 0 means the point is kept.
+// Plane 0 is the OpenGL near plane (z >= -w), which also forces w > 0.
+// Planes 1-4 are the guard band |x| <= g*w and |y| <= g*w
+__device__ __forceinline__ float plane_distance(
+                const float4& c,
+                int plane,
+                float guard) {
+
+    switch (plane) {
+    case 0:  return c.z + c.w;
+    case 1:  return guard * c.w + c.x;
+    case 2:  return guard * c.w - c.x;
+    case 3:  return guard * c.w + c.y;
+    default: return guard * c.w - c.y;
+    }
+}
+
+__device__ __forceinline__ float4 lerp4(
+                const float4& a,
+                const float4& b,
+                float t) {
+
+    return make_float4(
+        a.x + t * (b.x - a.x),
+        a.y + t * (b.y - a.y),
+        a.z + t * (b.z - a.z),
+        a.w + t * (b.w - a.w));
+}
+
+// A polygon corner during clipping. Every attribute is linear in clip
+// space, so one t interpolates all of them correctly
+struct ClipVertex {
+    float4 clip;
+    float4 view_pos;
+    float4 view_normal;
+};
+
+__device__ __forceinline__ ClipVertex lerp_vertex(
+                const ClipVertex& a,
+                const ClipVertex& b,
+                float t) {
+
+    ClipVertex v;
+    v.clip = lerp4(a.clip, b.clip, t);
+    v.view_pos = lerp4(a.view_pos, b.view_pos, t);
+    v.view_normal = lerp4(a.view_normal, b.view_normal, t);
+    return v;
 }
 
 __device__ __forceinline__ bool triangle_pixel_bounds(
@@ -255,25 +337,21 @@ __global__ void transform_vertices_kernel(
         out[i].view_normal = make_float4(0, 0, 0, 0);
     }
 
-    const Vec4 clip = mvp * make_vec4(position, 1.0f);
+    const Vec4 clip_v = mvp * make_vec4(position, 1.0f);
+    const float4 clip =
+        make_float4(clip_v.x, clip_v.y, clip_v.z, clip_v.w);
 
+    // Always stored: the setup and edge kernels clip from it
+    out[i].clip = clip;
+
+    // A vertex behind the camera has no meaningful screen position.
+    // Triangles using it go through clipping and never read it
     if (!isfinite(clip.w) || clip.w <= 0.0f) {
         out[i].screen = make_float4(0, 0, 0, clip.w);
         return;
     }
 
-    const float inv_w = 1.0f / clip.w;
-    const float ndc_x = clip.x * inv_w;
-    const float ndc_y = clip.y * inv_w;
-    const float ndc_z = clip.z * inv_w;
-
-    const float screen_x = (ndc_x * 0.5f + 0.5f) * width;
-    const float screen_y =
-        (1.0f - (ndc_y * 0.5f + 0.5f)) * height;
-    const float depth01 = ndc_z * 0.5f + 0.5f;
-
-    out[i].screen = make_float4(
-        screen_x, screen_y, depth01, clip.w);
+    out[i].screen = clip_to_screen(clip, width, height);
 }
 
 __global__ void draw_edges_kernel(
@@ -281,7 +359,8 @@ __global__ void draw_edges_kernel(
                 int width,
                 int height,
                 DeviceMesh mesh,
-                const ProjectedVertex* vertices) {
+                const ProjectedVertex* vertices,
+                float guard) {
 
     const unsigned int edge =
         blockIdx.x * blockDim.x + threadIdx.x;
@@ -296,16 +375,47 @@ __global__ void draw_edges_kernel(
     const std::uint32_t i0 = mesh.edges[edge * 2];
     const std::uint32_t i1 = mesh.edges[edge * 2 + 1];
 
-    const float4 a = vertices[i0].screen;
-    const float4 b = vertices[i1].screen;
+    const float4 ca = vertices[i0].clip;
+    const float4 cb = vertices[i1].clip;
 
-    // Step 5 will handle edges crossing the near plane.
-    // For now, reject invalid endpoints.
-    if (!isfinite(a.x) || !isfinite(a.y) ||
-        !isfinite(a.z) || !isfinite(a.w) ||
-        !isfinite(b.x) || !isfinite(b.y) ||
-        !isfinite(b.z) || !isfinite(b.w) ||
-        a.w <= 0.0f || b.w <= 0.0f) {
+    if (!isfinite(ca.x) || !isfinite(ca.y) ||
+        !isfinite(ca.z) || !isfinite(ca.w) ||
+        !isfinite(cb.x) || !isfinite(cb.y) ||
+        !isfinite(cb.z) || !isfinite(cb.w)) {
+        return;
+    }
+
+    // Clip the segment in clip space against the near plane and the
+    // guard band. t0..t1 is the part of the original segment that
+    // survives every plane
+    float t0 = 0.0f;
+    float t1 = 1.0f;
+
+    #pragma unroll
+    for (int plane = 0; plane < kClipPlanes; ++plane) {
+        const float da = plane_distance(ca, plane, guard);
+        const float db = plane_distance(cb, plane, guard);
+
+        if (da < 0.0f && db < 0.0f) {
+            return;
+        }
+
+        if (da < 0.0f) {
+            t0 = fmaxf(t0, da / (da - db));
+        } else if (db < 0.0f) {
+            t1 = fminf(t1, da / (da - db));
+        }
+    }
+
+    if (t0 > t1) {
+        return;
+    }
+
+    const float4 a = clip_to_screen(lerp4(ca, cb, t0), width, height);
+    const float4 b = clip_to_screen(lerp4(ca, cb, t1), width, height);
+
+    if (!isfinite(a.x) || !isfinite(a.y) || !isfinite(a.z) ||
+        !isfinite(b.x) || !isfinite(b.y) || !isfinite(b.z)) {
         return;
     }
 
@@ -415,32 +525,19 @@ __global__ void resolve_wire_kernel(
         217, 217, 217, 255);
 }
 
-__global__ void setup_triangles_kernel(
-                RasterWork work,
+// Appends one screen-space triangle to the worklist.
+// screen/view_pos/view_normal are in the triangle's own vertex order
+__device__ __forceinline__ void emit_triangle(
+                const RasterWork& work,
                 int width,
                 int height,
-                DeviceMesh mesh,
-                const ProjectedVertex* vertices) {
-
-    const unsigned int tri =
-        blockIdx.x * blockDim.x + threadIdx.x;
-
-    const unsigned int triangle_count = mesh.index_count / 3;
-
-    if (tri >= triangle_count) {
-        return;
-    }
-
-    const std::uint32_t indices[3] = {
-        mesh.indices[tri * 3 + 0],
-        mesh.indices[tri * 3 + 1],
-        mesh.indices[tri * 3 + 2]
-    };
+                const float4 (&screen)[3],
+                const float4 (&view_pos)[3],
+                const float4 (&view_normal)[3]) {
 
     RasterTriangleSetup s{};
 
-    if (!setup_triangle(
-            vertices, indices[0], indices[1], indices[2], s)) {
+    if (!setup_triangle(screen[0], screen[1], screen[2], s)) {
         return;
     }
 
@@ -471,10 +568,9 @@ __global__ void setup_triangles_kernel(
     // Store the vertices in the setup's positive-area order
     #pragma unroll
     for (int k = 0; k < 3; ++k) {
-        const ProjectedVertex& v = vertices[indices[s.order[k]]];
-        r.screen[k] = v.screen;
-        r.view_pos[k] = v.view_pos;
-        r.view_normal[k] = v.view_normal;
+        r.screen[k] = screen[s.order[k]];
+        r.view_pos[k] = view_pos[s.order[k]];
+        r.view_normal[k] = view_normal[s.order[k]];
     }
 
     const long long area_px =
@@ -491,6 +587,152 @@ __global__ void setup_triangles_kernel(
         const unsigned int slot =
             atomicAdd(&work.counts->small_count, 1u);
         work.small_list[slot] = idx;
+    }
+}
+
+__global__ void setup_triangles_kernel(
+                RasterWork work,
+                int width,
+                int height,
+                DeviceMesh mesh,
+                const ProjectedVertex* vertices,
+                float guard) {
+
+    const unsigned int tri =
+        blockIdx.x * blockDim.x + threadIdx.x;
+
+    const unsigned int triangle_count = mesh.index_count / 3;
+
+    if (tri >= triangle_count) {
+        return;
+    }
+
+    const ProjectedVertex* v[3] = {
+        &vertices[mesh.indices[tri * 3 + 0]],
+        &vertices[mesh.indices[tri * 3 + 1]],
+        &vertices[mesh.indices[tri * 3 + 2]]
+    };
+
+    #pragma unroll
+    for (int k = 0; k < 3; ++k) {
+        const float4 c = v[k]->clip;
+
+        if (!isfinite(c.x) || !isfinite(c.y) ||
+            !isfinite(c.z) || !isfinite(c.w)) {
+            return;
+        }
+    }
+
+    // Classify the three corners against every plane
+    bool all_inside = true;
+
+    #pragma unroll
+    for (int plane = 0; plane < kClipPlanes; ++plane) {
+        int outside = 0;
+
+        #pragma unroll
+        for (int k = 0; k < 3; ++k) {
+            if (plane_distance(v[k]->clip, plane, guard) < 0.0f) {
+                ++outside;
+            }
+        }
+
+        // Every corner behind the same plane: nothing survives
+        if (outside == 3) {
+            return;
+        }
+
+        if (outside > 0) {
+            all_inside = false;
+        }
+    }
+
+    // Fast path, almost every triangle: no clipping needed
+    if (all_inside) {
+        const float4 screen[3] = {
+            v[0]->screen, v[1]->screen, v[2]->screen
+        };
+        const float4 view_pos[3] = {
+            v[0]->view_pos, v[1]->view_pos, v[2]->view_pos
+        };
+        const float4 view_normal[3] = {
+            v[0]->view_normal, v[1]->view_normal, v[2]->view_normal
+        };
+
+        emit_triangle(
+            work, width, height, screen, view_pos, view_normal);
+        return;
+    }
+
+    // Sutherland-Hodgman: clip the polygon against one plane at a
+    // time, ping-ponging between two small local arrays
+    ClipVertex poly_a[kMaxClipVertices];
+    ClipVertex poly_b[kMaxClipVertices];
+
+    ClipVertex* in = poly_a;
+    ClipVertex* out = poly_b;
+    int count = 3;
+
+    #pragma unroll
+    for (int k = 0; k < 3; ++k) {
+        in[k].clip = v[k]->clip;
+        in[k].view_pos = v[k]->view_pos;
+        in[k].view_normal = v[k]->view_normal;
+    }
+
+    for (int plane = 0; plane < kClipPlanes; ++plane) {
+        int out_count = 0;
+
+        for (int i = 0; i < count; ++i) {
+            const ClipVertex& a = in[i];
+            const ClipVertex& b = in[(i + 1) % count];
+
+            const float da = plane_distance(a.clip, plane, guard);
+            const float db = plane_distance(b.clip, plane, guard);
+
+            // Keep corners on the inside
+            if (da >= 0.0f && out_count < kMaxClipVertices) {
+                out[out_count++] = a;
+            }
+
+            // The edge crosses the plane: add the crossing point
+            if ((da >= 0.0f) != (db >= 0.0f) &&
+                out_count < kMaxClipVertices) {
+                const float t = da / (da - db);
+                out[out_count++] = lerp_vertex(a, b, t);
+            }
+        }
+
+        ClipVertex* swap = in;
+        in = out;
+        out = swap;
+        count = out_count;
+
+        if (count < 3) {
+            return;
+        }
+    }
+
+    // Fan-triangulate the clipped polygon: (0, i, i + 1).
+    // Clipping keeps the winding, so every piece faces the same way
+    // as the original triangle
+    const float4 screen0 = clip_to_screen(in[0].clip, width, height);
+
+    for (int i = 1; i + 1 < count; ++i) {
+        const float4 screen[3] = {
+            screen0,
+            clip_to_screen(in[i].clip, width, height),
+            clip_to_screen(in[i + 1].clip, width, height)
+        };
+        const float4 view_pos[3] = {
+            in[0].view_pos, in[i].view_pos, in[i + 1].view_pos
+        };
+        const float4 view_normal[3] = {
+            in[0].view_normal, in[i].view_normal, in[i + 1].view_normal
+        };
+
+        emit_triangle(
+            work, width, height, screen, view_pos, view_normal);
     }
 }
 
@@ -630,11 +872,14 @@ __global__ void shade_kernel(
     const RasterTri& rec = work.records[idx];
     const RasterTriangleSetup& s = rec.setup;
 
-    // Same layout as a projected vertex, already in setup order
+    // Same layout as a projected vertex, already in setup order.
+    // Shading does not need the clip position
+    const float4 kUnused = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+
     const ProjectedVertex p[3] = {
-        {rec.screen[0], rec.view_pos[0], rec.view_normal[0]},
-        {rec.screen[1], rec.view_pos[1], rec.view_normal[1]},
-        {rec.screen[2], rec.view_pos[2], rec.view_normal[2]}
+        {rec.screen[0], rec.view_pos[0], rec.view_normal[0], kUnused},
+        {rec.screen[1], rec.view_pos[1], rec.view_normal[1], kUnused},
+        {rec.screen[2], rec.view_pos[2], rec.view_normal[2], kUnused}
     };
 
     const int px = x * 16 + 8;
@@ -1135,7 +1380,8 @@ bool cuda_setup_triangles(
         (triangle_count + kThreads - 1) / kThreads;
 
     setup_triangles_kernel<<<blocks, kThreads>>>(
-        work, width, height, mesh, vertices);
+        work, width, height, mesh, vertices,
+        guard_band(width, height));
 
     return check_launch("CUDA triangle setup kernel launch");
 }
@@ -1206,7 +1452,8 @@ bool cuda_draw_edges(
         width,
         height,
         mesh,
-        vertices);
+        vertices,
+        guard_band(width, height));
 
     return check_launch("CUDA edge rasterizer launch");
 }

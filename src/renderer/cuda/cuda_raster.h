@@ -13,6 +13,7 @@ struct ProjectedVertex {
     float4 screen;       // screen x, screen y, depth01, clip-space w
     float4 view_pos;     // view-space position
     float4 view_normal;  // view-space normal
+    float4 clip;         // clip-space position, before the divide by w
 };
 
 // One triangle that survived setup, ready for rasterization and shading.
