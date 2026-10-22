@@ -39,3 +39,7 @@ target_compile_definitions(test_bvh PRIVATE
     GFX_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets"
 )
 add_test(NAME bvh COMMAND test_bvh)
+
+add_executable(test_ui test_ui.cpp)
+target_link_libraries(test_ui PRIVATE gfx_ui)
+add_test(NAME ui COMMAND test_ui)

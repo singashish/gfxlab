@@ -4,6 +4,7 @@
 #include "core/mat4.h"
 #include "core/vec3.h"
 #include "core/mesh.h"
+#include "ui/ui_draw.h"
 
 #include <cmath>
 #include <cstdint>
@@ -68,6 +69,11 @@ struct FrameData {
 
     // Object instances to render
     std::vector<DrawItem> draw_list;
+
+    // 2D overlay drawn on top of the 3D view, in window pixels.
+    // Owned by the app; nullptr or an empty list draws nothing.
+    // Only the OpenGL backend draws it so far
+    const UiDrawList* ui = nullptr;
 };
 
 // Everything the ray-cast floor grid needs from the camera.

@@ -54,6 +54,7 @@
     X(void, Uniform3f, (GLint location, GLfloat v0, GLfloat v1, GLfloat v2)) \
     X(void, DepthMask, (GLboolean flag)) \
     X(void, Uniform1f, (GLint location, GLfloat v0)) \
+    X(void, Uniform2f, (GLint location, GLfloat v0, GLfloat v1)) \
         /* Texture presentation */ \
     X(void, GenTextures, (GLsizei n, GLuint* textures)) \
     X(void, DeleteTextures, (GLsizei n, const GLuint* textures)) \

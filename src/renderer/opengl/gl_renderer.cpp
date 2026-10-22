@@ -25,6 +25,10 @@ bool GLRenderer::init(void* native_window) {
         return false;
     }
 
+    if (!m_ui.init()) {
+        return false;
+    }
+
     return true;
 }
 
@@ -86,6 +90,11 @@ void GLRenderer::render(const FrameData& frame) {
 
     // Draw the grid after the opaque objects, as before
     m_grid.draw(gp);
+
+    // The UI goes on top of everything
+    if (frame.ui != nullptr) {
+        m_ui.draw(*frame.ui, frame.width, frame.height);
+    }
 
     // Stop GPU timing before presentation and vsync
     m_gpu_timer.end();

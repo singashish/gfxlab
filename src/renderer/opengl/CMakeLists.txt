@@ -8,6 +8,7 @@ add_library(gfx_gl STATIC
     gl_timer.cpp
     gl_shader.cpp
     gl_triangle_demo.cpp
+    gl_ui.cpp
 )
 
 target_include_directories(gfx_gl PUBLIC 
@@ -15,6 +16,6 @@ target_include_directories(gfx_gl PUBLIC
 )
 
 target_link_libraries(gfx_gl 
-    PUBLIC gfx_core 
+    PUBLIC gfx_core gfx_ui
     PRIVATE OpenGL::GL
 )

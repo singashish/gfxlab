@@ -6,8 +6,10 @@
 #include "core/obj_loader.h"
 #include "core/transform.h"
 #include "core/transform_edit.h"
+#include "platform/ui_font.h"
 #include "platform/window.h"
 #include "renderer/renderer.h"
+#include "ui/ui_draw.h"
 
 #include <algorithm>
 #include <cmath>
@@ -50,6 +52,52 @@ std::string resolve_model_path(const std::string& name,
     }
 
     return {};
+}
+
+// Translucent panel in the top-left corner with one line of text per
+// entry; the first line is brighter. Sizes are in 96-DPI pixels and are
+// multiplied by the font's DPI scale
+void draw_info_panel(gfx::UiDrawList& ui,
+                     const char* const* lines,
+                     int line_count) {
+    const gfx::FontAtlas* font = ui.font();
+
+    if (font == nullptr || line_count <= 0) {
+        return;
+    }
+
+    const float scale = font->scale;
+    const float margin = std::round(10.0f * scale);
+    const float padding = std::round(8.0f * scale);
+    const float border = std::max(1.0f, std::round(scale));
+    const float line_height = ui.line_height();
+
+    float text_width = 0.0f;
+
+    for (int i = 0; i < line_count; ++i) {
+        text_width = std::max(text_width, ui.text_width(lines[i]));
+    }
+
+    const float x0 = margin;
+    const float y0 = margin;
+    const float x1 = x0 + text_width + 2.0f * padding;
+    const float y1 =
+        y0 + static_cast<float>(line_count) * line_height + 2.0f * padding;
+
+    ui.add_rect(x0, y0, x1, y1, gfx::ui_rgba(22, 24, 28, 210));
+    ui.add_rect_outline(x0, y0, x1, y1, border,
+                        gfx::ui_rgba(255, 255, 255, 40));
+
+    for (int i = 0; i < line_count; ++i) {
+        const std::uint32_t color = i == 0
+            ? gfx::ui_rgba(255, 255, 255, 255)
+            : gfx::ui_rgba(196, 202, 210, 255);
+
+        ui.add_text(x0 + padding,
+                    y0 + padding + static_cast<float>(i) * line_height,
+                    lines[i],
+                    color);
+    }
 }
 
 } // namespace
@@ -161,6 +209,23 @@ int main(int argc, char** argv) {
     }
 
     LOG_INFO("renderer: %s", renderer->name());
+
+    // UI font and the per-frame UI draw list. Without a font the app
+    // still runs, just without the overlay
+    gfx::FontAtlas ui_font;
+
+    if (!gfx::build_ui_font(window.native_handle(), "Segoe UI", 12.0f,
+                            ui_font)) {
+        LOG_WARN("UI font unavailable; the overlay is disabled");
+    }
+
+    gfx::UiDrawList ui;
+
+    // H shows and hides the info panel
+    bool show_info_panel = true;
+
+    // Panel line with the timings, refreshed with the title
+    char stats_text[96] = "-- FPS";
 
     bool vsync = true;
     bool wireframe = false;
@@ -300,6 +365,54 @@ int main(int argc, char** argv) {
 
         frame.demo_spin_angle = spin_angle;
 
+        // --------------------------------------------------------
+        // UI overlay
+        // --------------------------------------------------------
+
+        ui.begin(&ui_font);
+
+        if (show_info_panel) {
+            char view_text[96];
+
+            if (wireframe) {
+                std::snprintf(view_text, sizeof(view_text),
+                              "View: wireframe");
+            } else if (ray_trace &&
+                       backend == gfx::RendererBackend::GFX_BACKEND_CUDA) {
+                char sun_text[48];
+
+                if (sun_enabled) {
+                    std::snprintf(sun_text, sizeof(sun_text),
+                                  "sun %.0f / %.0f deg",
+                                  sun_azimuth, sun_elevation);
+                } else {
+                    std::snprintf(sun_text, sizeof(sun_text), "sun off");
+                }
+
+                std::snprintf(view_text, sizeof(view_text),
+                              "View: ray traced | %s | AO %s",
+                              sun_text, ambient_occlusion ? "on" : "off");
+            } else {
+                std::snprintf(view_text, sizeof(view_text), "View: solid");
+            }
+
+            char edit_text[48] = "";
+
+            if (editor.active()) {
+                std::snprintf(edit_text, sizeof(edit_text), "Edit: %s %s",
+                              mode_name(editor.mode()),
+                              axis_name(editor.axis()));
+            }
+
+            const char* lines[4] = {
+                renderer->name(), stats_text, view_text, edit_text
+            };
+
+            draw_info_panel(ui, lines, editor.active() ? 4 : 3);
+        }
+
+        frame.ui = &ui;
+
         // The application owns the transform. The renderer receives
         // the resulting matrices and draws the mesh
         if (mesh_id != 0) {
@@ -397,6 +510,10 @@ int main(int argc, char** argv) {
             }
 
             window.set_title(title);
+
+            std::snprintf(stats_text, sizeof(stats_text),
+                          "%.1f FPS | frame %.3f ms | %s",
+                          timer.fps(), frame_ms, gpu_text);
 
             // Start a fresh averaging interval for the next title update
             gpu_sum = 0.0;
@@ -668,6 +785,12 @@ int main(int argc, char** argv) {
             ambient_occlusion = !ambient_occlusion;
             LOG_INFO("ambient occlusion: %s",
                      ambient_occlusion ? "on" : "off");
+        }
+
+        // Show or hide the info panel with H
+        if (in.key_pressed(gfx::Key::GFX_KEY_H)) {
+            show_info_panel = !show_info_panel;
+            LOG_INFO("info panel: %s", show_info_panel ? "shown" : "hidden");
         }
 
         // Toggle the ray tracer's sun with L

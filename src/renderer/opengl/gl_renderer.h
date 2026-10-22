@@ -6,6 +6,7 @@
 #include "renderer/opengl/gl_mesh.h"
 #include "renderer/opengl/gl_timer.h"
 #include "renderer/opengl/gl_triangle_demo.h"
+#include "renderer/opengl/gl_ui.h"
 
 namespace gfx {
 
@@ -35,6 +36,7 @@ private:
     GLMeshRenderer m_meshes;
     TriangleDemo m_triangle;
     GridRenderer m_grid;
+    GLUiRenderer m_ui;
 };
 
 } // namespace gfx

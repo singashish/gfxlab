@@ -32,6 +32,7 @@ include(GfxBackends)
 include(GfxShaders)
 
 add_subdirectory(src/core)
+add_subdirectory(src/ui)
 
 # The window layer and the app are Windows-only. The core library and the
 # tests are portable and are built everywhere

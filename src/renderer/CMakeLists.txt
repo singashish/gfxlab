@@ -9,6 +9,7 @@ target_include_directories(gfx_renderer PUBLIC
 target_link_libraries(gfx_renderer PUBLIC
     gfx_core
     gfx_config
+    gfx_ui
 )
 
 if(TARGET gfx_gl)

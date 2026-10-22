@@ -93,10 +93,16 @@ constexpr GLenum GL_UNSIGNED_BYTE = 0x1401;
 constexpr GLenum GL_TEXTURE_MIN_FILTER = 0x2801;
 constexpr GLenum GL_TEXTURE_MAG_FILTER = 0x2800;
 constexpr GLenum GL_NEAREST = 0x2600;
+constexpr GLenum GL_RED = 0x1903;
+constexpr GLenum GL_R8 = 0x8229;
+constexpr GLenum GL_TEXTURE_WRAP_S = 0x2802;
+constexpr GLenum GL_TEXTURE_WRAP_T = 0x2803;
+constexpr GLenum GL_CLAMP_TO_EDGE = 0x812F;
 
 // Buffer constants
 constexpr GLenum GL_ARRAY_BUFFER = 0x8892;
 constexpr GLenum GL_ELEMENT_ARRAY_BUFFER = 0x8893;
+constexpr GLenum GL_STREAM_DRAW = 0x88E0;
 constexpr GLenum GL_STATIC_DRAW = 0x88E4;
 constexpr GLenum GL_DYNAMIC_DRAW = 0x88E8;
 
