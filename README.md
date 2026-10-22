@@ -21,8 +21,8 @@ written in this repository, as they are added.
 
 Early development. **M0 (foundation), M1 (window and input), M2 (OpenGL
 renderer and orbit camera), M3 (models, lighting and object transforms), M4
-(the Vulkan backend), M5 (the CUDA software rasterizer) and M6 (wireframe, GPU
-timing and CUDA clipping) are complete.** The app opens a window with a
+(the Vulkan backend), M5 (the CUDA software rasterizer), M6 (wireframe, GPU
+timing and CUDA clipping) and M7 (the CUDA ray tracer) are complete.** The app opens a window with a
 Blender-style viewport: an infinite, anti-aliased floor grid with colored X and
 Y axes that fades with distance, and a mouse-controlled orbit camera. Give it
 an OBJ file on the command line and the model is loaded, lit, placed on the
@@ -33,8 +33,9 @@ when started with `--backend=vulkan`, or with a software rasterizer written in
 CUDA when started with `--backend=cuda`, and all three backends produce the
 same picture. **W** switches every backend to a Blender-style wireframe that
 shows the model's original polygon edges, and the title bar shows each
-backend's measured GPU time next to the frame time. The next milestone is M7: a
-CUDA ray tracer.
+backend's measured GPU time next to the frame time. With `--backend=cuda`,
+**T** switches to a ray tracer that adds shadows from a sun you can drag around
+the model and ambient occlusion that refines while the view is still.
 
 | Milestone | Goal | State |
 |-----------|------|-------|
@@ -45,7 +46,7 @@ CUDA ray tracer.
 | M4 | Vulkan backend | DONE |
 | M5 | CUDA rasterizer | DONE |
 | M6 | Polish and backend comparison | DONE |
-| M7 | CUDA ray tracer | |
+| M7 | CUDA ray tracer | DONE |
 
 ### What is in the repository so far
 
@@ -54,8 +55,10 @@ CUDA ray tracer.
 - **`gfx_core`**: a printf-style logger, header-only math (`Vec3`, `Vec4`,
   `Mat4`), camera matrices (`look_at`, and `perspective` for both OpenGL and
   Vulkan clip space), the orbit camera, a frame timer, the `Mesh` type with an
-  own OBJ parser and normal generation, `Transform`, and the `TransformEditor`
-  behind G/R/S
+  own OBJ parser and normal generation, `Transform`, the `TransformEditor`
+  behind G/R/S, ray/box and ray/triangle tests, and a BVH (binary, built with
+  the surface area heuristic, and a 4-wide version collapsed from it) whose
+  traversal code runs on both the CPU and the GPU
 - **`gfx_platform`**: a hand-written Win32 window (DPI-aware, resize and
   minimize handling, rendering during the drag/resize loop), and a keyboard and
   mouse state tracker with mouse capture and focus-loss handling
@@ -75,13 +78,16 @@ CUDA ray tracer.
   with fixed-point edge functions and the top-left rule; a 64-bit `atomicMin`
   visibility buffer; deferred shading that matches the OpenGL lighting; a
   clipped line rasterizer for wireframe; and the grid as a per-pixel ray
-  kernel), CUDA/OpenGL interop to show the result, per-frame and per-stage GPU
-  timing, and `CudaRenderer`. The `cuda_info` tool reports the CUDA device
+  kernel), a ray tracer (camera rays through a per-mesh BVH, sun shadows,
+  progressive ambient occlusion, run as one kernel or as wavefront passes),
+  CUDA/OpenGL interop to show the result, per-frame and per-stage GPU timing,
+  ray statistics, and `CudaRenderer`. The `cuda_info` tool reports the CUDA
+  device
 - **`gfx_renderer`**: the backend-neutral `IRenderer` interface (including
   `last_gpu_ms` for GPU timing), `FrameData` with its draw list and wireframe
   flag, the shared grid ray basis, and the `create_renderer()` factory
-- **Tests**: eight unit-test programs (math, input, timer, camera, obj,
-  transform, transform_edit, raster) registered with CTest
+- **Tests**: nine unit-test programs (math, input, timer, camera, obj,
+  transform, transform_edit, raster, bvh) registered with CTest
 - **`gfxlab` app**: opens a 1280x720 window and renders the viewport, loading
   the OBJ file given on the command line. The title bar shows the backend, the
   FPS, the frame time, the average GPU time and the active edit mode, and the
@@ -106,6 +112,10 @@ CUDA ray tracer.
 | Right click or Esc during an edit | Cancel, restoring the model exactly |
 | **V** | Toggle vsync |
 | **W** | Toggle wireframe (the model's polygon edges, unlit, in every backend) |
+| **T** | Toggle ray tracing (`--backend=cuda` only; wireframe takes priority) |
+| Right mouse drag (ray tracing) | Move the sun: left/right around the model, up/down higher or lower |
+| **L** (ray tracing) | Sun on/off (off: the viewport's camera light, no shadows) |
+| **O** (ray tracing) | Ambient occlusion on/off |
 | Esc (no edit active) | Quit |
 
 ## Documentation
@@ -120,6 +130,7 @@ CUDA ray tracer.
 | [`docs/m4-design.md`](docs/m4-design.md) | Vulkan backend: instance and device, swapchain, frames in flight and synchronization, memory and uploads, descriptors and push constants, pipelines, the grid, live resizing, differences from OpenGL, manual checklist |
 | [`docs/m5-design.md`](docs/m5-design.md) | CUDA backend: toolchain, CUDA/OpenGL interop, device meshes, the rasterizer (fixed point, edge functions, top-left rule, atomic visibility buffer), deferred shading, the grid kernel, the large-triangle performance fix, known limitations, manual checklist |
 | [`docs/m6-design.md`](docs/m6-design.md) | Polygon-edge wireframe in all three backends, non-blocking GPU timing (GL queries, Vulkan timestamps, CUDA events), the backend comparison and how to read it, the CUDA triangle worklist, near-plane and guard-band clipping, the shared grid ray basis, manual checklist |
+| [`docs/m7-design.md`](docs/m7-design.md) | CUDA ray tracer: ray tests, the SAH BVH and its 4-wide version, instancing with the inverse model matrix, sun shadows, ambient occlusion with progressive refinement, ray statistics, megakernel versus wavefront, measurements and what they taught, manual checklist |
 
 ## Requirements
 
@@ -233,10 +244,12 @@ cmake --preset windows-debug -DGFX_ENABLE_CUDA=OFF
 
 ### CUDA architecture
 
-The CUDA architecture is chosen with `GFX_CUDA_ARCHITECTURES`. The presets and
-the build scripts set it to `120` (RTX 50 series). If it is empty, CMake and `nvcc`
-use their own default, which is unlikely to match a current GPU, so change it
-to match yours when CUDA is enabled:
+The CUDA architecture is chosen with `GFX_CUDA_ARCHITECTURES` (`CUDA_ARCH` in
+`build.bat`). The presets and the build script set it to `120` (RTX 50 series).
+`nvcc` builds machine code for each listed generation plus portable PTX that
+the driver can compile for newer GPUs, never for older ones, so a build for
+`120` does not run on an RTX 30 or 40 card. Set the value for your GPU, or list
+several to build one executable for many cards:
 
 | GPU | Value |
 |-----|-------|
@@ -249,6 +262,18 @@ to match yours when CUDA is enabled:
 cmake --preset windows-debug -DGFX_CUDA_ARCHITECTURES=120
 cmake --preset windows-debug "-DGFX_CUDA_ARCHITECTURES=75;86;89;120"   # several GPUs
 ```
+
+If the value is empty, CMake uses `nvcc`'s default, which for CUDA 13 is the
+oldest supported generation (`75`, RTX 20 series). That runs on every RTX card
+through the driver's compiler, with a slower first start and code not tuned
+for newer chips. CUDA 13 does not support GPUs older than the RTX 20 series.
+Run `build.bat clean` after changing the value.
+
+On a laptop with an integrated GPU as well as an NVIDIA one, Windows may run
+OpenGL on the integrated GPU. The CUDA backend then fails to start with "no
+CUDA device is associated with the current OpenGL context", because it shows
+its picture through OpenGL. Set `gfxlab.exe` to "High performance" in Windows
+graphics settings or in the NVIDIA Control Panel.
 
 Detection results are cached. After installing the Vulkan SDK or the CUDA
 Toolkit, delete the cache (or the build directory) and configure again.
@@ -286,6 +311,17 @@ time is how long the GPU spent executing the frame's commands. To compare
 backends, use a Release build with vsync off (**V**), the same window size and
 the startup camera.
 
+With `--backend=cuda` and a model loaded, **T** switches to the ray tracer. The
+title shows `(ray traced, sun 250 / 45 deg, AO)`, and the console adds a
+once-per-second line with the rays traced per frame:
+`CUDA rays per frame: camera ... M, shadow ... M, AO ... M (AO samples n / 1024)`.
+Ambient occlusion keeps adding rays while nothing moves and stops at 1024
+samples per pixel, after which it costs nothing. Measuring aids in
+`cuda_renderer.cpp`: `kBenchmarkAo` (restart AO every frame so its cost can be
+timed), `kRtWavefront` and `kUseBvh4` (compare the two ways of running the ray
+tracer and the two BVH layouts). Keep the defaults for normal use, and keep the
+window focused while measuring: unfocused it measures a few percent faster.
+
 `builds\build-debug\src\renderer\cuda\cuda_info.exe` prints the CUDA runtime,
 driver and device properties and runs a small kernel. It is the quickest way to
 check the CUDA installation.
@@ -308,7 +344,7 @@ See [Controls](#controls) for the mouse and keyboard actions.
 cmake/               build helper modules (backend detection, shader compilation)
 docs/                design documents
 src/core/            logging, math, cameras, timer, mesh, OBJ parser,
-                     transform and its editor                          -> gfx_core
+                     transform and its editor, ray tests, BVH          -> gfx_core
 src/platform/        window and input                                  -> gfx_platform
   win32/             Win32 implementation of the window
 src/renderer/        IRenderer, FrameData, grid ray basis, factory     -> gfx_renderer
@@ -318,14 +354,14 @@ src/renderer/        IRenderer, FrameData, grid ray basis, factory     -> gfx_re
                      pipelines, mesh, wireframe, grid, GPU timer,
                      VulkanRenderer                                    -> gfx_vk
     shaders/         GLSL sources, compiled to SPIR-V by glslc at build time
-  cuda/              interop, device meshes, clipping and rasterizer
-                     kernels, GPU and stage timers, CudaRenderer,
-                     cuda_info                                         -> gfx_cuda
+  cuda/              interop, device meshes, clipping, rasterizer and
+                     ray tracer kernels, GPU and stage timers, ray
+                     statistics, CudaRenderer, cuda_info               -> gfx_cuda
 src/app/             application entry point                           -> gfxlab
 assets/              test models (.obj)
 tests/               unit tests                                        -> test_math, test_input, test_timer,
                                                                           test_camera, test_obj, test_transform,
-                                                                          test_transform_edit, test_raster
+                                                                          test_transform_edit, test_raster, test_bvh
 CMakePresets.json
 build.bat
 ```
