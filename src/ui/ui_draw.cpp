@@ -52,6 +52,40 @@ void UiDrawList::add_rect(float x0, float y0, float x1, float y1,
     add_quad(x0, y0, x1, y1, u, v, u, v, color);
 }
 
+std::size_t UiDrawList::add_rect_placeholder(std::uint32_t color) {
+    const std::size_t handle = m_vertices.size();
+
+    // Same as add_rect, but with all four corners at the origin: a
+    // zero-area quad, which no backend draws
+    float u = 0.0f;
+    float v = 0.0f;
+
+    if (m_font != nullptr) {
+        u = (static_cast<float>(m_font->white_x) + 0.5f) /
+            static_cast<float>(m_font->width);
+        v = (static_cast<float>(m_font->white_y) + 0.5f) /
+            static_cast<float>(m_font->height);
+    }
+
+    add_quad(0.0f, 0.0f, 0.0f, 0.0f, u, v, u, v, color);
+    return handle;
+}
+
+void UiDrawList::set_rect(std::size_t handle,
+                          float x0, float y0, float x1, float y1) {
+    if (handle + 4 > m_vertices.size()) {
+        return;
+    }
+
+    // Corner order matches add_quad: top-left, top-right,
+    // bottom-right, bottom-left
+    UiVertex* q = &m_vertices[handle];
+    q[0].x = x0; q[0].y = y0;
+    q[1].x = x1; q[1].y = y0;
+    q[2].x = x1; q[2].y = y1;
+    q[3].x = x0; q[3].y = y1;
+}
+
 void UiDrawList::add_rect_outline(float x0, float y0, float x1, float y1,
                                   float thickness, std::uint32_t color) {
     const float t = std::min(thickness,

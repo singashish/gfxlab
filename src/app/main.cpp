@@ -9,6 +9,7 @@
 #include "platform/ui_font.h"
 #include "platform/window.h"
 #include "renderer/renderer.h"
+#include "ui/ui.h"
 #include "ui/ui_draw.h"
 
 #include <algorithm>
@@ -52,52 +53,6 @@ std::string resolve_model_path(const std::string& name,
     }
 
     return {};
-}
-
-// Translucent panel in the top-left corner with one line of text per
-// entry; the first line is brighter. Sizes are in 96-DPI pixels and are
-// multiplied by the font's DPI scale
-void draw_info_panel(gfx::UiDrawList& ui,
-                     const char* const* lines,
-                     int line_count) {
-    const gfx::FontAtlas* font = ui.font();
-
-    if (font == nullptr || line_count <= 0) {
-        return;
-    }
-
-    const float scale = font->scale;
-    const float margin = std::round(10.0f * scale);
-    const float padding = std::round(8.0f * scale);
-    const float border = std::max(1.0f, std::round(scale));
-    const float line_height = ui.line_height();
-
-    float text_width = 0.0f;
-
-    for (int i = 0; i < line_count; ++i) {
-        text_width = std::max(text_width, ui.text_width(lines[i]));
-    }
-
-    const float x0 = margin;
-    const float y0 = margin;
-    const float x1 = x0 + text_width + 2.0f * padding;
-    const float y1 =
-        y0 + static_cast<float>(line_count) * line_height + 2.0f * padding;
-
-    ui.add_rect(x0, y0, x1, y1, gfx::ui_rgba(22, 24, 28, 210));
-    ui.add_rect_outline(x0, y0, x1, y1, border,
-                        gfx::ui_rgba(255, 255, 255, 40));
-
-    for (int i = 0; i < line_count; ++i) {
-        const std::uint32_t color = i == 0
-            ? gfx::ui_rgba(255, 255, 255, 255)
-            : gfx::ui_rgba(196, 202, 210, 255);
-
-        ui.add_text(x0 + padding,
-                    y0 + padding + static_cast<float>(i) * line_height,
-                    lines[i],
-                    color);
-    }
 }
 
 } // namespace
@@ -219,10 +174,15 @@ int main(int argc, char** argv) {
         LOG_WARN("UI font unavailable; the overlay is disabled");
     }
 
-    gfx::UiDrawList ui;
+    gfx::UiDrawList ui_list;
+    gfx::Ui ui;
 
-    // H shows and hides the info panel
+    // H shows and hides the panel
     bool show_info_panel = true;
+
+    // True while a middle-button drag that started in the 3D view
+    // (not on the UI) orbits or pans the camera
+    bool camera_dragging = false;
 
     // Panel line with the timings, refreshed with the title
     char stats_text[96] = "-- FPS";
@@ -369,7 +329,26 @@ int main(int argc, char** argv) {
         // UI overlay
         // --------------------------------------------------------
 
-        ui.begin(&ui_font);
+        ui_list.begin(&ui_font);
+
+        // The UI sees the left mouse button, except during a G/R/S edit:
+        // then every click belongs to the edit (confirm or cancel)
+        gfx::UiInput ui_input;
+
+        if (!editor.active()) {
+            const gfx::InputState& in = window.input();
+
+            ui_input.mouse_x = in.mouse_x();
+            ui_input.mouse_y = in.mouse_y();
+            ui_input.mouse_down =
+                in.mouse_down(gfx::MouseButton::GFX_MOUSE_LEFT);
+            ui_input.mouse_pressed =
+                in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_LEFT);
+            ui_input.mouse_released =
+                in.mouse_released(gfx::MouseButton::GFX_MOUSE_LEFT);
+        }
+
+        ui.begin_frame(ui_list, ui_input);
 
         if (show_info_panel) {
             char view_text[96];
@@ -379,39 +358,80 @@ int main(int argc, char** argv) {
                               "View: wireframe");
             } else if (ray_trace &&
                        backend == gfx::RendererBackend::GFX_BACKEND_CUDA) {
-                char sun_text[48];
-
-                if (sun_enabled) {
-                    std::snprintf(sun_text, sizeof(sun_text),
-                                  "sun %.0f / %.0f deg",
-                                  sun_azimuth, sun_elevation);
-                } else {
-                    std::snprintf(sun_text, sizeof(sun_text), "sun off");
-                }
-
                 std::snprintf(view_text, sizeof(view_text),
-                              "View: ray traced | %s | AO %s",
-                              sun_text, ambient_occlusion ? "on" : "off");
+                              "View: ray traced");
             } else {
                 std::snprintf(view_text, sizeof(view_text), "View: solid");
             }
 
-            char edit_text[48] = "";
+            ui.begin_panel("gfxlab", 10.0f, 10.0f, 280.0f);
+
+            ui.text(renderer->name());
+            ui.text(stats_text);
+            ui.text(view_text);
 
             if (editor.active()) {
+                char edit_text[48];
                 std::snprintf(edit_text, sizeof(edit_text), "Edit: %s %s",
                               mode_name(editor.mode()),
                               axis_name(editor.axis()));
+                ui.text(edit_text);
             }
 
-            const char* lines[4] = {
-                renderer->name(), stats_text, view_text, edit_text
-            };
+            ui.separator();
 
-            draw_info_panel(ui, lines, editor.active() ? 4 : 3);
+            if (ui.checkbox("Wireframe", &wireframe)) {
+                LOG_INFO("wireframe: %s", wireframe ? "on" : "off");
+            }
+
+            if (ui.checkbox("Vsync", &vsync)) {
+                renderer->set_vsync(vsync);
+                LOG_INFO("vsync: %s", vsync ? "on" : "off");
+            }
+
+            // Ray tracing exists only in the CUDA backend; its options
+            // only matter while it is on
+            const bool is_cuda =
+                backend == gfx::RendererBackend::GFX_BACKEND_CUDA;
+
+            ui.separator();
+            ui.set_enabled(is_cuda);
+
+            if (ui.checkbox("Ray tracing", &ray_trace)) {
+                LOG_INFO("ray tracing: %s", ray_trace ? "on" : "off");
+            }
+
+            ui.set_enabled(is_cuda && ray_trace);
+
+            if (ui.checkbox("Sun", &sun_enabled)) {
+                LOG_INFO("sun: %s", sun_enabled ? "on" : "off");
+            }
+
+            ui.set_enabled(is_cuda && ray_trace && sun_enabled);
+
+            ui.slider("Sun azimuth", &sun_azimuth, 0.0f, 360.0f,
+                      "%.0f deg");
+            ui.slider("Sun elevation", &sun_elevation, 5.0f, 90.0f,
+                      "%.0f deg");
+
+            if (ui.button("Reset sun")) {
+                sun_azimuth = 250.0f;
+                sun_elevation = 45.0f;
+            }
+
+            ui.set_enabled(is_cuda && ray_trace);
+
+            if (ui.checkbox("Ambient occlusion", &ambient_occlusion)) {
+                LOG_INFO("ambient occlusion: %s",
+                         ambient_occlusion ? "on" : "off");
+            }
+
+            ui.end_panel();
         }
 
-        frame.ui = &ui;
+        ui.end_frame();
+
+        frame.ui = &ui_list;
 
         // The application owns the transform. The renderer receives
         // the resulting matrices and draws the mesh
@@ -589,7 +609,22 @@ int main(int argc, char** argv) {
         // Camera input
         // ------------------------------------------------------------
 
-        if (in.mouse_down(gfx::MouseButton::GFX_MOUSE_MIDDLE)) {
+        // The mouse belongs to the UI when it was over a panel or holding
+        // a widget last frame. During a G/R/S edit the UI ignores the
+        // mouse, so the edit always gets it
+        const bool ui_has_mouse = ui.wants_mouse() && !editor.active();
+
+        // A middle-button drag orbits (or pans) only if it started in
+        // the 3D view; once started it continues even over the UI
+        if (in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_MIDDLE)) {
+            camera_dragging = !ui_has_mouse;
+        }
+
+        if (!in.mouse_down(gfx::MouseButton::GFX_MOUSE_MIDDLE)) {
+            camera_dragging = false;
+        }
+
+        if (camera_dragging) {
             if (in.key_down(gfx::Key::GFX_KEY_SHIFT)) {
                 camera.pan(
                     in.mouse_dx(),
@@ -604,7 +639,10 @@ int main(int argc, char** argv) {
             }
         }
 
-        camera.zoom(in.scroll());
+        // Scrolling over the UI does not zoom
+        if (!ui_has_mouse) {
+            camera.zoom(in.scroll());
+        }
 
         // Right-button drag moves the sun while ray tracing: left/right
         // turns it around the scene, up/down raises and lowers it.
@@ -613,7 +651,7 @@ int main(int argc, char** argv) {
         if (in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_RIGHT)) {
             sun_dragging =
                 ray_trace && sun_enabled && !wireframe &&
-                !was_editing_at_frame_start;
+                !was_editing_at_frame_start && !ui_has_mouse;
         }
 
         if (!in.mouse_down(gfx::MouseButton::GFX_MOUSE_RIGHT)) {
@@ -790,7 +828,7 @@ int main(int argc, char** argv) {
         // Show or hide the info panel with H
         if (in.key_pressed(gfx::Key::GFX_KEY_H)) {
             show_info_panel = !show_info_panel;
-            LOG_INFO("info panel: %s", show_info_panel ? "shown" : "hidden");
+            LOG_INFO("panel: %s", show_info_panel ? "shown" : "hidden");
         }
 
         // Toggle the ray tracer's sun with L

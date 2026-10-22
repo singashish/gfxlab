@@ -1,4 +1,5 @@
 #include "ui/font_atlas.h"
+#include "ui/ui.h"
 #include "ui/ui_draw.h"
 #include "ui/ui_raster.h"
 #include "check.h"
@@ -6,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace {
@@ -440,6 +442,259 @@ void test_raster_empty() {
     CHECK(gfx::build_ui_raster_tris(list, 0, 0, tris).empty());
 }
 
+// ---------------------------------------------------------------------
+// Immediate-mode widgets
+//
+// With the synthetic font (line height 16, scale 1) a panel at (0, 0),
+// 200 wide, lays out as:
+//   title       y   8 ..  24
+//   separator   y  28 ..  33
+//   checkbox C  y  37 ..  59
+//   slider S    y  63 ..  85, track x 85 .. 192
+//   button B    y  89 .. 111
+//   (text)      y 115 .. 131
+// Panel bottom: last row end + padding 8
+// ---------------------------------------------------------------------
+
+struct Widgets {
+    bool check = false;
+    float value = 0.0f;
+    int clicks = 0;
+    bool enabled = true;
+    const char* extra_text = nullptr;
+};
+
+gfx::UiInput mouse(float x, float y, bool down, bool pressed,
+                   bool released) {
+    gfx::UiInput in;
+    in.mouse_x = x;
+    in.mouse_y = y;
+    in.mouse_down = down;
+    in.mouse_pressed = pressed;
+    in.mouse_released = released;
+    return in;
+}
+
+gfx::UiInput press(float x, float y) { return mouse(x, y, true, true, false); }
+gfx::UiInput hold(float x, float y) { return mouse(x, y, true, false, false); }
+gfx::UiInput release(float x, float y) { return mouse(x, y, false, false, true); }
+gfx::UiInput hover(float x, float y) { return mouse(x, y, false, false, false); }
+
+void build(gfx::Ui& ui, gfx::UiDrawList& list, const gfx::FontAtlas& atlas,
+           const gfx::UiInput& in, Widgets& w) {
+    list.begin(&atlas);
+    ui.begin_frame(list, in);
+    ui.begin_panel("P", 0.0f, 0.0f, 200.0f);
+    ui.set_enabled(w.enabled);
+    ui.checkbox("C", &w.check);
+    ui.slider("S", &w.value, 0.0f, 100.0f, "%.0f");
+
+    if (ui.button("B")) {
+        ++w.clicks;
+    }
+
+    if (w.extra_text != nullptr) {
+        ui.text(w.extra_text);
+    }
+
+    ui.end_panel();
+    ui.end_frame();
+}
+
+void test_widget_checkbox() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    Widgets w;
+
+    // Hovering the panel claims the mouse; elsewhere it does not
+    build(ui, list, atlas, hover(500, 500), w);
+    CHECK(!ui.wants_mouse());
+
+    build(ui, list, atlas, hover(20, 48), w);
+    CHECK(ui.wants_mouse());
+
+    // A click toggles on release
+    build(ui, list, atlas, press(20, 48), w);
+    CHECK(!w.check);
+    CHECK(ui.wants_mouse());
+
+    build(ui, list, atlas, release(20, 48), w);
+    CHECK(w.check);
+
+    build(ui, list, atlas, press(20, 48), w);
+    build(ui, list, atlas, release(20, 48), w);
+    CHECK(!w.check);
+
+    // Pressed on the box but released elsewhere: no toggle
+    build(ui, list, atlas, press(20, 48), w);
+    build(ui, list, atlas, release(500, 500), w);
+    CHECK(!w.check);
+    CHECK(!ui.wants_mouse());
+
+    // Clicks outside the panel do nothing
+    build(ui, list, atlas, press(500, 48), w);
+    build(ui, list, atlas, release(500, 48), w);
+    CHECK(!w.check);
+
+    // Disabled: no reaction
+    w.enabled = false;
+    build(ui, list, atlas, press(20, 48), w);
+    build(ui, list, atlas, release(20, 48), w);
+    CHECK(!w.check);
+}
+
+void test_widget_slider() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    Widgets w;
+
+    // Press in the middle of the track (x 85 .. 192)
+    const float middle = 85.0f + (192.0f - 85.0f) * 0.5f;
+    build(ui, list, atlas, press(middle, 70), w);
+    CHECK(approx(w.value, 50.0, 1e-3));
+
+    // While held it follows the mouse, even outside the panel, and the
+    // UI keeps the mouse
+    build(ui, list, atlas, hold(1000, 300), w);
+    CHECK(approx(w.value, 100.0));
+    CHECK(ui.wants_mouse());
+
+    build(ui, list, atlas, hold(-50, 300), w);
+    CHECK(approx(w.value, 0.0));
+
+    // Releasing frees the mouse
+    build(ui, list, atlas, release(-50, 300), w);
+    CHECK(!ui.wants_mouse());
+
+    // Pressing the label part of the row does not grab the slider
+    w.value = 30.0f;
+    build(ui, list, atlas, press(20, 70), w);
+    build(ui, list, atlas, hold(150, 70), w);
+    CHECK(approx(w.value, 30.0));
+    build(ui, list, atlas, release(150, 70), w);
+}
+
+void test_widget_button() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    Widgets w;
+
+    build(ui, list, atlas, press(100, 100), w);
+    CHECK(w.clicks == 0);
+    build(ui, list, atlas, hold(100, 100), w);
+    CHECK(w.clicks == 0);
+    build(ui, list, atlas, release(100, 100), w);
+    CHECK(w.clicks == 1);
+    build(ui, list, atlas, hover(100, 100), w);
+    CHECK(w.clicks == 1);
+
+    // Press and release within one frame still counts as a click
+    build(ui, list, atlas, mouse(100, 100, false, true, true), w);
+    CHECK(w.clicks == 2);
+
+    // Released away from the button: no click
+    build(ui, list, atlas, press(100, 100), w);
+    build(ui, list, atlas, release(100, 300), w);
+    CHECK(w.clicks == 2);
+}
+
+void test_widget_panel_capture() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    Widgets w;
+
+    // A press on the panel's title area holds the mouse: dragging off
+    // the panel still belongs to the UI, and releasing over the checkbox
+    // does not toggle it
+    build(ui, list, atlas, press(100, 12), w);
+    CHECK(ui.wants_mouse());
+    build(ui, list, atlas, hold(800, 600), w);
+    CHECK(ui.wants_mouse());
+    build(ui, list, atlas, hold(20, 48), w);
+    build(ui, list, atlas, release(20, 48), w);
+    CHECK(!w.check);
+
+    // A held widget that disappears (panel not built) is let go
+    build(ui, list, atlas, press(20, 48), w);
+    CHECK(ui.wants_mouse());
+    list.begin(&atlas);
+    ui.begin_frame(list, hold(800, 600));
+    ui.end_frame();
+    CHECK(!ui.wants_mouse());
+}
+
+void test_widget_panel_size() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    Widgets w;
+
+    // The background is the first quad of the list and was resized by
+    // end_panel to fit the rows: last row (button) ends at 111
+    build(ui, list, atlas, hover(500, 500), w);
+
+    const std::vector<gfx::UiVertex>& v = list.vertices();
+    CHECK(v.size() >= 4);
+    CHECK(approx(v[0].x, 0) && approx(v[0].y, 0));
+    CHECK(approx(v[2].x, 200) && approx(v[2].y, 111 + 8));
+
+    // A text row adds 16 + 4; text wider than the panel widens it
+    std::string wide(60, 'W');
+    w.extra_text = wide.c_str();
+    build(ui, list, atlas, hover(500, 500), w);
+
+    const float text_right = 8.0f + list.text_width(wide.c_str());
+    CHECK(text_right + 8.0f > 200.0f);
+    CHECK(approx(list.vertices()[2].x, text_right + 8.0f));
+    CHECK(approx(list.vertices()[2].y, 131 + 8));
+
+    // The mouse over the widened part counts as over the panel
+    build(ui, list, atlas, hover(text_right, 120), w);
+    CHECK(ui.wants_mouse());
+}
+
+void test_placeholder() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::UiDrawList list;
+    list.begin(&atlas);
+
+    const std::size_t handle = list.add_rect_placeholder(0xFF0000FFu);
+    list.add_rect(1, 1, 2, 2, 0xFFFFFFFFu);
+
+    // Until set, all four corners sit at the origin (zero area)
+    CHECK(list.vertices().size() == 8);
+    CHECK(approx(list.vertices()[handle + 2].x, 0));
+
+    list.set_rect(handle, 5, 6, 7, 8);
+    CHECK(approx(list.vertices()[handle + 0].x, 5));
+    CHECK(approx(list.vertices()[handle + 0].y, 6));
+    CHECK(approx(list.vertices()[handle + 2].x, 7));
+    CHECK(approx(list.vertices()[handle + 2].y, 8));
+    CHECK(list.vertices()[handle + 1].color == 0xFF0000FFu);
+
+    // The rectangle added after it is untouched
+    CHECK(approx(list.vertices()[4].x, 1));
+
+    // Out-of-range handles are ignored
+    list.set_rect(100, 0, 0, 1, 1);
+}
+
 } // namespace
 
 int main() {
@@ -453,6 +708,12 @@ int main() {
     test_raster_order_and_clipping();
     test_raster_glyph();
     test_raster_empty();
+    test_widget_checkbox();
+    test_widget_slider();
+    test_widget_button();
+    test_widget_panel_capture();
+    test_widget_panel_size();
+    test_placeholder();
 
     if (g_failures == 0) {
         std::printf("All UI tests passed\n");

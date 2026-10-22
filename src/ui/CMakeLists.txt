@@ -4,6 +4,7 @@
 # drawing in each renderer backend
 add_library(gfx_ui STATIC
     font_atlas.cpp
+    ui.cpp
     ui_draw.cpp
     ui_raster.cpp
 )

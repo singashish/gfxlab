@@ -18,6 +18,7 @@
 
 #include "ui/font_atlas.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -58,6 +59,13 @@ public:
     // Rectangle border of the given thickness, drawn inside the bounds
     void add_rect_outline(float x0, float y0, float x1, float y1,
                           float thickness, std::uint32_t color);
+
+    // Adds a rectangle whose corners are set later with set_rect(); until
+    // then it covers nothing. A panel uses it to put its background
+    // under its widgets before it knows how tall it will be.
+    // Returns a handle for set_rect()
+    std::size_t add_rect_placeholder(std::uint32_t color);
+    void set_rect(std::size_t handle, float x0, float y0, float x1, float y1);
 
     // Draws text with its first line's top-left corner at (x, y).
     // '\n' starts a new line; characters outside 32..126 draw as '?'.
