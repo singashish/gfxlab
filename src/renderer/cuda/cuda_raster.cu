@@ -2,6 +2,7 @@
 
 #include "core/log.h"
 #include "core/bvh.h"
+#include "core/bvh4.h"
 #include "core/raster_math.h"
 #include "renderer/cuda/cuda_api.h"
 
@@ -1009,14 +1010,26 @@ __device__ __forceinline__ bool scene_occluded(
     for (int i = 0; i < scene.count; ++i) {
         const RtInstance& inst = scene.items[i];
 
-        if (bvh_occluded(inst.mesh.bvh_nodes,
-                         inst.mesh.bvh_tri_indices,
-                         inst.mesh.positions,
-                         inst.mesh.indices,
-                         transform_point(inst.world_to_object, origin),
-                         transform_direction(inst.world_to_object, dir),
-                         0.0f,
-                         t_max)) {
+        const Vec3 local_origin =
+            transform_point(inst.world_to_object, origin);
+        const Vec3 local_dir =
+            transform_direction(inst.world_to_object, dir);
+
+        // Both trees hold the same triangles in the same order, so
+        // either answers the same question
+        const bool blocked = scene.use_bvh4
+            ? bvh4_occluded(inst.mesh.bvh4_nodes,
+                            inst.mesh.bvh_tri_indices,
+                            inst.mesh.positions,
+                            inst.mesh.indices,
+                            local_origin, local_dir, 0.0f, t_max)
+            : bvh_occluded(inst.mesh.bvh_nodes,
+                           inst.mesh.bvh_tri_indices,
+                           inst.mesh.positions,
+                           inst.mesh.indices,
+                           local_origin, local_dir, 0.0f, t_max);
+
+        if (blocked) {
             return true;
         }
     }
@@ -1121,13 +1134,26 @@ __device__ __forceinline__ bool closest_surface(
 
         BvhHit hit;
 
-        if (bvh_trace(inst.mesh.bvh_nodes,
-                      inst.mesh.bvh_tri_indices,
-                      inst.mesh.positions,
-                      inst.mesh.indices,
-                      transform_point(inst.world_to_object, scene.eye),
-                      transform_direction(inst.world_to_object, dir),
-                      scene.t_min, best_t, hit)) {
+        const Vec3 local_origin =
+            transform_point(inst.world_to_object, scene.eye);
+        const Vec3 local_dir =
+            transform_direction(inst.world_to_object, dir);
+
+        const bool found = scene.use_bvh4
+            ? bvh4_trace(inst.mesh.bvh4_nodes,
+                         inst.mesh.bvh_tri_indices,
+                         inst.mesh.positions,
+                         inst.mesh.indices,
+                         local_origin, local_dir,
+                         scene.t_min, best_t, hit)
+            : bvh_trace(inst.mesh.bvh_nodes,
+                        inst.mesh.bvh_tri_indices,
+                        inst.mesh.positions,
+                        inst.mesh.indices,
+                        local_origin, local_dir,
+                        scene.t_min, best_t, hit);
+
+        if (found) {
             best_t = hit.t;
             best = hit;
             best_item = i;

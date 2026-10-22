@@ -61,8 +61,11 @@ struct BvhHit {
     std::uint32_t triangle;  // triangle number in the mesh (index / 3)
 };
 
-// Deep enough for any tree the builder makes: its depth is limited by
-// kBvhMaxDepth in bvh.cpp
+// The builder never makes a tree deeper than this
+constexpr std::uint32_t kBvhMaxDepth = 48;
+
+// Deep enough for any tree the builder makes: traversal keeps at most
+// one pending sibling per level
 constexpr int kBvhStackSize = 64;
 
 // Closest hit along origin + t * dir for t in (t_min, t_max).

@@ -8,6 +8,7 @@
 #endif
 
 #include "core/bvh.h"
+#include "core/bvh4.h"
 #include "core/mesh.h"
 #include "core/obj_loader.h"
 #include "core/ray.h"
@@ -130,6 +131,66 @@ void check_structure(const gfx::Bvh& bvh, const gfx::Mesh& mesh) {
     }
 }
 
+// Structural checks for the 4-wide tree made from bvh
+void check_structure4(const gfx::Bvh4& bvh4, const gfx::Mesh& mesh) {
+    const std::size_t triangle_count = mesh.triangle_count();
+
+    CHECK(bvh4.tri_indices.size() == triangle_count);
+
+    std::vector<int> seen(triangle_count, 0);
+
+    for (const gfx::Bvh4Node& node : bvh4.nodes) {
+        int used = 0;
+
+        for (int i = 0; i < 4; ++i) {
+            if (node.child[i] == gfx::kBvh4Empty) {
+                CHECK(node.count[i] == 0);
+                continue;
+            }
+
+            ++used;
+
+            const Vec3 lo{node.min_x[i], node.min_y[i], node.min_z[i]};
+            const Vec3 hi{node.max_x[i], node.max_y[i], node.max_z[i]};
+
+            if (node.count[i] > 0) {
+                for (std::uint32_t k = 0; k < node.count[i]; ++k) {
+                    const std::uint32_t tri =
+                        bvh4.tri_indices[node.child[i] + k];
+                    ++seen[tri];
+
+                    for (int c = 0; c < 3; ++c) {
+                        const Vec3 p =
+                            mesh.positions[mesh.indices[tri * 3 + c]];
+                        CHECK(box_contains(lo, hi, p, p));
+                    }
+                }
+            } else {
+                // Every slot of the inner child lies inside this box
+                CHECK(node.child[i] < bvh4.nodes.size());
+                const gfx::Bvh4Node& inner = bvh4.nodes[node.child[i]];
+
+                for (int j = 0; j < 4; ++j) {
+                    if (inner.child[j] == gfx::kBvh4Empty) {
+                        continue;
+                    }
+
+                    CHECK(box_contains(
+                        lo, hi,
+                        {inner.min_x[j], inner.min_y[j], inner.min_z[j]},
+                        {inner.max_x[j], inner.max_y[j], inner.max_z[j]}));
+                }
+            }
+        }
+
+        CHECK(used >= 1);
+    }
+
+    for (int count : seen) {
+        CHECK(count == 1);
+    }
+}
+
 // Random rays through the mesh's region: BVH and brute force must agree
 void check_against_brute_force(const gfx::Bvh& bvh,
                                const gfx::Mesh& mesh,
@@ -138,6 +199,10 @@ void check_against_brute_force(const gfx::Bvh& bvh,
                                Lcg& rng) {
     int mismatches = 0;
     int hits = 0;
+
+    // The 4-wide tree must give exactly the same answers
+    const gfx::Bvh4 bvh4 = gfx::build_bvh4(bvh);
+    check_structure4(bvh4, mesh);
 
     for (int i = 0; i < rays; ++i) {
         const Vec3 origin = rng.point(-extent * 1.5f, extent * 1.5f);
@@ -165,7 +230,29 @@ void check_against_brute_force(const gfx::Bvh& bvh,
             ++mismatches;
         }
 
+        gfx::BvhHit hit4{};
+        const bool bvh4_hit = gfx::bvh4_trace(
+            bvh4, mesh, origin, dir, 0.0f, 1.0e30f, hit4);
+
+        if (brute_hit != bvh4_hit ||
+            (brute_hit && std::fabs(brute_t - hit4.t) >
+                              1.0e-4f * std::max(1.0f, brute_t))) {
+            ++mismatches;
+        }
+
+        if (gfx::bvh4_occluded(bvh4, mesh, origin, dir,
+                               0.0f, 1.0e30f) != brute_hit) {
+            ++mismatches;
+        }
+
         if (brute_hit) {
+            if (gfx::bvh4_occluded(bvh4, mesh, origin, dir,
+                                   0.0f, brute_t * 0.999f) ||
+                !gfx::bvh4_occluded(bvh4, mesh, origin, dir,
+                                    0.0f, brute_t * 1.001f)) {
+                ++mismatches;
+            }
+
             if (gfx::bvh_occluded(bvh, mesh, origin, dir,
                                   0.0f, brute_t * 0.999f)) {
                 ++mismatches;
@@ -270,6 +357,17 @@ void test_single_triangle() {
     CHECK(bvh.nodes.size() == 1);
     CHECK(bvh.nodes[0].count == 1);
 
+    // A root that is a leaf becomes one 4-wide node with one leaf slot
+    const gfx::Bvh4 bvh4 = gfx::build_bvh4(bvh);
+    CHECK(bvh4.nodes.size() == 1);
+    CHECK(bvh4.nodes[0].count[0] == 1);
+    CHECK(bvh4.nodes[0].child[1] == gfx::kBvh4Empty);
+
+    gfx::BvhHit hit4{};
+    CHECK(gfx::bvh4_trace(bvh4, mesh, {0.2f, 0.2f, 5}, {0, 0, -1},
+                          0.0f, 100.0f, hit4));
+    CHECK(approx(hit4.t, 5.0));
+
     gfx::BvhHit hit{};
     CHECK(gfx::bvh_trace(bvh, mesh, {0.2f, 0.2f, 5}, {0, 0, -1},
                          0.0f, 100.0f, hit));
@@ -311,9 +409,10 @@ void test_suzanne() {
 
     std::printf(
         "suzanne_s.obj: %zu triangles, %u nodes, %u leaves, "
-        "max depth %u, largest leaf %u\n",
+        "max depth %u, largest leaf %u, %zu 4-wide nodes\n",
         mesh.triangle_count(), stats.node_count, stats.leaf_count,
-        stats.max_depth, stats.max_leaf_size);
+        stats.max_depth, stats.max_leaf_size,
+        gfx::build_bvh4(bvh).nodes.size());
 
     Lcg rng;
     rng.state = 777u;

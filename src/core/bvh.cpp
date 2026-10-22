@@ -12,8 +12,8 @@ namespace {
 
 // Surface area heuristic settings
 constexpr int kBins = 16;                 // candidate split planes per axis
-constexpr std::uint32_t kMaxLeafSize = 4; // force a split above this...
-constexpr std::uint32_t kBvhMaxDepth = 48; // ...unless the tree is this deep
+constexpr std::uint32_t kMaxLeafSize = 4; // force a split above this,
+                                          // unless at kBvhMaxDepth (bvh.h)
 
 // Traversal visits at most one pending sibling per level, so the stack
 // in bvh_trace needs depth + 1 entries

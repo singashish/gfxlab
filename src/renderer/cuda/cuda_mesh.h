@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/bvh.h"
+#include "core/bvh4.h"
 #include "renderer/renderer.h"
 
 #include <cstdint>
@@ -23,6 +24,9 @@ struct DeviceMesh {
     BvhNode* bvh_nodes = nullptr;
     std::uint32_t* bvh_tri_indices = nullptr;
     std::uint32_t bvh_node_count = 0;
+
+    // The same tree collapsed to 4-wide nodes; shares bvh_tri_indices
+    Bvh4Node* bvh4_nodes = nullptr;
 
     // Object-space bounding box (the BVH root), kept on the host side of
     // this struct so the renderer can size effects to the model

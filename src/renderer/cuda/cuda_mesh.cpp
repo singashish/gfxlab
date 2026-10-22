@@ -43,6 +43,12 @@ void free_device_mesh(DeviceMesh& mesh) {
             "cudaFree mesh BVH nodes");
     }
 
+    if (mesh.bvh4_nodes) {
+        (void)cuda_ok(
+            cudaFree(mesh.bvh4_nodes),
+            "cudaFree mesh 4-wide BVH nodes");
+    }
+
     if (mesh.bvh_tri_indices) {
         (void)cuda_ok(
             cudaFree(mesh.bvh_tri_indices),
@@ -165,13 +171,18 @@ MeshId CudaMeshStore::add(const Mesh& mesh) {
 
     const BvhStats stats = bvh_stats(bvh);
 
+    // The 4-wide tree is made from the binary one and keeps its
+    // triangle order, so the two share one triangle index array
+    const Bvh4 bvh4 = build_bvh4(bvh);
+
     LOG_INFO(
         "CUDA mesh BVH: %u nodes, %u leaves, max depth %u, "
-        "largest leaf %u, built in %.1f ms",
+        "largest leaf %u, %zu 4-wide nodes, built in %.1f ms",
         stats.node_count,
         stats.leaf_count,
         stats.max_depth,
         stats.max_leaf_size,
+        bvh4.nodes.size(),
         std::chrono::duration<double, std::milli>(
             build_end - build_start).count());
 
@@ -199,7 +210,9 @@ MeshId CudaMeshStore::add(const Mesh& mesh) {
         !upload_array(device.bvh_nodes, bvh.nodes,
                       "CUDA mesh BVH nodes upload") ||
         !upload_array(device.bvh_tri_indices, bvh.tri_indices,
-                      "CUDA mesh BVH triangle indices upload")) {
+                      "CUDA mesh BVH triangle indices upload") ||
+        !upload_array(device.bvh4_nodes, bvh4.nodes,
+                      "CUDA mesh 4-wide BVH nodes upload")) {
         free_device_mesh(device);
         return 0;
     }

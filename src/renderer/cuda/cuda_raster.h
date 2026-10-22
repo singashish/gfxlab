@@ -122,6 +122,9 @@ struct RtScene {
     // Optional statistics: [0] camera rays, [1] shadow rays, [2] AO rays
     // traced this frame. Null to skip counting
     unsigned long long* ray_counts;
+
+    // Walk the 4-wide BVH instead of the binary one (same results)
+    bool use_bvh4;
 };
 
 struct CudaGridParams {

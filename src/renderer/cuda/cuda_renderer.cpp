@@ -26,10 +26,18 @@ constexpr unsigned int kAoMaxSamples = 1024;
 // be timed. The picture stays noisy. Keep false for normal use
 constexpr bool kBenchmarkAo = false;
 
-// true: the ray tracer runs as three passes with one thread per shadow
-// or AO ray (wavefront). false: one thread per pixel does all of its
-// rays (megakernel). Same picture; switch to compare their GPU times
+// The ray tracer can run two ways (same picture):
+//  - megakernel: one thread per pixel does all of its rays
+//  - wavefront:  three passes, one thread per shadow or AO ray
+// Measured on suzanne_s: the wavefront makes refining AO ~3x cheaper,
+// but costs ~0.02 ms extra when there are no AO rays to spread out. So
+// with kRtWavefront true it is used only while AO is refining, and
+// the megakernel otherwise. false: always the megakernel
 constexpr bool kRtWavefront = true;
+
+// true: rays walk the 4-wide BVH; false: the binary one. Both give the
+// same picture; switch to compare their GPU times
+constexpr bool kUseBvh4 = true;
 
 // AO rays reach this fraction of the largest model's diagonal
 constexpr float kAoRadiusFraction = 0.2f;
@@ -736,6 +744,12 @@ void CudaRenderer::render(const FrameData& frame) {
                 : 0;
         rt_scene.ao_radius = kAoRadiusFraction * largest_diagonal;
 
+        rt_scene.use_bvh4 = kUseBvh4;
+
+        // Wavefront only when it pays off: while AO rays are being added
+        const bool use_wavefront =
+            kRtWavefront && rt_scene.ao && rt_scene.ao_rays > 0;
+
         if (rt_scene.count > 0) {
             rt_scene.ray_counts = m_ray_stats.begin_frame();
 
@@ -745,7 +759,7 @@ void CudaRenderer::render(const FrameData& frame) {
                     m_width,
                     m_height,
                     rt_scene,
-                    kRtWavefront ? &m_wave : nullptr,
+                    use_wavefront ? &m_wave : nullptr,
                     m_sm_count)) {
                 return;
             }
