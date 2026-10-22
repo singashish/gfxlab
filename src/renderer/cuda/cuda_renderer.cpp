@@ -4,7 +4,6 @@
 
 #include "renderer/cuda/cuda_api.h"
 #include "renderer/cuda/cuda_raster.h"
-#include "renderer/opengl/gl_api.h"
 #include "core/log.h"
 
 #include <cstdint>
@@ -125,15 +124,16 @@ CudaRenderer::~CudaRenderer() {
 }
 
 bool CudaRenderer::init(void* native_window) {
-    if (!m_context.create(native_window)) {
+    // The presenter goes first: it picks the CUDA device that can share
+    // memory with the display API
+    m_presenter = create_cuda_presenter();
+
+    if (!m_presenter || !m_presenter->init(native_window)) {
+        LOG_ERROR("CUDA renderer: no presenter for the window");
         return false;
     }
 
-    // The OpenGL context must be current before
-    // querying interop devices
-    if (!cuda_select_gl_device()) {
-        return false;
-    }
+    LOG_INFO("CUDA presenter: %s", m_presenter->name());
 
     // The worklist rasterizers launch a fixed grid sized by the SM count
     int device = 0;
@@ -169,10 +169,6 @@ bool CudaRenderer::init(void* native_window) {
         }
     }
 
-    if (!m_presenter.init()) {
-        return false;
-    }
-
     LOG_INFO("CUDA renderer initialized");
     return true;
 }
@@ -185,14 +181,7 @@ bool CudaRenderer::resize_targets(int width, int height) {
         return false;
     }
 
-    // Release the old registration before changing the texture
-    m_image.unregister();
-
-    if (!m_presenter.resize(width, height)) {
-        return false;
-    }
-
-    if (!m_image.register_texture(m_presenter.texture())) {
+    if (!m_presenter || !m_presenter->resize(width, height)) {
         return false;
     }
 
@@ -833,6 +822,13 @@ void CudaRenderer::render(const FrameData& frame) {
         m_stage_timer.end_frame();
     }
 
+    // Pass 5: the UI on top of the finished picture. Drawn into the
+    // colour buffer here, so it does not depend on the presenter
+    if (frame.ui != nullptr &&
+        !m_ui.draw(color, m_width, m_height, *frame.ui)) {
+        return;
+    }
+
 #ifndef NDEBUG
     // Catch asynchronous kernel execution errors once per frame
     if (!cuda_ok(
@@ -863,25 +859,22 @@ void CudaRenderer::render(const FrameData& frame) {
     }
 #endif
 
-    // Present through the existing CUDA/OpenGL interop path
-    if (!m_image.copy_from_device(
-            color,
-            m_width,
-            m_height,
-            static_cast<std::size_t>(m_width) * sizeof(uchar4))) {
+    // Hand the finished frame to the presenter
+    if (!m_presenter->copy(color, m_width, m_height)) {
         return;
     }
 
-    // Include CUDA/OpenGL interop copy cost in the frame measurement
-    // The small OpenGL presentation blit is intentionally excluded
+    // Include the presenter's copy in the frame measurement.
+    // The small presentation blit is intentionally excluded
     m_gpu_timer.end();
 
-    m_presenter.draw(m_width, m_height);
-    m_context.swap_buffers();
+    m_presenter->present(m_width, m_height);
 }
 
 void CudaRenderer::set_vsync(bool enabled) {
-    m_context.set_vsync(enabled);
+    if (m_presenter) {
+        m_presenter->set_vsync(enabled);
+    }
 }
 
 bool CudaRenderer::last_gpu_ms(double& ms) {

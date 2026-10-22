@@ -9,6 +9,7 @@ target_include_directories(gfx_cuda PUBLIC
 
 target_link_libraries(gfx_cuda PUBLIC
     gfx_core
+    gfx_ui
     CUDA::cudart_static
 )
 
@@ -23,6 +24,9 @@ if(TARGET gfx_gl)
         cuda_raster.cu
         cuda_renderer.cpp
         cuda_timer.cpp
+        cuda_gl_presenter.cpp
+        cuda_ui.cpp
+        cuda_ui.cu
     )
 
     target_link_libraries(gfx_cuda PUBLIC

@@ -1,5 +1,6 @@
 #include "ui/font_atlas.h"
 #include "ui/ui_draw.h"
+#include "ui/ui_raster.h"
 #include "check.h"
 
 #include <cstdint>
@@ -281,6 +282,164 @@ void test_no_font() {
     CHECK(list.font() == nullptr);
 }
 
+// CPU reference of the CUDA UI pass: every pixel blends every triangle
+// in order, exactly like the kernel
+struct Image {
+    int width;
+    int height;
+    std::vector<float> rgb;   // 3 values per pixel, 0..255
+
+    Image(int w, int h, float fill)
+        : width(w), height(h),
+          rgb(static_cast<std::size_t>(w * h * 3), fill) {}
+
+    float at(int x, int y, int c) const {
+        return rgb[static_cast<std::size_t>((y * width + x) * 3 + c)];
+    }
+};
+
+void composite(const gfx::UiDrawList& list, Image& image) {
+    std::vector<gfx::UiRasterTri> tris;
+    gfx::build_ui_raster_tris(list, image.width, image.height, tris);
+
+    const gfx::FontAtlas& atlas = *list.font();
+
+    for (int y = 0; y < image.height; ++y) {
+        for (int x = 0; x < image.width; ++x) {
+            float* px =
+                &image.rgb[static_cast<std::size_t>((y * image.width + x) * 3)];
+
+            for (const gfx::UiRasterTri& t : tris) {
+                gfx::ui_blend_triangle(t, x, y, atlas.alpha.data(),
+                                       atlas.width, atlas.height, px);
+            }
+        }
+    }
+}
+
+void test_raster_rect() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::UiDrawList list;
+    list.begin(&atlas);
+    list.add_rect(2, 3, 6, 7, gfx::ui_rgba(200, 100, 50, 128));
+
+    std::vector<gfx::UiRasterTri> tris;
+    const gfx::UiRasterBounds bounds =
+        gfx::build_ui_raster_tris(list, 10, 10, tris);
+
+    // Two triangles; the pixels whose centres are inside are 2..5, 3..6
+    CHECK(tris.size() == 2);
+    CHECK(!bounds.empty());
+    CHECK(bounds.x0 <= 2 && bounds.y0 <= 3);
+    CHECK(bounds.x1 >= 5 && bounds.y1 >= 6);
+    CHECK(bounds.x1 <= 6 && bounds.y1 <= 7);
+
+    Image image(10, 10, 20.0f);
+    composite(list, image);
+
+    // Expected: source over with alpha 128/255, rounded to 8 bits
+    const double a = 128.0 / 255.0;
+    const double expected[3] = {
+        std::floor(200.0 * a + 20.0 * (1.0 - a) + 0.5),
+        std::floor(100.0 * a + 20.0 * (1.0 - a) + 0.5),
+        std::floor(50.0 * a + 20.0 * (1.0 - a) + 0.5)
+    };
+
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < 10; ++x) {
+            const bool inside = x >= 2 && x <= 5 && y >= 3 && y <= 6;
+
+            // Every inside pixel is blended exactly once: the quad's
+            // diagonal is shared by both triangles but drawn by one
+            for (int c = 0; c < 3; ++c) {
+                CHECK(approx(image.at(x, y, c), inside ? expected[c] : 20.0));
+            }
+        }
+    }
+}
+
+void test_raster_order_and_clipping() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::UiDrawList list;
+    list.begin(&atlas);
+
+    // Opaque red, then opaque blue overlapping its right half: the later
+    // one wins where they overlap
+    list.add_rect(0, 0, 8, 4, gfx::ui_rgba(255, 0, 0, 255));
+    list.add_rect(4, 0, 8, 4, gfx::ui_rgba(0, 0, 255, 255));
+
+    // Partly off screen: clamped. Entirely off screen: dropped
+    list.add_rect(6, 6, 20, 20, gfx::ui_rgba(0, 255, 0, 255));
+    list.add_rect(30, 30, 40, 40, gfx::ui_rgba(0, 255, 0, 255));
+
+    std::vector<gfx::UiRasterTri> tris;
+    const gfx::UiRasterBounds bounds =
+        gfx::build_ui_raster_tris(list, 8, 8, tris);
+
+    CHECK(tris.size() == 6);
+    CHECK(bounds.x0 == 0 && bounds.y0 == 0);
+    CHECK(bounds.x1 == 7 && bounds.y1 == 7);
+
+    for (const gfx::UiRasterTri& t : tris) {
+        CHECK(t.min_x >= 0 && t.max_x <= 7 && t.min_y >= 0 && t.max_y <= 7);
+    }
+
+    Image image(8, 8, 0.0f);
+    composite(list, image);
+
+    CHECK(approx(image.at(1, 1, 0), 255) && approx(image.at(1, 1, 2), 0));
+    CHECK(approx(image.at(6, 1, 0), 0) && approx(image.at(6, 1, 2), 255));
+    CHECK(approx(image.at(7, 7, 1), 255));
+    CHECK(approx(image.at(5, 5, 1), 0));
+}
+
+void test_raster_glyph() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    const gfx::FontGlyph& a = *atlas.glyph('A');
+    const int fill = 'A' - gfx::kFontFirstChar + 1;  // see make_glyphs
+
+    gfx::UiDrawList list;
+    list.begin(&atlas);
+    list.add_text(3, 2, "A", gfx::ui_rgba(255, 255, 255, 255));
+
+    Image image(32, 32, 0.0f);
+    composite(list, image);
+
+    // White text over black: each pixel shows the atlas coverage, so the
+    // glyph's texels land 1:1 on the pixels at the glyph's offset
+    for (int y = 0; y < 32; ++y) {
+        for (int x = 0; x < 32; ++x) {
+            const bool inside =
+                x >= 3 + a.offset_x && x < 3 + a.offset_x + a.width &&
+                y >= 2 + a.offset_y && y < 2 + a.offset_y + a.height;
+
+            CHECK(approx(image.at(x, y, 0), inside ? fill : 0));
+        }
+    }
+}
+
+void test_raster_empty() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::UiDrawList list;
+    list.begin(&atlas);
+
+    std::vector<gfx::UiRasterTri> tris(3);
+    CHECK(gfx::build_ui_raster_tris(list, 8, 8, tris).empty());
+    CHECK(tris.empty());
+
+    // A zero-size framebuffer gives nothing either
+    list.add_rect(0, 0, 4, 4, 0xFFFFFFFFu);
+    CHECK(gfx::build_ui_raster_tris(list, 0, 0, tris).empty());
+}
+
 } // namespace
 
 int main() {
@@ -290,6 +449,10 @@ int main() {
     test_rects();
     test_text();
     test_no_font();
+    test_raster_rect();
+    test_raster_order_and_clipping();
+    test_raster_glyph();
+    test_raster_empty();
 
     if (g_failures == 0) {
         std::printf("All UI tests passed\n");

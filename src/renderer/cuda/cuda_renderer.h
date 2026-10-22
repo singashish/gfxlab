@@ -2,17 +2,17 @@
 
 #include <cuda_runtime.h>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "renderer/renderer.h"
-#include "renderer/opengl/gl_context.h"
-#include "renderer/opengl/gl_presenter.h"
-#include "renderer/cuda/cuda_gl_image.h"
 #include "renderer/cuda/cuda_gpu_timer.h"
 #include "renderer/cuda/cuda_mesh.h"
+#include "renderer/cuda/cuda_presenter.h"
 #include "renderer/cuda/cuda_raster.h"
 #include "renderer/cuda/cuda_ray_stats.h"
 #include "renderer/cuda/cuda_timer.h"
+#include "renderer/cuda/cuda_ui.h"
 
 namespace gfx {
 
@@ -40,11 +40,11 @@ private:
     bool ensure_raster_capacity(std::uint32_t record_count);
     void free_raster_work();
 
-    // Declaration order is intentional
-    GLContext m_context;
-    GLPresenter m_presenter;
-    CudaGLImage m_image;
+    // Declaration order is intentional: the presenter owns the display
+    // API's context, so it is destroyed last
+    std::unique_ptr<ICudaPresenter> m_presenter;
     CudaMeshStore m_meshes;
+    CudaUiRenderer m_ui;
 
     CudaStageTimer m_stage_timer;
     CudaGpuTimer m_gpu_timer;

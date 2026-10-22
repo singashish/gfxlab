@@ -5,6 +5,7 @@
 add_library(gfx_ui STATIC
     font_atlas.cpp
     ui_draw.cpp
+    ui_raster.cpp
 )
 
 target_include_directories(gfx_ui PUBLIC
