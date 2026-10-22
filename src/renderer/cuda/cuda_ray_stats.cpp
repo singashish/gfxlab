@@ -131,6 +131,12 @@ void CudaRayStats::report(unsigned int ao_samples,
     if (m_frames > 0) {
         const double frames = static_cast<double>(m_frames);
 
+        for (int i = 0; i < 3; ++i) {
+            m_latest[i] = m_sums[i] / frames;
+        }
+
+        m_has_latest = true;
+
         LOG_INFO(
             "CUDA rays per frame: camera %.2f M, shadow %.2f M, "
             "AO %.2f M (AO samples %u / %u)",
@@ -144,6 +150,17 @@ void CudaRayStats::report(unsigned int ao_samples,
     m_sums.fill(0.0);
     m_frames = 0;
     m_report_start = now;
+}
+
+bool CudaRayStats::latest(double& camera, double& shadow, double& ao) const {
+    if (!m_has_latest) {
+        return false;
+    }
+
+    camera = m_latest[0];
+    shadow = m_latest[1];
+    ao = m_latest[2];
+    return true;
 }
 
 } // namespace gfx

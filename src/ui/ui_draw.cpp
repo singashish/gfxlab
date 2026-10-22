@@ -52,6 +52,30 @@ void UiDrawList::add_rect(float x0, float y0, float x1, float y1,
     add_quad(x0, y0, x1, y1, u, v, u, v, color);
 }
 
+void UiDrawList::add_triangle(float x0, float y0, float x1, float y1,
+                              float x2, float y2, std::uint32_t color) {
+    float u = 0.0f;
+    float v = 0.0f;
+
+    if (m_font != nullptr) {
+        u = (static_cast<float>(m_font->white_x) + 0.5f) /
+            static_cast<float>(m_font->width);
+        v = (static_cast<float>(m_font->white_y) + 0.5f) /
+            static_cast<float>(m_font->height);
+    }
+
+    const std::uint32_t base =
+        static_cast<std::uint32_t>(m_vertices.size());
+
+    m_vertices.push_back({x0, y0, u, v, color});
+    m_vertices.push_back({x1, y1, u, v, color});
+    m_vertices.push_back({x2, y2, u, v, color});
+
+    m_indices.push_back(base + 0);
+    m_indices.push_back(base + 1);
+    m_indices.push_back(base + 2);
+}
+
 std::size_t UiDrawList::add_rect_placeholder(std::uint32_t color) {
     const std::size_t handle = m_vertices.size();
 

@@ -298,6 +298,8 @@ int main() {
     // Conversion to Radian
     CHECK(approx(gfx::to_radians(180.0f), gfx::kPi));
     CHECK(approx(gfx::to_radians(90.0f), gfx::kPi / 2.0f));
+    CHECK(approx(gfx::to_degrees(gfx::kPi), 180.0f, 1e-4));
+    CHECK(approx(gfx::to_degrees(gfx::to_radians(37.5f)), 37.5f, 1e-4));
 
 
     // General inverse: M * inverse(M) is the identity, and points

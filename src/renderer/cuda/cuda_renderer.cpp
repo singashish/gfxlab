@@ -676,6 +676,8 @@ void CudaRenderer::render(const FrameData& frame) {
         m_stage_timer.mark(2);
     }
 
+    m_last_frame_traced = trace;
+
     // Pass 3: resolve wire pixels or shade solid triangles
     if (trace) {
         const GridRayBasis rays = make_grid_ray_basis(frame, aspect);
@@ -879,6 +881,20 @@ void CudaRenderer::set_vsync(bool enabled) {
 
 bool CudaRenderer::last_gpu_ms(double& ms) {
     return m_gpu_timer.take_latest(ms);
+}
+
+RendererStats CudaRenderer::stats() const {
+    RendererStats stats;
+    stats.ray_traced = m_last_frame_traced;
+
+    if (m_last_frame_traced) {
+        stats.has_ray_counts = m_ray_stats.latest(
+            stats.camera_rays, stats.shadow_rays, stats.ao_rays);
+        stats.ao_samples = m_ao_samples;
+        stats.ao_max_samples = kAoMaxSamples;
+    }
+
+    return stats;
 }
 
 MeshId CudaRenderer::create_mesh(const Mesh& mesh) {

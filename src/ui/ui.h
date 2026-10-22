@@ -72,6 +72,11 @@ public:
     // One line of text
     void text(const char* text);
 
+    // A section header that folds the widgets under it. Click to flip
+    // *open. Returns *open, so the section's widgets go in an if:
+    //     if (ui.header("Model", &model_open)) { ...widgets... }
+    bool header(const char* label, bool* open);
+
     // A thin horizontal line between groups of widgets
     void separator();
 
@@ -87,6 +92,12 @@ public:
     // as "%.0f deg". Returns true on frames where *value changed
     bool slider(const char* label, float* value, float min, float max,
                 const char* format);
+
+    // Three values side by side (x, y, z), each changed by dragging
+    // left/right on it: every pixel of mouse movement adds speed. No
+    // limits. Returns true on frames where a value changed
+    bool drag_float3(const char* label, float values[3], float speed,
+                     const char* format);
 
 private:
     struct Rect {
@@ -113,6 +124,7 @@ private:
     float px(float v) const;  // 96-DPI pixels to real pixels
 
     std::uint32_t text_color() const;
+    std::uint32_t widget_color(bool hovered, bool held) const;
     void note_width(float right);
 
     UiDrawList* m_list = nullptr;
@@ -123,6 +135,9 @@ private:
     // 0 = none. A panel id here means a press on a panel's background
     std::uint32_t m_active = 0;
     bool m_active_seen = false;
+
+    // Mouse x when a drag field last applied movement
+    float m_drag_x = 0.0f;
 
     bool m_mouse_over_panel = false;
     bool m_wants_mouse = false;

@@ -103,6 +103,9 @@ int main(int argc, char** argv) {
     gfx::Transform model_transform;
     gfx::TransformEditor editor;
 
+    // File name shown in the panel
+    std::string model_name;
+
     if (has_model) {
         std::string error;
         std::vector<std::string> tried;
@@ -117,6 +120,8 @@ int main(int argc, char** argv) {
         }
 
         LOG_INFO("model: %s", resolved.c_str());
+
+        model_name = std::filesystem::path(resolved).filename().string();
 
         if (!gfx::load_obj(resolved, mesh, error)) {
             LOG_ERROR("failed to load model: %s", error.c_str());
@@ -188,6 +193,15 @@ int main(int argc, char** argv) {
     // Panel line with the timings, refreshed with the title
     char stats_text[96] = "-- FPS";
 
+    // Ray tracing exists only in the CUDA backend
+    const bool is_cuda = backend == gfx::RendererBackend::GFX_BACKEND_CUDA;
+
+    // Which panel sections are unfolded
+    bool view_open = true;
+    bool model_open = true;
+    bool ray_tracing_open = is_cuda;
+    bool controls_open = false;
+
     bool vsync = true;
     bool wireframe = false;
     bool ray_trace = false;
@@ -233,11 +247,25 @@ int main(int argc, char** argv) {
 
     gfx::MeshId mesh_id = 0;
 
-    if (has_model) {
-        const float radius =
-            0.5f * gfx::length(bounds.max - bounds.min);
+    // Half the model's diagonal: frames the camera, and scales how far a
+    // drag in the panel's Position fields moves the model
+    const float model_radius =
+        has_model ? 0.5f * gfx::length(bounds.max - bounds.min) : 1.0f;
 
-        camera.frame(model_transform.position, radius, kFovY);
+    // Starting transform, for the panel's Reset transform button
+    const gfx::Transform initial_transform = model_transform;
+
+    // The start-up view: default angles, framed on the model
+    const auto reset_camera = [&]() {
+        camera = gfx::OrbitCamera{};
+
+        if (has_model) {
+            camera.frame(model_transform.position, model_radius, kFovY);
+        }
+    };
+
+    if (has_model) {
+        reset_camera();
 
         mesh_id = renderer->create_mesh(mesh);
 
@@ -352,79 +380,174 @@ int main(int argc, char** argv) {
         ui.begin_frame(ui_list, ui_input);
 
         if (show_info_panel) {
-            char view_text[96];
-
-            if (wireframe) {
-                std::snprintf(view_text, sizeof(view_text),
-                              "View: wireframe");
-            } else if (ray_trace &&
-                       backend == gfx::RendererBackend::GFX_BACKEND_CUDA) {
-                std::snprintf(view_text, sizeof(view_text),
-                              "View: ray traced");
-            } else {
-                std::snprintf(view_text, sizeof(view_text), "View: solid");
-            }
-
             ui.begin_panel("gfxlab", 10.0f, 10.0f, 280.0f);
 
             ui.text(renderer->name());
             ui.text(stats_text);
-            ui.text(view_text);
 
-            if (editor.active()) {
-                char edit_text[48];
-                std::snprintf(edit_text, sizeof(edit_text), "Edit: %s %s",
-                              mode_name(editor.mode()),
-                              axis_name(editor.axis()));
-                ui.text(edit_text);
+            // ---- View --------------------------------------------
+            if (ui.header("View", &view_open)) {
+                if (ui.checkbox("Wireframe", &wireframe)) {
+                    LOG_INFO("wireframe: %s", wireframe ? "on" : "off");
+                }
+
+                if (ui.checkbox("Vsync", &vsync)) {
+                    renderer->set_vsync(vsync);
+                    LOG_INFO("vsync: %s", vsync ? "on" : "off");
+                }
+
+                if (ui.button("Reset camera")) {
+                    reset_camera();
+                    LOG_INFO("camera reset");
+                }
             }
 
-            ui.separator();
+            // ---- Model -------------------------------------------
+            if (has_model && ui.header("Model", &model_open)) {
+                char info[160];
+                std::snprintf(info, sizeof(info), "%s | %zu triangles",
+                              model_name.c_str(), mesh.triangle_count());
+                ui.text(info);
 
-            if (ui.checkbox("Wireframe", &wireframe)) {
-                LOG_INFO("wireframe: %s", wireframe ? "on" : "off");
+                // The fields show the live transform, so during a
+                // G/R/S edit they follow it (the UI ignores the mouse
+                // then). Rotation is stored in radians, shown in degrees
+                float position[3] = {
+                    model_transform.position.x,
+                    model_transform.position.y,
+                    model_transform.position.z
+                };
+
+                if (ui.drag_float3("Position", position,
+                                   model_radius * 0.005f, "%.2f")) {
+                    model_transform.position = {
+                        position[0], position[1], position[2]};
+                }
+
+                float rotation[3] = {
+                    gfx::to_degrees(model_transform.rotation.x),
+                    gfx::to_degrees(model_transform.rotation.y),
+                    gfx::to_degrees(model_transform.rotation.z)
+                };
+
+                if (ui.drag_float3("Rotation", rotation, 0.5f, "%.1f")) {
+                    model_transform.rotation = {
+                        gfx::to_radians(rotation[0]),
+                        gfx::to_radians(rotation[1]),
+                        gfx::to_radians(rotation[2])};
+                }
+
+                float scale[3] = {
+                    model_transform.scale.x,
+                    model_transform.scale.y,
+                    model_transform.scale.z
+                };
+
+                if (ui.drag_float3("Scale", scale, 0.005f, "%.3f")) {
+                    model_transform.scale = {scale[0], scale[1], scale[2]};
+                }
+
+                if (ui.button("Reset transform")) {
+                    model_transform = initial_transform;
+                    LOG_INFO("transform reset");
+                }
+
+                if (editor.active()) {
+                    char edit_text[48];
+                    std::snprintf(edit_text, sizeof(edit_text),
+                                  "Editing: %s %s",
+                                  mode_name(editor.mode()),
+                                  axis_name(editor.axis()));
+                    ui.text(edit_text);
+                }
             }
 
-            if (ui.checkbox("Vsync", &vsync)) {
-                renderer->set_vsync(vsync);
-                LOG_INFO("vsync: %s", vsync ? "on" : "off");
+            // ---- Ray tracing (CUDA only) --------------------------
+            if (ui.header("Ray tracing", &ray_tracing_open)) {
+                if (!is_cuda) {
+                    ui.set_enabled(false);
+                    ui.text("Needs --backend=cuda");
+                }
+
+                if (ui.checkbox("Ray tracing", &ray_trace)) {
+                    LOG_INFO("ray tracing: %s", ray_trace ? "on" : "off");
+                }
+
+                ui.set_enabled(is_cuda && ray_trace);
+
+                if (ui.checkbox("Sun", &sun_enabled)) {
+                    LOG_INFO("sun: %s", sun_enabled ? "on" : "off");
+                }
+
+                ui.set_enabled(is_cuda && ray_trace && sun_enabled);
+
+                ui.slider("Sun azimuth", &sun_azimuth, 0.0f, 360.0f,
+                          "%.0f deg");
+                ui.slider("Sun elevation", &sun_elevation, 5.0f, 90.0f,
+                          "%.0f deg");
+
+                if (ui.button("Reset sun")) {
+                    sun_azimuth = 250.0f;
+                    sun_elevation = 45.0f;
+                }
+
+                ui.set_enabled(is_cuda && ray_trace);
+
+                if (ui.checkbox("Ambient occlusion", &ambient_occlusion)) {
+                    LOG_INFO("ambient occlusion: %s",
+                             ambient_occlusion ? "on" : "off");
+                }
+
+                // What the ray tracer did, from the renderer
+                const gfx::RendererStats stats = renderer->stats();
+
+                if (stats.ray_traced) {
+                    char line[128];
+
+                    if (stats.has_ray_counts) {
+                        std::snprintf(
+                            line, sizeof(line),
+                            "Rays/frame: camera %.2f M, shadow %.2f M",
+                            stats.camera_rays * 1.0e-6,
+                            stats.shadow_rays * 1.0e-6);
+                        ui.text(line);
+
+                        std::snprintf(line, sizeof(line),
+                                      "AO rays/frame: %.2f M",
+                                      stats.ao_rays * 1.0e-6);
+                        ui.text(line);
+                    }
+
+                    if (ambient_occlusion && stats.ao_max_samples > 0) {
+                        if (stats.ao_samples >= stats.ao_max_samples) {
+                            std::snprintf(line, sizeof(line),
+                                          "AO converged (%u samples)",
+                                          stats.ao_samples);
+                        } else {
+                            std::snprintf(line, sizeof(line),
+                                          "AO samples: %u / %u",
+                                          stats.ao_samples,
+                                          stats.ao_max_samples);
+                        }
+
+                        ui.text(line);
+                    }
+                }
+
+                ui.set_enabled(true);
             }
 
-            // Ray tracing exists only in the CUDA backend; its options
-            // only matter while it is on
-            const bool is_cuda =
-                backend == gfx::RendererBackend::GFX_BACKEND_CUDA;
-
-            ui.separator();
-            ui.set_enabled(is_cuda);
-
-            if (ui.checkbox("Ray tracing", &ray_trace)) {
-                LOG_INFO("ray tracing: %s", ray_trace ? "on" : "off");
-            }
-
-            ui.set_enabled(is_cuda && ray_trace);
-
-            if (ui.checkbox("Sun", &sun_enabled)) {
-                LOG_INFO("sun: %s", sun_enabled ? "on" : "off");
-            }
-
-            ui.set_enabled(is_cuda && ray_trace && sun_enabled);
-
-            ui.slider("Sun azimuth", &sun_azimuth, 0.0f, 360.0f,
-                      "%.0f deg");
-            ui.slider("Sun elevation", &sun_elevation, 5.0f, 90.0f,
-                      "%.0f deg");
-
-            if (ui.button("Reset sun")) {
-                sun_azimuth = 250.0f;
-                sun_elevation = 45.0f;
-            }
-
-            ui.set_enabled(is_cuda && ray_trace);
-
-            if (ui.checkbox("Ambient occlusion", &ambient_occlusion)) {
-                LOG_INFO("ambient occlusion: %s",
-                         ambient_occlusion ? "on" : "off");
+            // ---- Controls (keyboard and mouse help) ---------------
+            if (ui.header("Controls", &controls_open)) {
+                ui.text("Middle drag: orbit, Shift + middle: pan");
+                ui.text("Scroll: zoom");
+                ui.text("G / R / S: grab, rotate, scale");
+                ui.text("  X / Y / Z: axis, left click: confirm");
+                ui.text("  Right click / Esc: cancel");
+                ui.text("W wireframe, V vsync, H hide panel");
+                ui.text("T ray tracing, L sun, O AO (CUDA)");
+                ui.text("Right drag: move the sun (CUDA)");
+                ui.text("Esc: quit");
             }
 
             ui.end_panel();
@@ -478,58 +601,10 @@ int main(int argc, char** argv) {
                     "GPU --");
             }
 
-            char title[192];
-
-            // Only the CUDA backend ray traces; say so in the title,
-            // together with the sun's angles
-            char mode_suffix[64] = "";
-
-            if (ray_trace && !wireframe &&
-                backend == gfx::RendererBackend::GFX_BACKEND_CUDA) {
-                const char* ao_text = ambient_occlusion ? ", AO" : "";
-
-                if (sun_enabled) {
-                    std::snprintf(
-                        mode_suffix,
-                        sizeof(mode_suffix),
-                        " (ray traced, sun %.0f / %.0f deg%s)",
-                        sun_azimuth,
-                        sun_elevation,
-                        ao_text);
-                } else {
-                    std::snprintf(
-                        mode_suffix,
-                        sizeof(mode_suffix),
-                        " (ray traced, sun off%s)",
-                        ao_text);
-                }
-            }
-
-            if (editor.active()) {
-                std::snprintf(
-                    title,
-                    sizeof(title),
-                    "gfxlab | %s%s | %.1f FPS | frame %.3f ms | %s | %s%s%s",
-                    renderer->name(),
-                    mode_suffix,
-                    timer.fps(),
-                    frame_ms,
-                    gpu_text,
-                    mode_name(editor.mode()),
-                    axis_name(editor.axis())[0] != '\0' ? " " : "",
-                    axis_name(editor.axis()));
-            } else {
-                std::snprintf(
-                    title,
-                    sizeof(title),
-                    "gfxlab | %s%s | %.1f FPS | frame %.3f ms | %s",
-                    renderer->name(),
-                    mode_suffix,
-                    timer.fps(),
-                    frame_ms,
-                    gpu_text);
-            }
-
+            // The title keeps the essentials; the panel has the rest
+            char title[160];
+            std::snprintf(title, sizeof(title), "gfxlab | %s | %.1f FPS",
+                          renderer->name(), timer.fps());
             window.set_title(title);
 
             std::snprintf(stats_text, sizeof(stats_text),

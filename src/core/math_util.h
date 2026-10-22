@@ -10,4 +10,8 @@ GFX_HD constexpr float to_radians(float degrees) {
     return degrees * (kPi / 180.0f);
 }
 
+GFX_HD constexpr float to_degrees(float radians) {
+    return radians * (180.0f / kPi);
+}
+
 } // namespace gfx

@@ -56,6 +56,10 @@ public:
     void add_rect(float x0, float y0, float x1, float y1,
                   std::uint32_t color);
 
+    // Filled triangle (any winding)
+    void add_triangle(float x0, float y0, float x1, float y1,
+                      float x2, float y2, std::uint32_t color);
+
     // Rectangle border of the given thickness, drawn inside the bounds
     void add_rect_outline(float x0, float y0, float x1, float y1,
                           float thickness, std::uint32_t color);

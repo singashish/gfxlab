@@ -32,6 +32,7 @@ public:
     void render(const FrameData& frame) override;
     void set_vsync(bool enabled) override;
     bool last_gpu_ms(double& ms) override;
+    RendererStats stats() const override;
     MeshId create_mesh(const Mesh& mesh) override;
 
 private:
@@ -79,6 +80,9 @@ private:
     // Buffers for the wavefront ray tracer, one hit per pixel
     RtWavefront m_wave{};
     void free_wavefront();
+
+    // The last frame was ray traced (for stats())
+    bool m_last_frame_traced = false;
 
     int m_width = 0;
     int m_height = 0;

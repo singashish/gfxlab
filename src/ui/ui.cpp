@@ -25,6 +25,14 @@ constexpr std::uint32_t kHoverColor = ui_rgba(66, 71, 81, 255);
 constexpr std::uint32_t kHeldColor = ui_rgba(84, 90, 102, 255);
 constexpr std::uint32_t kAccentColor = ui_rgba(74, 138, 226, 255);
 constexpr std::uint32_t kValueColor = ui_rgba(240, 242, 245, 255);
+constexpr std::uint32_t kHeaderColor = ui_rgba(38, 42, 49, 255);
+
+// Axis colours for x, y, z fields, as on the floor grid
+constexpr std::uint32_t kAxisColors[3] = {
+    ui_rgba(217, 64, 77, 255),
+    ui_rgba(115, 199, 64, 255),
+    ui_rgba(74, 128, 226, 255)
+};
 
 // Disabled widgets: same colour, about 40% opacity
 std::uint32_t dimmed(std::uint32_t color) {
@@ -54,6 +62,18 @@ float Ui::px(float v) const {
 
 std::uint32_t Ui::text_color() const {
     return m_enabled ? kTextColor : dimmed(kTextColor);
+}
+
+std::uint32_t Ui::widget_color(bool hovered, bool held) const {
+    std::uint32_t color = kWidgetColor;
+
+    if (held) {
+        color = kHeldColor;
+    } else if (hovered) {
+        color = kHoverColor;
+    }
+
+    return m_enabled ? color : dimmed(color);
 }
 
 void Ui::note_width(float right) {
@@ -413,6 +433,121 @@ bool Ui::slider(const char* label, float* value, float min, float max,
     const float value_width = m_list->text_width(text);
     m_list->add_text((track.x0 + track.x1 - value_width) * 0.5f, text_y,
                      text, m_enabled ? kValueColor : dimmed(kValueColor));
+
+    return changed;
+}
+
+bool Ui::header(const char* label, bool* open) {
+    if (m_list == nullptr || !m_in_panel || open == nullptr) {
+        return false;
+    }
+
+    const float line = m_list->line_height();
+    const Rect row = next_row(line + px(kRowExtra));
+    const std::uint32_t id = widget_id(label);
+
+    // Headers stay usable even after set_enabled(false)
+    const bool enabled = m_enabled;
+    m_enabled = true;
+
+    bool pressed = false;
+    bool released = false;
+    const bool hovered = interact(id, row, pressed, released);
+
+    m_list->add_rect(row.x0, row.y0, row.x1, row.y1,
+                     hovered ? kHoverColor : kHeaderColor);
+
+    // Arrow: pointing down when open, right when folded
+    const float size = std::round(line * 0.4f);
+    const float cx = row.x0 + px(4.0f) + size * 0.5f;
+    const float cy = (row.y0 + row.y1) * 0.5f;
+
+    if (*open) {
+        m_list->add_triangle(cx - size * 0.5f, cy - size * 0.3f,
+                             cx + size * 0.5f, cy - size * 0.3f,
+                             cx, cy + size * 0.4f, kTitleColor);
+    } else {
+        m_list->add_triangle(cx - size * 0.3f, cy - size * 0.5f,
+                             cx + size * 0.4f, cy,
+                             cx - size * 0.3f, cy + size * 0.5f, kTitleColor);
+    }
+
+    const float text_x = row.x0 + px(4.0f) + size + px(6.0f);
+    const float width = m_list->add_text(
+        text_x, row.y0 + (row.y1 - row.y0 - line) * 0.5f, label, kTitleColor);
+
+    note_width(text_x + width);
+
+    if (released && hovered) {
+        *open = !*open;
+    }
+
+    m_enabled = enabled;
+    return *open;
+}
+
+bool Ui::drag_float3(const char* label, float values[3], float speed,
+                     const char* format) {
+    if (m_list == nullptr || !m_in_panel || values == nullptr) {
+        return false;
+    }
+
+    const float line = m_list->line_height();
+    const Rect row = next_row(line + px(kRowExtra));
+    const float text_y = row.y0 + (row.y1 - row.y0 - line) * 0.5f;
+
+    m_list->add_text(row.x0, text_y, label, text_color());
+
+    // Three equal fields to the right of the label
+    const float label_width =
+        std::round((row.x1 - row.x0) * kLabelFraction);
+    const float gap = px(4.0f);
+    const float field_width =
+        (row.x1 - row.x0 - label_width - 2.0f * gap) / 3.0f;
+    const float strip = std::max(2.0f, px(2.0f));
+
+    const std::uint32_t base_id = widget_id(label);
+    bool changed = false;
+
+    for (int i = 0; i < 3; ++i) {
+        const float x0 = std::round(row.x0 + label_width +
+                                    static_cast<float>(i) * (field_width + gap));
+        const float x1 = std::round(x0 + field_width);
+        const Rect field{x0, row.y0, x1, row.y1};
+        const std::uint32_t id = base_id + static_cast<std::uint32_t>(i) + 1u;
+
+        bool pressed = false;
+        bool released = false;
+        const bool hovered = interact(id, field, pressed, released);
+        const bool held = m_enabled && m_active == id;
+
+        // While held, horizontal mouse movement changes the value
+        if (pressed) {
+            m_drag_x = m_input.mouse_x;
+        } else if (held) {
+            const float dx = m_input.mouse_x - m_drag_x;
+            m_drag_x = m_input.mouse_x;
+
+            if (dx != 0.0f) {
+                values[i] += dx * speed;
+                changed = true;
+            }
+        }
+
+        m_list->add_rect(x0, row.y0, x1, row.y1, widget_color(hovered, held));
+
+        // Thin axis-coloured strip on the left edge
+        m_list->add_rect(x0, row.y0, x0 + strip, row.y1,
+                         m_enabled ? kAxisColors[i] : dimmed(kAxisColors[i]));
+
+        char text[32];
+        std::snprintf(text, sizeof(text), format != nullptr ? format : "%.2f",
+                      static_cast<double>(values[i]));
+
+        const float width = m_list->text_width(text);
+        m_list->add_text((x0 + x1 - width) * 0.5f, text_y, text,
+                         m_enabled ? kValueColor : dimmed(kValueColor));
+    }
 
     return changed;
 }

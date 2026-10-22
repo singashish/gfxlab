@@ -667,6 +667,115 @@ void test_widget_panel_size() {
     CHECK(ui.wants_mouse());
 }
 
+void test_widget_header() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    bool open = true;
+    bool check = false;
+
+    // Header row at y 37 .. 59; the checkbox under it only exists while
+    // the section is open
+    const auto build_header = [&](const gfx::UiInput& in) {
+        list.begin(&atlas);
+        ui.begin_frame(list, in);
+        ui.begin_panel("P", 0.0f, 0.0f, 200.0f);
+
+        // Disabled widgets before it do not disable the header
+        ui.set_enabled(false);
+
+        if (ui.header("Section", &open)) {
+            ui.checkbox("C", &check);
+        }
+
+        ui.end_panel();
+        ui.end_frame();
+    };
+
+    build_header(press(100, 48));
+    CHECK(open);
+    build_header(release(100, 48));
+    CHECK(!open);
+
+    // Folded: the panel ends after the header row (59 + padding 8)
+    build_header(hover(500, 500));
+    CHECK(approx(list.vertices()[2].y, 59 + 8));
+
+    build_header(press(100, 48));
+    build_header(release(100, 48));
+    CHECK(open);
+}
+
+void test_widget_drag_float3() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    float values[3] = {1.0f, 2.0f, 3.0f};
+    bool changed = false;
+
+    // Row at y 37 .. 59. Label 77 wide, then three 33-wide fields with
+    // 4-pixel gaps: x 85 .. 118, 122 .. 155, 159 .. 192
+    const auto build_drag = [&](const gfx::UiInput& in) {
+        list.begin(&atlas);
+        ui.begin_frame(list, in);
+        ui.begin_panel("P", 0.0f, 0.0f, 200.0f);
+        changed = ui.drag_float3("D", values, 0.5f, "%.1f");
+        ui.end_panel();
+        ui.end_frame();
+    };
+
+    // Pressing alone changes nothing
+    build_drag(press(100, 48));
+    CHECK(!changed);
+    CHECK(approx(values[0], 1.0));
+
+    // Each pixel of movement adds 0.5; only the held field changes,
+    // and it keeps following the mouse outside the panel
+    build_drag(hold(110, 48));
+    CHECK(changed);
+    CHECK(approx(values[0], 6.0));
+    CHECK(approx(values[1], 2.0) && approx(values[2], 3.0));
+
+    build_drag(hold(90, 300));
+    CHECK(approx(values[0], -4.0));
+    CHECK(ui.wants_mouse());
+
+    // Vertical movement alone does nothing
+    build_drag(hold(90, 10));
+    CHECK(!changed);
+
+    build_drag(release(90, 10));
+
+    // The middle field is the y value
+    build_drag(press(130, 48));
+    build_drag(hold(126, 48));
+    CHECK(approx(values[1], 0.0));
+    build_drag(release(126, 48));
+    CHECK(approx(values[0], -4.0) && approx(values[2], 3.0));
+}
+
+void test_triangle() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::UiDrawList list;
+    list.begin(&atlas);
+    list.add_triangle(0, 0, 8, 0, 0, 8, gfx::ui_rgba(255, 255, 255, 255));
+
+    CHECK(list.vertices().size() == 3);
+    CHECK(list.indices().size() == 3);
+
+    // Rasterized: the corner pixel is inside, the far corner is not
+    Image image(8, 8, 0.0f);
+    composite(list, image);
+    CHECK(approx(image.at(0, 0, 0), 255));
+    CHECK(approx(image.at(7, 7, 0), 0));
+}
+
 void test_placeholder() {
     gfx::FontAtlas atlas;
     CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
@@ -714,6 +823,9 @@ int main() {
     test_widget_panel_capture();
     test_widget_panel_size();
     test_placeholder();
+    test_widget_header();
+    test_widget_drag_float3();
+    test_triangle();
 
     if (g_failures == 0) {
         std::printf("All UI tests passed\n");

@@ -39,6 +39,10 @@ public:
     // Logs the averages about once per second
     void report(unsigned int ao_samples, unsigned int ao_max_samples);
 
+    // The averages of the last report: camera, shadow and AO rays per
+    // frame. False before the first report
+    bool latest(double& camera, double& shadow, double& ao) const;
+
 private:
     struct Slot {
         unsigned long long* device = nullptr;  // 3 counters on the GPU
@@ -55,6 +59,10 @@ private:
     // Sums over the frames collected since the last report
     std::array<double, 3> m_sums{};
     std::uint64_t m_frames = 0;
+
+    // Last reported averages, for latest()
+    std::array<double, 3> m_latest{};
+    bool m_has_latest = false;
     std::chrono::steady_clock::time_point m_report_start{};
 };
 

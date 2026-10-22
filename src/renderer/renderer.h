@@ -104,6 +104,23 @@ inline GridRayBasis make_grid_ray_basis(const FrameData& frame,
     return basis;
 }
 
+// Numbers a backend can show in the UI beyond the frame timings.
+// Fields a backend has nothing for keep their defaults
+struct RendererStats {
+    // The ray tracer drew the last frame (CUDA only)
+    bool ray_traced = false;
+
+    // Rays traced per frame, averaged over about a second
+    bool has_ray_counts = false;
+    double camera_rays = 0.0;
+    double shadow_rays = 0.0;
+    double ao_rays = 0.0;
+
+    // Ambient occlusion samples per pixel so far, and where it stops
+    unsigned int ao_samples = 0;
+    unsigned int ao_max_samples = 0;
+};
+
 class IRenderer {
 public:
     virtual ~IRenderer() = default;
@@ -116,6 +133,10 @@ public:
     virtual bool last_gpu_ms(double& ms) {
         (void)ms;
         return false;
+    }
+    // Extra statistics for the UI. The default has none
+    virtual RendererStats stats() const {
+        return {};
     }
     virtual void set_vsync(bool enabled) = 0;
     virtual MeshId create_mesh(const Mesh& mesh) = 0;
