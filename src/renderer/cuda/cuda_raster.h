@@ -189,15 +189,41 @@ bool cuda_shade(
                 const RasterWork& work,
                 Vec3 up_view);
 
-// One thread per pixel: closest hit over all instances, shaded with
-// the same lighting as the rasterizer. Writes colour and the visibility
-// buffer (depth + id 1) so the grid composites unchanged
+// Wavefront ray tracing: a camera-ray hit, stored so the shadow and AO
+// rays can run as separate threads. 40 bytes, one per covered pixel
+struct RtHit {
+    Vec3 position;      // world-space hit point
+    unsigned int pixel; // index into the colour and visibility buffers
+    Vec3 normal;        // world shading normal, facing the camera
+    Vec3 geometric;     // world triangle normal (unit), facing the camera
+};
+
+struct RtWavefrontCounts {
+    unsigned int hit_count;
+};
+
+// Buffers for the wavefront passes, sized to one hit per pixel
+struct RtWavefront {
+    RtHit* hits = nullptr;
+    unsigned int* shadow_blocked = nullptr;  // per hit: 1 = in shadow
+    unsigned int* ao_escaped = nullptr;      // per hit: AO rays that escaped
+    RtWavefrontCounts* counts = nullptr;
+    unsigned int capacity = 0;
+};
+
+// Ray traces the solid view and writes colour plus the visibility
+// buffer (depth + id 1), so the grid composites unchanged.
+// wave == nullptr: one thread per pixel does all of its rays (the
+// "megakernel"). Otherwise the wavefront passes run, with one thread
+// per shadow or AO ray. Both give the same picture
 bool cuda_ray_trace(
                 uchar4* color,
                 std::uint64_t* visibility,
                 int width,
                 int height,
-                const RtScene& scene);
+                const RtScene& scene,
+                const RtWavefront* wave,
+                int sm_count);
 
 bool cuda_resolve_ids(
                 uchar4* color,

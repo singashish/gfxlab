@@ -1074,32 +1074,44 @@ __device__ __forceinline__ Vec3 cosine_hemisphere(
            n * sqrtf(fmaxf(0.0f, 1.0f - u1));
 }
 
-// Everything the ray tracer does for one pixel. The three counters
-// return how many rays of each kind it traced, for the statistics
-__device__ __forceinline__ void trace_pixel(
-                uchar4* color,
-                unsigned long long* visibility,
+// ---------------------------------------------------------------------
+// Ray tracer building blocks, shared by both ways of running it:
+//  - the "megakernel": one thread does everything for one pixel
+//  - the "wavefront": the work is split into passes, and each shadow or
+//    AO ray gets its own thread (see cuda_ray_trace below)
+// ---------------------------------------------------------------------
+
+// Camera ray direction through the centre of pixel (x, y). Not unit
+// length: its view-space z is exactly -1, so t is the view depth
+__device__ __forceinline__ Vec3 camera_ray_dir(
+                const RtScene& scene,
                 int x,
                 int y,
                 int width,
-                int height,
-                const RtScene& scene,
-                unsigned int& primary_rays,
-                unsigned int& shadow_rays,
-                unsigned int& ao_rays_traced) {
+                int height) {
 
-    primary_rays = 1;
-
-    // Camera ray through the pixel centre (row 0 is the top)
     const float ndc_x = 2.0f * (x + 0.5f) / width - 1.0f;
     const float ndc_y = 1.0f - 2.0f * (y + 0.5f) / height;
 
-    const Vec3 dir =
-        scene.forward + ndc_x * scene.right + ndc_y * scene.up;
+    return scene.forward + ndc_x * scene.right + ndc_y * scene.up;
+}
 
-    // Closest hit over every instance. The direction is moved into
-    // object space without normalizing it, so t means the same
-    // distance in both spaces and hits can be compared directly
+// The point a ray hit, with everything shading needs, in world space.
+// Both normals are turned towards the side the camera sees
+struct SurfacePoint {
+    Vec3 position;
+    Vec3 normal;     // interpolated shading normal (not unit length)
+    Vec3 geometric;  // the triangle's own normal (unit length)
+};
+
+// Closest hit over every instance. The direction is moved into object
+// space without normalizing it, so t means the same distance in both
+// spaces and hits can be compared directly. Fills point on a hit
+__device__ __forceinline__ bool closest_surface(
+                const RtScene& scene,
+                Vec3 dir,
+                SurfacePoint& point) {
+
     float best_t = scene.t_max;
     int best_item = -1;
     BvhHit best{};
@@ -1107,18 +1119,14 @@ __device__ __forceinline__ void trace_pixel(
     for (int i = 0; i < scene.count; ++i) {
         const RtInstance& inst = scene.items[i];
 
-        const Vec3 origin =
-            transform_point(inst.world_to_object, scene.eye);
-        const Vec3 local_dir =
-            transform_direction(inst.world_to_object, dir);
-
         BvhHit hit;
 
         if (bvh_trace(inst.mesh.bvh_nodes,
                       inst.mesh.bvh_tri_indices,
                       inst.mesh.positions,
                       inst.mesh.indices,
-                      origin, local_dir,
+                      transform_point(inst.world_to_object, scene.eye),
+                      transform_direction(inst.world_to_object, dir),
                       scene.t_min, best_t, hit)) {
             best_t = hit.t;
             best = hit;
@@ -1126,10 +1134,8 @@ __device__ __forceinline__ void trace_pixel(
         }
     }
 
-    const std::size_t pixel = pixel_index(x, y, width);
-
     if (best_item < 0) {
-        return;  // background: the grid pass draws the floor here
+        return false;
     }
 
     const RtInstance& inst = scene.items[best_item];
@@ -1164,76 +1170,91 @@ __device__ __forceinline__ void trace_pixel(
         transform_direction(inst.world_to_object, dir);
     const bool front_facing = dot(geometric, local_dir) < 0.0f;
 
-    // Shading normal and geometric normal in world space, both turned
-    // towards the side the camera sees
-    Vec3 n_world = transform_direction(inst.normal_to_world, n_object);
-    Vec3 g_world = normalize(
+    point.position = scene.eye + best_t * dir;
+    point.normal = transform_direction(inst.normal_to_world, n_object);
+    point.geometric = normalize(
         transform_direction(inst.normal_to_world, geometric));
 
     if (!front_facing) {
-        n_world = -n_world;
-        g_world = -g_world;
+        point.normal = -point.normal;
+        point.geometric = -point.geometric;
     }
 
-    const Vec3 n_view = transform_direction(scene.view, n_world);
+    return true;
+}
 
-    const Vec3 world_hit = scene.eye + best_t * dir;
-    const Vec3 view_pos = transform_point(scene.view, world_hit);
+// Does the sun reach this point? Returns true when a shadow ray was
+// needed (the surface faces the sun) and sets blocked
+__device__ __forceinline__ bool trace_shadow(
+                const RtScene& scene,
+                const SurfacePoint& point,
+                bool& blocked) {
 
-    // Shadow ray: from the hit point towards the sun. Surfaces facing
-    // away from the sun are already unlit by it, so they skip the ray
-    float sun_visibility = 1.0f;
+    blocked = false;
 
-    if (scene.shadows &&
-        dot(normalize(n_world), scene.sun_world) > 0.0f) {
-        const Vec3 shadow_origin =
-            world_hit + g_world * shadow_offset(world_hit);
-
-        ++shadow_rays;
-
-        if (scene_occluded(
-                scene, shadow_origin, scene.sun_world, 1.0e30f)) {
-            sun_visibility = 0.0f;
-        }
+    if (!scene.shadows ||
+        dot(normalize(point.normal), scene.sun_world) <= 0.0f) {
+        return false;  // surfaces facing away are unlit by the sun anyway
     }
 
-    // Ambient occlusion: short random rays over the hemisphere above the
-    // point. The fraction that escape is how open the point is. New rays
-    // are added to the running total for this pixel each frame
+    const Vec3 origin =
+        point.position + point.geometric * shadow_offset(point.position);
+
+    blocked = scene_occluded(scene, origin, scene.sun_world, 1.0e30f);
+    return true;
+}
+
+// One ambient occlusion ray for the given pixel and sample number.
+// Returns true when a ray was traced and sets escaped when it got away
+// without hitting anything within the AO radius
+__device__ __forceinline__ bool trace_ao_ray(
+                const RtScene& scene,
+                const SurfacePoint& point,
+                unsigned int pixel,
+                unsigned int sample,
+                bool& escaped) {
+
+    escaped = false;
+
+    unsigned int seed = pcg_hash(pixel ^ pcg_hash(sample));
+
+    const float u1 = random01(seed);
+    const float u2 = random01(seed);
+
+    const Vec3 d = cosine_hemisphere(normalize(point.normal), u1, u2);
+
+    // A direction that dips below the actual triangle (possible where
+    // smooth normals bend away from it) counts as blocked
+    if (dot(d, point.geometric) <= 0.0f) {
+        return false;
+    }
+
+    const Vec3 origin =
+        point.position + point.geometric * shadow_offset(point.position);
+
+    escaped = !scene_occluded(scene, origin, d, scene.ao_radius);
+    return true;
+}
+
+// Combines the shadow and AO results into the pixel's colour and depth.
+// new_escaped is how many of this frame's AO rays got away
+__device__ __forceinline__ void finish_pixel(
+                uchar4* color,
+                unsigned long long* visibility,
+                unsigned int pixel,
+                const RtScene& scene,
+                const SurfacePoint& point,
+                bool sun_blocked,
+                unsigned int new_escaped) {
+
     float ao = 1.0f;
 
     if (scene.ao) {
-        const Vec3 n_unit = normalize(n_world);
-        const Vec3 ao_origin =
-            world_hit + g_world * shadow_offset(world_hit);
-
         float escaped = scene.ao_samples_before > 0
             ? scene.ao_accum[pixel]
             : 0.0f;
 
-        for (int i = 0; i < scene.ao_rays; ++i) {
-            unsigned int seed = pcg_hash(
-                static_cast<unsigned int>(pixel) ^
-                pcg_hash(scene.ao_samples_before +
-                         static_cast<unsigned int>(i)));
-
-            const float u1 = random01(seed);
-            const float u2 = random01(seed);
-
-            const Vec3 d = cosine_hemisphere(n_unit, u1, u2);
-
-            // A direction that dips below the actual triangle (possible
-            // where smooth normals bend away from it) counts as blocked
-            if (dot(d, g_world) <= 0.0f) {
-                continue;
-            }
-
-            ++ao_rays_traced;
-
-            if (!scene_occluded(scene, ao_origin, d, scene.ao_radius)) {
-                escaped += 1.0f;
-            }
-        }
+        escaped += static_cast<float>(new_escaped);
 
         const unsigned int total =
             scene.ao_samples_before +
@@ -1246,13 +1267,17 @@ __device__ __forceinline__ void trace_pixel(
         ao = total > 0 ? escaped / static_cast<float>(total) : 1.0f;
     }
 
+    const Vec3 n_view = transform_direction(scene.view, point.normal);
+    const Vec3 view_pos = transform_point(scene.view, point.position);
+
     color[pixel] = lit_color(
-        n_view, view_pos, scene.up_view, scene.sun_view, sun_visibility,
-        ao);
+        n_view, view_pos, scene.up_view, scene.sun_view,
+        sun_blocked ? 0.0f : 1.0f, ao);
 
     // Same depth the rasterizer would have written, so the grid's
     // depth test treats both paths alike
-    const Vec4 clip = scene.view_proj * make_vec4(world_hit, 1.0f);
+    const Vec4 clip =
+        scene.view_proj * make_vec4(point.position, 1.0f);
 
     float depth01 = (clip.z / clip.w) * 0.5f + 0.5f;
     depth01 = fminf(fmaxf(depth01, 0.0f), 1.0f);
@@ -1263,17 +1288,15 @@ __device__ __forceinline__ void trace_pixel(
         1ULL;
 }
 
-__global__ void ray_trace_kernel(
-                uchar4* color,
-                unsigned long long* visibility,
-                int width,
-                int height,
-                RtScene scene) {
+// Adds a thread's ray counts to the frame's counters: first per block
+// in shared memory, then one global atomic per counter per block.
+// Every thread of the block must call it (it contains barriers)
+__device__ __forceinline__ void add_ray_counts(
+                unsigned long long* ray_counts,
+                unsigned int primary,
+                unsigned int shadow,
+                unsigned int ao) {
 
-    // Ray statistics: each thread counts its own rays, the block adds
-    // them up in fast shared memory, and one thread per block adds the
-    // block's totals to the global counters. That is 3 global atomics
-    // per 256 pixels instead of up to 3 per pixel
     __shared__ unsigned int block_counts[3];
 
     const bool first_thread = threadIdx.x == 0 && threadIdx.y == 0;
@@ -1286,21 +1309,7 @@ __global__ void ray_trace_kernel(
 
     __syncthreads();
 
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    unsigned int primary = 0;
-    unsigned int shadow = 0;
-    unsigned int ao = 0;
-
-    // No early return before __syncthreads below: every thread of the
-    // block, including those outside the image, must reach it
-    if (x < width && y < height) {
-        trace_pixel(color, visibility, x, y, width, height, scene,
-                    primary, shadow, ao);
-    }
-
-    if (scene.ray_counts != nullptr) {
+    if (ray_counts != nullptr) {
         if (primary) atomicAdd(&block_counts[0], primary);
         if (shadow)  atomicAdd(&block_counts[1], shadow);
         if (ao)      atomicAdd(&block_counts[2], ao);
@@ -1308,13 +1317,205 @@ __global__ void ray_trace_kernel(
 
     __syncthreads();
 
-    if (first_thread && scene.ray_counts != nullptr) {
-        atomicAdd(&scene.ray_counts[0],
+    if (first_thread && ray_counts != nullptr) {
+        atomicAdd(&ray_counts[0],
                   static_cast<unsigned long long>(block_counts[0]));
-        atomicAdd(&scene.ray_counts[1],
+        atomicAdd(&ray_counts[1],
                   static_cast<unsigned long long>(block_counts[1]));
-        atomicAdd(&scene.ray_counts[2],
+        atomicAdd(&ray_counts[2],
                   static_cast<unsigned long long>(block_counts[2]));
+    }
+}
+
+// ---------------------------------------------------------------------
+// Megakernel: one thread per pixel does camera ray, shadow ray and all
+// AO rays in a row
+// ---------------------------------------------------------------------
+
+__global__ void ray_trace_kernel(
+                uchar4* color,
+                unsigned long long* visibility,
+                int width,
+                int height,
+                RtScene scene) {
+
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    unsigned int primary = 0;
+    unsigned int shadow = 0;
+    unsigned int ao = 0;
+
+    // No early return: every thread must reach add_ray_counts
+    if (x < width && y < height) {
+        const unsigned int pixel =
+            static_cast<unsigned int>(pixel_index(x, y, width));
+
+        primary = 1;
+
+        SurfacePoint point;
+
+        if (closest_surface(
+                scene, camera_ray_dir(scene, x, y, width, height),
+                point)) {
+            bool blocked = false;
+            shadow = trace_shadow(scene, point, blocked) ? 1u : 0u;
+
+            unsigned int escaped = 0;
+
+            for (int i = 0; i < scene.ao_rays && scene.ao; ++i) {
+                bool got_away = false;
+
+                if (trace_ao_ray(
+                        scene, point, pixel,
+                        scene.ao_samples_before +
+                            static_cast<unsigned int>(i),
+                        got_away)) {
+                    ++ao;
+                    escaped += got_away ? 1u : 0u;
+                }
+            }
+
+            finish_pixel(color, visibility, pixel, scene, point,
+                         blocked, escaped);
+        }
+    }
+
+    add_ray_counts(scene.ray_counts, primary, shadow, ao);
+}
+
+// ---------------------------------------------------------------------
+// Wavefront: three passes connected by a list of hits
+//  1. camera rays: one thread per pixel; hits are appended to the list
+//  2. shadow and AO rays: one thread per RAY, over the hit list
+//  3. finish: one thread per hit combines the results
+// ---------------------------------------------------------------------
+
+__global__ void rt_camera_kernel(
+                int width,
+                int height,
+                RtScene scene,
+                RtWavefront wave) {
+
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    unsigned int primary = 0;
+
+    if (x < width && y < height) {
+        primary = 1;
+
+        SurfacePoint point;
+
+        if (closest_surface(
+                scene, camera_ray_dir(scene, x, y, width, height),
+                point)) {
+            const unsigned int index =
+                atomicAdd(&wave.counts->hit_count, 1u);
+
+            if (index < wave.capacity) {
+                RtHit& hit = wave.hits[index];
+                hit.pixel =
+                    static_cast<unsigned int>(pixel_index(x, y, width));
+                hit.position = point.position;
+                hit.normal = point.normal;
+                hit.geometric = point.geometric;
+
+                // Results start empty; pass 2 fills them in
+                wave.shadow_blocked[index] = 0;
+                wave.ao_escaped[index] = 0;
+            }
+        }
+    }
+
+    add_ray_counts(scene.ray_counts, primary, 0, 0);
+}
+
+// Work item i belongs to hit i / rays_per_hit. Slot 0 is the shadow
+// ray, slots 1.. are AO rays. Fixed grid, grid-stride loop: the number
+// of hits is only known on the GPU
+__global__ void rt_secondary_kernel(RtScene scene, RtWavefront wave) {
+    const unsigned int hits =
+        min(wave.counts->hit_count, wave.capacity);
+
+    const unsigned int rays_per_hit =
+        1u + static_cast<unsigned int>(scene.ao ? scene.ao_rays : 0);
+
+    const unsigned long long total =
+        static_cast<unsigned long long>(hits) * rays_per_hit;
+
+    const unsigned long long stride =
+        static_cast<unsigned long long>(gridDim.x) * blockDim.x;
+
+    unsigned int shadow = 0;
+    unsigned int ao = 0;
+
+    for (unsigned long long item =
+             static_cast<unsigned long long>(blockIdx.x) * blockDim.x +
+             threadIdx.x;
+         item < total;
+         item += stride) {
+
+        const unsigned int index =
+            static_cast<unsigned int>(item / rays_per_hit);
+        const unsigned int slot =
+            static_cast<unsigned int>(item % rays_per_hit);
+
+        const RtHit& hit = wave.hits[index];
+
+        SurfacePoint point;
+        point.position = hit.position;
+        point.normal = hit.normal;
+        point.geometric = hit.geometric;
+
+        if (slot == 0) {
+            bool blocked = false;
+
+            if (trace_shadow(scene, point, blocked)) {
+                ++shadow;
+                wave.shadow_blocked[index] = blocked ? 1u : 0u;
+            }
+        } else {
+            bool escaped = false;
+
+            if (trace_ao_ray(scene, point, hit.pixel,
+                             scene.ao_samples_before + (slot - 1),
+                             escaped)) {
+                ++ao;
+
+                if (escaped) {
+                    atomicAdd(&wave.ao_escaped[index], 1u);
+                }
+            }
+        }
+    }
+
+    add_ray_counts(scene.ray_counts, 0, shadow, ao);
+}
+
+__global__ void rt_finish_kernel(
+                uchar4* color,
+                unsigned long long* visibility,
+                RtScene scene,
+                RtWavefront wave) {
+
+    const unsigned int hits =
+        min(wave.counts->hit_count, wave.capacity);
+
+    for (unsigned int index = blockIdx.x * blockDim.x + threadIdx.x;
+         index < hits;
+         index += gridDim.x * blockDim.x) {
+
+        const RtHit& hit = wave.hits[index];
+
+        SurfacePoint point;
+        point.position = hit.position;
+        point.normal = hit.normal;
+        point.geometric = hit.geometric;
+
+        finish_pixel(color, visibility, hit.pixel, scene, point,
+                     wave.shadow_blocked[index] != 0,
+                     wave.ao_escaped[index]);
     }
 }
 
@@ -1856,26 +2057,61 @@ bool cuda_ray_trace(
                 std::uint64_t* visibility,
                 int width,
                 int height,
-                const RtScene& scene) {
+                const RtScene& scene,
+                const RtWavefront* wave,
+                int sm_count) {
 
     if (!color || !visibility || width <= 0 || height <= 0 ||
         scene.count < 0 || scene.count > kMaxRtInstances ||
-        (scene.ao && !scene.ao_accum)) {
+        (scene.ao && !scene.ao_accum) ||
+        (wave && (!wave->hits || !wave->counts ||
+                  !wave->shadow_blocked || !wave->ao_escaped))) {
         LOG_ERROR("CUDA ray tracer: invalid arguments");
         return false;
     }
 
-    const dim3 threads(kTile, kTile);
-    const dim3 blocks(
+    auto* vis = reinterpret_cast<unsigned long long*>(visibility);
+
+    const dim3 tile_threads(kTile, kTile);
+    const dim3 tile_blocks(
         (width + kTile - 1) / kTile,
         (height + kTile - 1) / kTile);
 
-    ray_trace_kernel<<<blocks, threads>>>(
-        color,
-        reinterpret_cast<unsigned long long*>(visibility),
-        width, height, scene);
+    if (wave == nullptr) {
+        ray_trace_kernel<<<tile_blocks, tile_threads>>>(
+            color, vis, width, height, scene);
 
-    return check_launch("CUDA ray trace kernel launch");
+        return check_launch("CUDA ray trace kernel launch");
+    }
+
+    // Wavefront: reset the hit count, then the three passes in order on
+    // the default stream, so each pass sees the previous one's results
+    if (!cuda_ok(cudaMemsetAsync(wave->counts, 0,
+                                 sizeof(RtWavefrontCounts), 0),
+                 "cudaMemsetAsync ray tracer hit count")) {
+        return false;
+    }
+
+    rt_camera_kernel<<<tile_blocks, tile_threads>>>(
+        width, height, scene, *wave);
+
+    if (!check_launch("CUDA ray tracer camera pass launch")) {
+        return false;
+    }
+
+    const unsigned int sms =
+        sm_count > 0 ? static_cast<unsigned int>(sm_count) : 1u;
+
+    // Plenty of threads: one per shadow or AO ray, many per SM
+    rt_secondary_kernel<<<sms * 16, kThreads>>>(scene, *wave);
+
+    if (!check_launch("CUDA ray tracer shadow/AO pass launch")) {
+        return false;
+    }
+
+    rt_finish_kernel<<<sms * 4, kThreads>>>(color, vis, scene, *wave);
+
+    return check_launch("CUDA ray tracer finish pass launch");
 }
 
 bool cuda_resolve_ids(

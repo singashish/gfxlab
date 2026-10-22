@@ -26,6 +26,11 @@ constexpr unsigned int kAoMaxSamples = 1024;
 // be timed. The picture stays noisy. Keep false for normal use
 constexpr bool kBenchmarkAo = false;
 
+// true: the ray tracer runs as three passes with one thread per shadow
+// or AO ray (wavefront). false: one thread per pixel does all of its
+// rays (megakernel). Same picture; switch to compare their GPU times
+constexpr bool kRtWavefront = true;
+
 // AO rays reach this fraction of the largest model's diagonal
 constexpr float kAoRadiusFraction = 0.2f;
 
@@ -69,6 +74,7 @@ constexpr bool kProfileStages = false;
 
 CudaRenderer::~CudaRenderer() {
     free_raster_work();
+    free_wavefront();
 
     if (m_ao_accum != nullptr) {
         (void)cuda_ok(
@@ -211,6 +217,8 @@ bool CudaRenderer::resize_targets(int width, int height) {
     m_ao_samples = 0;
     m_rt_signature.clear();
 
+    free_wavefront();
+
     const std::size_t pixels =
         static_cast<std::size_t>(width) *
         static_cast<std::size_t>(height);
@@ -249,6 +257,27 @@ bool CudaRenderer::resize_targets(int width, int height) {
         m_ao_accum = nullptr;
         return false;
     }
+
+    // Wavefront buffers: at most one camera-ray hit per pixel
+    if (!cuda_ok(cudaMalloc(reinterpret_cast<void**>(&m_wave.hits),
+                            pixels * sizeof(RtHit)),
+                 "cudaMalloc ray tracer hits") ||
+        !cuda_ok(cudaMalloc(
+                     reinterpret_cast<void**>(&m_wave.shadow_blocked),
+                     pixels * sizeof(unsigned int)),
+                 "cudaMalloc ray tracer shadow results") ||
+        !cuda_ok(cudaMalloc(
+                     reinterpret_cast<void**>(&m_wave.ao_escaped),
+                     pixels * sizeof(unsigned int)),
+                 "cudaMalloc ray tracer AO results") ||
+        !cuda_ok(cudaMalloc(reinterpret_cast<void**>(&m_wave.counts),
+                            sizeof(RtWavefrontCounts)),
+                 "cudaMalloc ray tracer hit count")) {
+        free_wavefront();
+        return false;
+    }
+
+    m_wave.capacity = static_cast<unsigned int>(pixels);
 
     m_width = width;
     m_height = height;
@@ -294,6 +323,29 @@ bool CudaRenderer::ensure_scratch_capacity(
 
     m_scratch_capacity = vertex_count;
     return true;
+}
+
+void CudaRenderer::free_wavefront() {
+    if (m_wave.hits != nullptr) {
+        (void)cuda_ok(cudaFree(m_wave.hits), "cudaFree ray tracer hits");
+    }
+
+    if (m_wave.shadow_blocked != nullptr) {
+        (void)cuda_ok(cudaFree(m_wave.shadow_blocked),
+                      "cudaFree ray tracer shadow results");
+    }
+
+    if (m_wave.ao_escaped != nullptr) {
+        (void)cuda_ok(cudaFree(m_wave.ao_escaped),
+                      "cudaFree ray tracer AO results");
+    }
+
+    if (m_wave.counts != nullptr) {
+        (void)cuda_ok(cudaFree(m_wave.counts),
+                      "cudaFree ray tracer hit count");
+    }
+
+    m_wave = {};
 }
 
 void CudaRenderer::free_raster_work() {
@@ -692,7 +744,9 @@ void CudaRenderer::render(const FrameData& frame) {
                     visibility,
                     m_width,
                     m_height,
-                    rt_scene)) {
+                    rt_scene,
+                    kRtWavefront ? &m_wave : nullptr,
+                    m_sm_count)) {
                 return;
             }
 

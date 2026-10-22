@@ -76,6 +76,10 @@ private:
     unsigned int m_ao_samples = 0;
     std::vector<float> m_rt_signature;
 
+    // Buffers for the wavefront ray tracer, one hit per pixel
+    RtWavefront m_wave{};
+    void free_wavefront();
+
     int m_width = 0;
     int m_height = 0;
 };
