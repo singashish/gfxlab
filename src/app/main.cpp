@@ -181,7 +181,8 @@ int main(int argc, char** argv) {
     bool show_info_panel = true;
 
     // True while a middle-button drag that started in the 3D view
-    // (not on the UI) orbits or pans the camera
+    // (not on the UI, and not during a G/R/S edit) orbits or pans
+    // the camera
     bool camera_dragging = false;
 
     // Panel line with the timings, refreshed with the title
@@ -615,12 +616,18 @@ int main(int argc, char** argv) {
         const bool ui_has_mouse = ui.wants_mouse() && !editor.active();
 
         // A middle-button drag orbits (or pans) only if it started in
-        // the 3D view; once started it continues even over the UI
+        // the 3D view; once started it continues even over the UI.
+        // During a G/R/S edit the camera is locked: the edit turns mouse
+        // movement into a transform using the current view, so moving
+        // the view would make the object jump. A drag in progress when
+        // an edit starts stops, and does not resume when the edit ends;
+        // press the middle button again
         if (in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_MIDDLE)) {
-            camera_dragging = !ui_has_mouse;
+            camera_dragging = !ui_has_mouse && !was_editing_at_frame_start;
         }
 
-        if (!in.mouse_down(gfx::MouseButton::GFX_MOUSE_MIDDLE)) {
+        if (!in.mouse_down(gfx::MouseButton::GFX_MOUSE_MIDDLE) ||
+            was_editing_at_frame_start) {
             camera_dragging = false;
         }
 
