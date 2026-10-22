@@ -9,6 +9,8 @@ gfx_compile_shaders(
     shaders/grid.frag
     shaders/wire.vert
     shaders/wire.frag
+    shaders/ui.vert
+    shaders/ui.frag
 )
 
 add_library(gfx_vk STATIC
@@ -25,6 +27,7 @@ add_library(gfx_vk STATIC
     vk_swapchain.cpp
     vk_timer.cpp
     vk_triangle_demo.cpp
+    vk_ui.cpp
     vk_uniforms.cpp
     vk_upload.cpp
 )
@@ -45,5 +48,6 @@ target_compile_definitions(gfx_vk PRIVATE
 
 target_link_libraries(gfx_vk PUBLIC
     gfx_core
+    gfx_ui
     Vulkan::Vulkan
 )

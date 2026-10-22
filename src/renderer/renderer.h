@@ -72,7 +72,7 @@ struct FrameData {
 
     // 2D overlay drawn on top of the 3D view, in window pixels.
     // Owned by the app; nullptr or an empty list draws nothing.
-    // Only the OpenGL backend draws it so far
+    // The OpenGL and Vulkan backends draw it so far
     const UiDrawList* ui = nullptr;
 };
 

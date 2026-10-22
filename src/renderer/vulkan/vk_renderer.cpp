@@ -89,6 +89,11 @@ bool VulkanRenderer::init_pipelines(VkFormat color_format,
         return false;
     }
 
+    if (!m_ui.create_pipeline(color_format, depth_format)) {
+        LOG_ERROR("failed to initialize Vulkan UI pipeline");
+        return false;
+    }
+
     return true;
 }
 
@@ -148,6 +153,11 @@ bool VulkanRenderer::init(void* native_window) {
 
     if (!m_uniforms.init(m_context, VulkanFrames::kFramesInFlight)) {
         LOG_ERROR("failed to initialize Vulkan frame uniforms");
+        return false;
+    }
+
+    if (!m_ui.init(m_context, VulkanFrames::kFramesInFlight)) {
+        LOG_ERROR("failed to initialize the Vulkan UI renderer");
         return false;
     }
 
@@ -339,6 +349,13 @@ void VulkanRenderer::render(const FrameData& frame) {
         return;
     }
 
+    // Copy the UI into this frame slot's buffers (and upload the font
+    // the first time). The fence wait above guarantees the GPU has
+    // finished reading what the slot held two frames ago
+    const bool draw_ui =
+        frame.ui != nullptr &&
+        m_ui.prepare(m_context, m_uploader, frame_index, *frame.ui);
+
     // 2. Acquire a swapchain image
     std::uint32_t image_index = 0;
 
@@ -508,6 +525,11 @@ void VulkanRenderer::render(const FrameData& frame) {
     // Draw after opaque geometry so the depth test hides the grid
     // behind the model. The grid does not write depth
     m_grid.draw(slot.cmd, extent, frame_set);
+
+    // The UI goes on top of everything
+    if (draw_ui) {
+        m_ui.draw(slot.cmd, extent, frame_index);
+    }
 
     vkCmdEndRendering(slot.cmd);
 
