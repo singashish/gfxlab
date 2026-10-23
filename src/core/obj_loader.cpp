@@ -1,6 +1,9 @@
 #include "core/obj_loader.h"
+#include "core/log.h"
 
 #include <algorithm>
+#include <array>
+#include <filesystem>
 #include <charconv>
 #include <cstdint>
 #include <fstream>
@@ -19,6 +22,7 @@ namespace {
 
 struct ObjCorner {
     int position = -1;
+    int texcoord = -1;
     int normal = -1;
 };
 
@@ -27,6 +31,18 @@ void clear_mesh(Mesh& mesh) {
     mesh.normals.clear();
     mesh.indices.clear();
     mesh.edges.clear();
+    mesh.texcoords.clear();
+    mesh.materials.clear();
+    mesh.triangle_materials.clear();
+}
+
+std::string_view trim_right(std::string_view text) {
+    while (!text.empty() &&
+           (text.back() == ' ' || text.back() == '\t')) {
+        text.remove_suffix(1);
+    }
+
+    return text;
 }
 
 bool fail(Mesh& out, std::string& error, std::size_t line_number, 
@@ -140,67 +156,40 @@ bool resolve_index(int obj_index, std::size_t count, int& resolved) {
     return true;
 }
 
+// Splits a face corner ("v", "v/vt", "v//vn" or "v/vt/vn") and resolves
+// each index against the number of elements read so far
 bool parse_corner(std::string_view token, std::size_t position_count,
-                  std::size_t normal_count, ObjCorner& corner,
-                  std::string& error) {
-    const std::size_t first_slash = token.find('/');
+                  std::size_t texcoord_count, std::size_t normal_count,
+                  ObjCorner& corner, std::string& error) {
+    std::string_view parts[3];
+    int part_count = 0;
 
-    std::string_view position_token;
-    std::string_view normal_token;
+    while (part_count < 3) {
+        const std::size_t slash = token.find('/');
 
-    if (first_slash == std::string_view::npos) {
-        position_token = token;
-    } else {
-        position_token = token.substr(0, first_slash);
-
-        const std::size_t second_slash =
-            token.find('/', first_slash + 1);
-
-        if (second_slash == std::string_view::npos) {
-            // v/vt
-            const std::string_view texcoord_token =
-                token.substr(first_slash + 1);
-
-            int ignored_texcoord = 0;
-
-            if (!parse_int(texcoord_token, ignored_texcoord)) {
-                error = "invalid texture coordinate index";
-                return false;
-            }
-
-            if (ignored_texcoord == 0) {
-                error = "texture coordinate index 0 is invalid";
-                return false;
-            }
-        } else {
-            // v//vn or v/vt/vn
-            const std::string_view texcoord_token =
-                token.substr(
-                    first_slash + 1,
-                    second_slash - first_slash - 1
-                );
-
-            normal_token = token.substr(second_slash + 1);
-
-            if (second_slash != first_slash + 1) {
-                int ignored_texcoord = 0;
-
-                if (!parse_int(texcoord_token, ignored_texcoord)) {
-                    error = "invalid texture coordinate index";
-                    return false;
-                }
-
-                if (ignored_texcoord == 0) {
-                    error = "texture coordinate index 0 is invalid";
-                    return false;
-                }
-            }
-
-            if (normal_token.empty()) {
-                error = "missing normal index";
-                return false;
-            }
+        if (slash == std::string_view::npos) {
+            parts[part_count++] = token;
+            break;
         }
+
+        parts[part_count++] = token.substr(0, slash);
+        token.remove_prefix(slash + 1);
+
+        if (part_count == 3) {
+            error = "too many '/' in face corner";
+            return false;
+        }
+    }
+
+    const std::string_view position_token = parts[0];
+    const std::string_view texcoord_token =
+        part_count >= 2 ? parts[1] : std::string_view{};
+    const std::string_view normal_token =
+        part_count >= 3 ? parts[2] : std::string_view{};
+
+    if (part_count == 3 && normal_token.empty()) {
+        error = "missing normal index";
+        return false;
     }
 
     int position_index = 0;
@@ -216,6 +205,34 @@ bool parse_corner(std::string_view token, std::size_t position_count,
             corner.position)) {
         error = "face index " + std::to_string(position_index)
               + " out of range";
+        return false;
+    }
+
+    corner.texcoord = -1;
+
+    if (!texcoord_token.empty()) {
+        int texcoord_index = 0;
+
+        if (!parse_int(texcoord_token, texcoord_index)) {
+            error = "invalid texture coordinate index";
+            return false;
+        }
+
+        if (texcoord_index == 0) {
+            error = "texture coordinate index 0 is invalid";
+            return false;
+        }
+
+        if (!resolve_index(
+                texcoord_index,
+                texcoord_count,
+                corner.texcoord)) {
+            error = "texture coordinate index " +
+                    std::to_string(texcoord_index) + " out of range";
+            return false;
+        }
+    } else if (part_count == 2) {
+        error = "invalid texture coordinate index";
         return false;
     }
 
@@ -242,20 +259,45 @@ bool parse_corner(std::string_view token, std::size_t position_count,
     return true;
 }
 
+// Index of the material called name in materials, appending a new one
+// with default values when it is not there yet
+std::uint32_t find_or_add_material(std::vector<Material>& materials,
+                                   std::string_view name) {
+    for (std::size_t i = 0; i < materials.size(); ++i) {
+        if (materials[i].name == name) {
+            return static_cast<std::uint32_t>(i);
+        }
+    }
+
+    Material material;
+    material.name = std::string(name);
+    materials.push_back(material);
+    return static_cast<std::uint32_t>(materials.size() - 1);
+}
+
 } // namespace
 
-bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
+bool parse_obj(std::string_view text, Mesh& out, std::string& error,
+               std::vector<std::string>* material_libraries) {
     clear_mesh(out);
     error.clear();
 
     std::vector<Vec3> source_positions;
+    std::vector<Vec2> source_texcoords;
     std::vector<Vec3> source_normals;
 
-    std::map<std::pair<int, int>, std::uint32_t> vertex_map;
+    // One output vertex per distinct (position, texcoord, normal) triple
+    std::map<std::array<int, 3>, std::uint32_t> vertex_map;
     std::set<std::uint64_t> edge_keys;
 
     bool every_corner_has_normal = true;
+    bool every_corner_has_texcoord = true;
     bool has_face = false;
+
+    // Material of the faces being read; none until the first usemtl or
+    // the first face (which then gets "default")
+    bool has_current_material = false;
+    std::uint32_t current_material = 0;
 
     std::size_t line_number = 0;
 
@@ -329,8 +371,42 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
             }
 
             source_normals.push_back(normal);
+        } else if (keyword == "vt") {
+            Vec2 texcoord{};
+
+            // An optional third value (w) is allowed and ignored
+            if (!read_float(line, texcoord.x) ||
+                !read_float(line, texcoord.y)) {
+                return fail(
+                    out, error, line_number,
+                    "invalid texture coordinate"
+                );
+            }
+
+            source_texcoords.push_back(texcoord);
+        } else if (keyword == "usemtl") {
+            const std::string_view name = trim_right(trim_left(line));
+
+            current_material = find_or_add_material(
+                out.materials, name.empty() ? "default" : name);
+            has_current_material = true;
+        } else if (keyword == "mtllib") {
+            // Several names may follow; each is one library file
+            std::string_view library;
+
+            while (next_token(line, library)) {
+                if (material_libraries != nullptr) {
+                    material_libraries->emplace_back(library);
+                }
+            }
         } else if (keyword == "f") {
             has_face = true;
+
+            if (!has_current_material) {
+                current_material =
+                    find_or_add_material(out.materials, "default");
+                has_current_material = true;
+            }
 
             std::vector<ObjCorner> face;
             std::string_view token;
@@ -342,6 +418,7 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
                 if (!parse_corner(
                         token,
                         source_positions.size(),
+                        source_texcoords.size(),
                         source_normals.size(),
                         corner,
                         corner_error)) {
@@ -352,6 +429,10 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
 
                 if (corner.normal < 0) {
                     every_corner_has_normal = false;
+                }
+
+                if (corner.texcoord < 0) {
+                    every_corner_has_texcoord = false;
                 }
 
                 face.push_back(corner);
@@ -368,8 +449,11 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
             face_indices.reserve(face.size());
 
             for (const ObjCorner& corner : face) {
-                const std::pair<int, int> key{
+                // A position used with two different texture
+                // coordinates (a UV seam) becomes two vertices
+                const std::array<int, 3> key{
                     corner.position,
+                    corner.texcoord,
                     corner.normal
                 };
 
@@ -401,6 +485,14 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
                     out.normals.push_back(
                         source_normals[
                             static_cast<std::size_t>(corner.normal)
+                        ]
+                    );
+                }
+
+                if (corner.texcoord >= 0) {
+                    out.texcoords.push_back(
+                        source_texcoords[
+                            static_cast<std::size_t>(corner.texcoord)
                         ]
                     );
                 }
@@ -447,6 +539,7 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
                 out.indices.push_back(face_indices[0]);
                 out.indices.push_back(face_indices[i]);
                 out.indices.push_back(face_indices[i + 1]);
+                out.triangle_materials.push_back(current_material);
             }
         }
 
@@ -459,6 +552,164 @@ bool parse_obj(std::string_view text, Mesh& out, std::string& error) {
 
     if (!every_corner_has_normal) {
         out.normals.clear();
+    }
+
+    if (!every_corner_has_texcoord) {
+        out.texcoords.clear();
+    }
+
+    // A material named by usemtl but never used by a face is kept, so
+    // indices stay in order of first mention
+    return true;
+}
+
+bool parse_mtl(std::string_view text, const std::string& base_dir,
+               std::vector<Material>& out, std::string& error) {
+    error.clear();
+
+    const std::size_t first_new = out.size();
+    Material* current = nullptr;
+
+    // Pr (roughness) wins over Ns, whichever comes first
+    bool current_has_pr = false;
+
+    std::size_t line_number = 0;
+
+    const auto mtl_fail = [&](const std::string& message) {
+        out.resize(first_new);
+        error = "line " + std::to_string(line_number) + ": " + message;
+        return false;
+    };
+
+    while (!text.empty()) {
+        ++line_number;
+
+        const std::size_t newline = text.find('\n');
+        std::string_view line;
+
+        if (newline == std::string_view::npos) {
+            line = text;
+            text = {};
+        } else {
+            line = text.substr(0, newline);
+            text.remove_prefix(newline + 1);
+        }
+
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+
+        const std::size_t comment = line.find('#');
+
+        if (comment != std::string_view::npos) {
+            line = line.substr(0, comment);
+        }
+
+        std::string_view keyword;
+
+        if (!next_token(line, keyword)) {
+            continue;
+        }
+
+        if (keyword == "newmtl") {
+            const std::string_view name = trim_right(trim_left(line));
+
+            if (name.empty()) {
+                return mtl_fail("newmtl without a name");
+            }
+
+            Material material;
+            material.name = std::string(name);
+            out.push_back(material);
+            current = &out.back();
+            current_has_pr = false;
+            continue;
+        }
+
+        // Statements before the first newmtl have nothing to describe
+        if (current == nullptr) {
+            continue;
+        }
+
+        if (keyword == "Kd" || keyword == "Ke") {
+            Vec3 color{};
+
+            if (!read_vec3(line, color)) {
+                return mtl_fail("invalid colour after " +
+                                std::string(keyword));
+            }
+
+            (keyword == "Kd" ? current->base_color : current->emission) =
+                color;
+        } else if (keyword == "Ns") {
+            float ns = 0.0f;
+
+            if (!read_float(line, ns)) {
+                return mtl_fail("invalid Ns");
+            }
+
+            if (!current_has_pr) {
+                current->roughness = roughness_from_phong_exponent(ns);
+            }
+        } else if (keyword == "Pr" || keyword == "Pm") {
+            float value = 0.0f;
+
+            if (!read_float(line, value)) {
+                return mtl_fail("invalid " + std::string(keyword));
+            }
+
+            value = std::clamp(value, 0.0f, 1.0f);
+
+            if (keyword == "Pr") {
+                current->roughness = value;
+                current_has_pr = true;
+            } else {
+                current->metallic = value;
+            }
+        } else if (keyword == "map_Kd") {
+            // Options come first ("-s 1 1 1", "-bm 0.5", ...); the rest
+            // of the line is the file name, which may contain spaces
+            line = trim_left(line);
+
+            while (!line.empty() && line.front() == '-') {
+                std::string_view option;
+                next_token(line, option);
+
+                int arguments = 1;
+
+                if (option == "-s" || option == "-o" || option == "-t") {
+                    arguments = 3;
+                } else if (option == "-mm") {
+                    arguments = 2;
+                }
+
+                for (int i = 0; i < arguments; ++i) {
+                    std::string_view ignored;
+
+                    if (!next_token(line, ignored)) {
+                        return mtl_fail("incomplete map_Kd option");
+                    }
+                }
+
+                line = trim_left(line);
+            }
+
+            const std::string_view file = trim_right(line);
+
+            if (file.empty()) {
+                return mtl_fail("map_Kd without a file name");
+            }
+
+            const std::filesystem::path texture_path(std::string{file});
+
+            current->base_color_texture =
+                texture_path.is_absolute() || base_dir.empty()
+                    ? texture_path.string()
+                    : (std::filesystem::path(base_dir) / texture_path)
+                          .string();
+        }
+
+        // Everything else (Ka, Ks, Ni, d, illum, other maps) is ignored
     }
 
     return true;
@@ -485,7 +736,60 @@ bool load_obj(const std::string& path, Mesh& out, std::string& error) {
         return false;
     }
 
-    return parse_obj(contents, out, error);
+    std::vector<std::string> libraries;
+
+    if (!parse_obj(contents, out, error, &libraries)) {
+        return false;
+    }
+
+    // Material libraries live next to the OBJ file
+    const std::string obj_dir =
+        std::filesystem::path(path).parent_path().string();
+
+    std::vector<Material> library_materials;
+
+    for (const std::string& library : libraries) {
+        const std::filesystem::path library_path =
+            std::filesystem::path(obj_dir) / library;
+
+        std::ifstream mtl_file(library_path, std::ios::binary);
+
+        if (!mtl_file) {
+            LOG_WARN("material library not found: %s",
+                     library_path.string().c_str());
+            continue;
+        }
+
+        const std::string mtl_text(
+            (std::istreambuf_iterator<char>(mtl_file)),
+            std::istreambuf_iterator<char>()
+        );
+
+        std::string mtl_error;
+
+        if (!parse_mtl(mtl_text, library_path.parent_path().string(),
+                       library_materials, mtl_error)) {
+            LOG_WARN("material library %s ignored: %s",
+                     library_path.string().c_str(), mtl_error.c_str());
+        }
+    }
+
+    // Fill in the materials the faces use. A name defined twice: the
+    // first definition wins
+    for (Material& material : out.materials) {
+        const auto found = std::find_if(
+            library_materials.begin(), library_materials.end(),
+            [&](const Material& m) { return m.name == material.name; });
+
+        if (found != library_materials.end()) {
+            material = *found;
+        } else if (!libraries.empty() || material.name != "default") {
+            LOG_WARN("material '%s' not found; using defaults",
+                     material.name.c_str());
+        }
+    }
+
+    return true;
 }
 
 } // namespace gfx

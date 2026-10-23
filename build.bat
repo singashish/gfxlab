@@ -72,17 +72,21 @@ echo %ESC%[96mDebug%ESC%[0m (Vulkan validation layer enabled)
 echo   Tests:
 echo     %ESC%[93mctest --test-dir %DEBUG_DIR% -C Debug --output-on-failure%ESC%[0m
 echo   OpenGL:
-echo     %ESC%[93m.\%DEBUG_DIR%\src\app\gfxlab.exe %MODEL%%ESC%[0m
+echo     %ESC%[93m.\%DEBUG_DIR%\src\app\gfxlab.exe --backend=opengl %MODEL%%ESC%[0m
 echo   Vulkan:
-echo     %ESC%[93m.\%DEBUG_DIR%\src\app\gfxlab.exe %MODEL% --backend=vulkan%ESC%[0m
+echo     %ESC%[93m.\%DEBUG_DIR%\src\app\gfxlab.exe --backend=vulkan %MODEL%%ESC%[0m
+echo   Vulkan:
+echo     %ESC%[93m.\%DEBUG_DIR%\src\app\gfxlab.exe --backend=cuda %MODEL%%ESC%[0m
 echo.
 echo %ESC%[96mRelease%ESC%[0m
 echo   Tests:
 echo     %ESC%[93mctest --test-dir %RELEASE_DIR% -C Release --output-on-failure%ESC%[0m
 echo   OpenGL:
-echo     %ESC%[93m.\%RELEASE_DIR%\src\app\gfxlab.exe %MODEL%%ESC%[0m
+echo     %ESC%[93m.\%RELEASE_DIR%\src\app\gfxlab.exe --backend=opengl %MODEL%%ESC%[0m
 echo   Vulkan:
-echo     %ESC%[93m.\%RELEASE_DIR%\src\app\gfxlab.exe %MODEL% --backend=vulkan%ESC%[0m
+echo     %ESC%[93m.\%RELEASE_DIR%\src\app\gfxlab.exe --backend=vulkan %MODEL%%ESC%[0m
+echo   Cuda:
+echo     %ESC%[93m.\%RELEASE_DIR%\src\app\gfxlab.exe --backend=cuda %MODEL%%ESC%[0m
 echo.
 
 endlocal

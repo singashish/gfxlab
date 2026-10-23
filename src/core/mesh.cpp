@@ -105,7 +105,12 @@ bool ensure_normals(Mesh& mesh) {
 
     std::vector<Vec3> new_positions;
     std::vector<Vec3> new_normals;
+    std::vector<Vec2> new_texcoords;
     std::vector<std::uint32_t> new_indices;
+
+    // Texture coordinates travel with their vertices
+    const bool has_texcoords =
+        mesh.texcoords.size() == mesh.positions.size();
 
     // first_copy[old_index] stores the first new vertex corresponding
     // to that old vertex. Multiple triangles may copy the same vertex
@@ -121,6 +126,7 @@ bool ensure_normals(Mesh& mesh) {
 
     new_positions.reserve(triangle_count * 3);
     new_normals.reserve(triangle_count * 3);
+    new_texcoords.reserve(has_texcoords ? triangle_count * 3 : 0);
     new_indices.reserve(triangle_count * 3);
 
     for (std::size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
@@ -166,6 +172,12 @@ bool ensure_normals(Mesh& mesh) {
         new_normals.push_back(normal);
         new_normals.push_back(normal);
 
+        if (has_texcoords) {
+            new_texcoords.push_back(mesh.texcoords[ia]);
+            new_texcoords.push_back(mesh.texcoords[ib]);
+            new_texcoords.push_back(mesh.texcoords[ic]);
+        }
+
         new_indices.push_back(base);
         new_indices.push_back(base + 1);
         new_indices.push_back(base + 2);
@@ -193,6 +205,7 @@ bool ensure_normals(Mesh& mesh) {
 
     mesh.positions = std::move(new_positions);
     mesh.normals = std::move(new_normals);
+    mesh.texcoords = std::move(new_texcoords);
     mesh.indices = std::move(new_indices);
     mesh.edges = std::move(new_edges);
 

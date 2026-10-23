@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/material.h"
+#include "core/vec2.h"
 #include "core/vec3.h"
 
 #include <cstddef>
@@ -15,8 +17,23 @@ struct Mesh {
     std::vector<std::uint32_t> indices; // 3 per triangle
     std::vector<std::uint32_t> edges; // 2 indices per unique edge
 
+    // Texture coordinates, parallel to positions. Empty unless every
+    // face corner in the file had one. Kept as written in the OBJ:
+    // (0, 0) is the bottom-left corner of the image, v pointing up
+    std::vector<Vec2> texcoords;
+
+    // Surfaces. A loaded mesh always has at least one (a "default"
+    // material when the file names none), and every triangle has an
+    // index into this list
+    std::vector<Material> materials;
+    std::vector<std::uint32_t> triangle_materials; // 1 per triangle
+
     bool has_normals() const {
         return !normals.empty();
+    }
+
+    bool has_texcoords() const {
+        return !texcoords.empty();
     }
 
     std::size_t triangle_count() const {

@@ -146,6 +146,23 @@ int main(int argc, char** argv) {
             mesh.triangle_count()
         );
 
+        LOG_INFO("texture coordinates: %s",
+                 mesh.has_texcoords() ? "yes" : "no");
+
+        for (const gfx::Material& material : mesh.materials) {
+            LOG_INFO(
+                "material '%s': base colour %.2f %.2f %.2f, roughness "
+                "%.2f, metallic %.2f%s%s",
+                material.name.c_str(),
+                material.base_color.x,
+                material.base_color.y,
+                material.base_color.z,
+                material.roughness,
+                material.metallic,
+                material.base_color_texture.empty() ? "" : ", texture ",
+                material.base_color_texture.c_str());
+        }
+
         gfx::mesh_center_at_origin(mesh);
         bounds = gfx::compute_bounds(mesh);
 
@@ -405,8 +422,11 @@ int main(int argc, char** argv) {
             // ---- Model -------------------------------------------
             if (has_model && ui.header("Model", &model_open)) {
                 char info[160];
-                std::snprintf(info, sizeof(info), "%s | %zu triangles",
-                              model_name.c_str(), mesh.triangle_count());
+                std::snprintf(info, sizeof(info),
+                              "%s | %zu triangles | %zu material%s",
+                              model_name.c_str(), mesh.triangle_count(),
+                              mesh.materials.size(),
+                              mesh.materials.size() == 1 ? "" : "s");
                 ui.text(info);
 
                 // The fields show the live transform, so during a

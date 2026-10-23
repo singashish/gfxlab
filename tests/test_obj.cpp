@@ -4,8 +4,11 @@
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -598,6 +601,272 @@ void test_ensure_edges_fallback() {
     CHECK(mesh.edges.size() == 10);
 }
 
+// ---------------------------------------------------------------------
+// Texture coordinates and materials (M9)
+// ---------------------------------------------------------------------
+
+bool approx_vec2(const gfx::Vec2& a, float x, float y) {
+    return approx(a.x, x) && approx(a.y, y);
+}
+
+void test_texcoords() {
+    const char* obj = R"OBJ(
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0.25 0.5
+vt 1 0 0.0
+vt 0 1
+f 1/1 2/2 3/3
+)OBJ";
+
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(parse(obj, mesh, error));
+    CHECK(mesh.has_texcoords());
+    CHECK(!mesh.has_normals());
+    CHECK(mesh.texcoords.size() == mesh.positions.size());
+    CHECK(approx_vec2(mesh.texcoords[0], 0.25f, 0.5f));
+    CHECK(approx_vec2(mesh.texcoords[1], 1.0f, 0.0f));
+    CHECK(approx_vec2(mesh.texcoords[2], 0.0f, 1.0f));
+}
+
+void test_uv_seam_splits_vertices() {
+    // Position 1 is used with two different texture coordinates
+    const char* obj = R"OBJ(
+v 0 0 0
+v 1 0 0
+v 0 1 0
+v 1 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+vt 0.5 0.5
+f 1/1 2/2 3/3
+f 2/2 4/4 1/4
+)OBJ";
+
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(parse(obj, mesh, error));
+    CHECK(mesh.triangle_count() == 2);
+
+    // 1/1, 2/2, 3/3, 4/4, 1/4: five vertices, not four
+    CHECK(mesh.positions.size() == 5);
+    CHECK(mesh.texcoords.size() == 5);
+
+    // The shared corner 2/2 is still shared
+    CHECK(mesh.indices[1] == mesh.indices[3]);
+}
+
+void test_partial_texcoords_dropped() {
+    const char* obj = R"OBJ(
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+f 1/1 2/1 3
+)OBJ";
+
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(parse(obj, mesh, error));
+    CHECK(!mesh.has_texcoords());
+}
+
+void test_texcoord_errors() {
+    expect_failure("v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0\nf 1 2 3\n");
+    expect_failure("v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nf 1/2 2/1 3/1\n");
+    expect_failure("v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nf 1/0 2/1 3/1\n");
+    expect_failure("v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nf 1/1/1/1 2 3\n");
+}
+
+void test_usemtl_assigns_triangles() {
+    const char* obj = R"OBJ(
+mtllib first.mtl second.mtl
+v 0 0 0
+v 1 0 0
+v 0 1 0
+v 1 1 0
+f 1 2 3
+usemtl red
+f 1 2 3
+usemtl Blue Paint
+f 1 2 4 3
+usemtl red
+f 2 4 3
+)OBJ";
+
+    gfx::Mesh mesh;
+    std::string error;
+    std::vector<std::string> libraries;
+
+    CHECK(gfx::parse_obj(obj, mesh, error, &libraries));
+
+    // In order of first use; the first face had no usemtl
+    CHECK(mesh.materials.size() == 3);
+    CHECK(mesh.materials[0].name == "default");
+    CHECK(mesh.materials[1].name == "red");
+    CHECK(mesh.materials[2].name == "Blue Paint");
+
+    // One entry per triangle: the quad gives two
+    const std::vector<std::uint32_t> expected = {0, 1, 2, 2, 1};
+    CHECK(mesh.triangle_materials == expected);
+
+    CHECK(libraries.size() == 2);
+    CHECK(libraries[0] == "first.mtl");
+    CHECK(libraries[1] == "second.mtl");
+}
+
+void test_mesh_always_has_a_material() {
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(parse(kTriangle, mesh, error));
+    CHECK(mesh.materials.size() == 1);
+    CHECK(mesh.materials[0].name == "default");
+    CHECK(mesh.triangle_materials.size() == 1);
+    CHECK(mesh.triangle_materials[0] == 0);
+}
+
+void test_parse_mtl() {
+    const char* mtl = R"MTL(
+# Blender MTL
+Kd 9 9 9
+newmtl Wood
+Ns 250.0
+Kd 0.8 0.5 0.2
+Ke 0 0 0
+map_Kd -s 1 1 1 -bm 0.5 textures/wood grain.png
+newmtl Lamp
+Pr 0.3
+Ns 1000
+Pm 1.5
+Ke 4 3 2
+illum 2
+)MTL";
+
+    std::vector<gfx::Material> materials;
+    std::string error;
+
+    CHECK(gfx::parse_mtl(mtl, "models", materials, error));
+    CHECK(materials.size() == 2);
+
+    const gfx::Material& wood = materials[0];
+    CHECK(wood.name == "Wood");
+    CHECK(approx_vec(wood.base_color, {0.8f, 0.5f, 0.2f}));
+
+    // Ns 250 -> 1 - sqrt(0.25) = 0.5
+    CHECK(approx(wood.roughness, 0.5));
+    CHECK(approx(wood.metallic, 0.0));
+    CHECK(wood.base_color_texture ==
+          (std::filesystem::path("models") / "textures/wood grain.png")
+              .string());
+
+    const gfx::Material& lamp = materials[1];
+    CHECK(lamp.name == "Lamp");
+
+    // Pr wins over a later Ns; Pm is clamped to 1
+    CHECK(approx(lamp.roughness, 0.3));
+    CHECK(approx(lamp.metallic, 1.0));
+    CHECK(approx_vec(lamp.emission, {4, 3, 2}));
+    CHECK(lamp.base_color_texture.empty());
+    CHECK(approx_vec(lamp.base_color, {0.8f, 0.8f, 0.8f}));
+}
+
+void test_parse_mtl_errors() {
+    std::vector<gfx::Material> materials(1);
+    std::string error;
+
+    // A bad line fails, names the line, and adds nothing
+    CHECK(!gfx::parse_mtl("newmtl a\nKd 1 x 0\n", "", materials, error));
+    CHECK(error.rfind("line 2:", 0) == 0);
+    CHECK(materials.size() == 1);
+
+    CHECK(!gfx::parse_mtl("newmtl\n", "", materials, error));
+    CHECK(!gfx::parse_mtl("newmtl a\nmap_Kd -s 1 1\n", "", materials, error));
+    CHECK(!gfx::parse_mtl("newmtl a\nmap_Kd\n", "", materials, error));
+    CHECK(materials.size() == 1);
+}
+
+void test_roughness_from_phong() {
+    CHECK(approx(gfx::roughness_from_phong_exponent(1000.0f), 0.0));
+    CHECK(approx(gfx::roughness_from_phong_exponent(0.0f), 1.0));
+    CHECK(approx(gfx::roughness_from_phong_exponent(5000.0f), 0.0));
+    CHECK(approx(gfx::roughness_from_phong_exponent(-3.0f), 1.0));
+}
+
+void test_load_obj_with_mtl() {
+    namespace fs = std::filesystem;
+
+    const fs::path dir = fs::temp_directory_path() / "gfxlab_test_obj_mtl";
+    fs::create_directories(dir);
+
+    {
+        std::ofstream obj(dir / "model.obj", std::ios::binary);
+        obj << "mtllib model.mtl missing.mtl\n"
+               "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+               "vt 0 0\nvt 1 0\nvt 0 1\n"
+               "usemtl Red\nf 1/1 2/2 3/3\n"
+               "usemtl Unknown\nf 1/1 3/3 2/2\n";
+
+        std::ofstream mtl(dir / "model.mtl", std::ios::binary);
+        mtl << "newmtl Red\nKd 1 0 0\nPr 0.25\nmap_Kd red.png\n";
+    }
+
+    gfx::Mesh mesh;
+    std::string error;
+
+    // The missing library and the unknown name only log warnings
+    CHECK(gfx::load_obj((dir / "model.obj").string(), mesh, error));
+    CHECK(mesh.materials.size() == 2);
+    CHECK(mesh.materials[0].name == "Red");
+    CHECK(approx_vec(mesh.materials[0].base_color, {1, 0, 0}));
+    CHECK(approx(mesh.materials[0].roughness, 0.25));
+    CHECK(mesh.materials[0].base_color_texture ==
+          (dir / "red.png").string());
+    CHECK(mesh.materials[1].name == "Unknown");
+    CHECK(approx(mesh.materials[1].roughness, 0.5));
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+void test_flat_normals_keep_texcoords() {
+    const char* obj = R"OBJ(
+v 0 0 0
+v 1 0 0
+v 0 1 0
+v 1 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+vt 1 1
+usemtl a
+f 1/1 2/2 3/3
+usemtl b
+f 2/2 4/4 3/3
+)OBJ";
+
+    gfx::Mesh mesh;
+    std::string error;
+
+    CHECK(parse(obj, mesh, error));
+    CHECK(mesh.positions.size() == 4);
+    CHECK(gfx::ensure_normals(mesh));
+
+    // Unwelded: one vertex per triangle corner, each keeping its UV,
+    // and the triangles keep their materials
+    CHECK(mesh.positions.size() == 6);
+    CHECK(mesh.texcoords.size() == 6);
+    CHECK(approx_vec2(mesh.texcoords[mesh.indices[4]], 1.0f, 1.0f));
+    CHECK(mesh.triangle_materials.size() == 2);
+    CHECK(mesh.triangle_materials[1] == 1);
+}
+
 } // namespace
 
 
@@ -626,6 +895,17 @@ int main() {
     test_small_triangle_normal();
     test_cube_has_twelve_edges();
     test_ensure_edges_fallback();
+    test_texcoords();
+    test_uv_seam_splits_vertices();
+    test_partial_texcoords_dropped();
+    test_texcoord_errors();
+    test_usemtl_assigns_triangles();
+    test_mesh_always_has_a_material();
+    test_parse_mtl();
+    test_parse_mtl_errors();
+    test_roughness_from_phong();
+    test_load_obj_with_mtl();
+    test_flat_normals_keep_texcoords();
 
     if (g_failures == 0) {
         std::printf("All OBJ tests passed\n");
