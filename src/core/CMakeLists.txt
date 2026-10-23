@@ -3,6 +3,7 @@ add_library(gfx_core STATIC
     bvh4.cpp
     image.cpp
     inflate.cpp
+    json.cpp
     log.cpp
     mesh.cpp
     obj_loader.cpp

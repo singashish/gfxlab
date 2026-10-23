@@ -49,3 +49,7 @@ add_test(NAME ui COMMAND test_ui)
 add_executable(test_image test_image.cpp)
 target_link_libraries(test_image PRIVATE gfx_core)
 add_test(NAME image COMMAND test_image)
+
+add_executable(test_json test_json.cpp)
+target_link_libraries(test_json PRIVATE gfx_core)
+add_test(NAME json COMMAND test_json)
