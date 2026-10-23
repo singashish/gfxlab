@@ -1,0 +1,10 @@
+# Materials for textured_cube.obj
+newmtl grid
+Kd 1.0 1.0 1.0
+Ns 250.0
+map_Kd textures/uv_grid.png
+
+newmtl label
+Kd 1.0 1.0 1.0
+Pr 0.3
+map_Kd textures/label.tga

@@ -1,3 +1,4 @@
+#include "core/image.h"
 #include "core/log.h"
 #include "core/timer.h"
 #include "core/orbit_camera.h"
@@ -13,6 +14,7 @@
 #include "ui/ui_draw.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -98,6 +100,10 @@ int main(int argc, char** argv) {
 
     // Load and convert the optional model before creating the window.
     gfx::Mesh mesh;
+
+    // Base colour images, one slot per material (empty when the material
+    // has no texture or its file could not be read)
+    std::vector<gfx::Image> material_images;
     const bool has_model = model_path != nullptr;
     gfx::Aabb bounds{};
     gfx::Transform model_transform;
@@ -161,6 +167,33 @@ int main(int argc, char** argv) {
                 material.metallic,
                 material.base_color_texture.empty() ? "" : ", texture ",
                 material.base_color_texture.c_str());
+        }
+
+        // Decode the textures now; the renderers will use them from
+        // Step 3. A texture that cannot be read only costs its image
+        material_images.resize(mesh.materials.size());
+
+        for (std::size_t i = 0; i < mesh.materials.size(); ++i) {
+            const std::string& texture = mesh.materials[i].base_color_texture;
+
+            if (texture.empty()) {
+                continue;
+            }
+
+            const auto start = std::chrono::steady_clock::now();
+            std::string image_error;
+
+            if (!gfx::load_image(texture, material_images[i], image_error)) {
+                LOG_WARN("texture not loaded: %s", image_error.c_str());
+                continue;
+            }
+
+            const double ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+
+            LOG_INFO("texture %s: %dx%d, decoded in %.1f ms",
+                     texture.c_str(), material_images[i].width,
+                     material_images[i].height, ms);
         }
 
         gfx::mesh_center_at_origin(mesh);
