@@ -180,6 +180,59 @@ GFX_HD inline bool mat4_inverse(const Mat4& m, Mat4& out) {
     return true;
 }
 
+// Transpose: rows become columns
+GFX_HD inline Mat4 mat4_transpose(const Mat4& m) {
+    return {{
+        {m.col[0].x, m.col[1].x, m.col[2].x, m.col[3].x},
+        {m.col[0].y, m.col[1].y, m.col[2].y, m.col[3].y},
+        {m.col[0].z, m.col[1].z, m.col[2].z, m.col[3].z},
+        {m.col[0].w, m.col[1].w, m.col[2].w, m.col[3].w}
+    }};
+}
+
+// The matrix that transforms normals for a model matrix m: the inverse
+// transpose of its upper-left 3x3 part (the translation does not matter
+// for directions), returned as a Mat4 with the last row and column of
+// the identity.
+//
+// Why not just use m? Under a non-uniform scale a normal that is
+// transformed like a position stops being perpendicular to the surface
+// (squash a sphere flat: its normals must lean towards the flat
+// direction, not away from it). The inverse transpose keeps them
+// perpendicular. For rotations it is the matrix itself.
+//
+// The three columns of the inverse transpose are cross products of the
+// columns of m, divided by the determinant (the rows of the inverse of
+// a 3x3 matrix are exactly those cross products). A singular matrix
+// (a flattened model, scale 0) has no inverse: the identity comes back
+// instead of NaNs. Unlike Transform::normal_matrix this works for any
+// matrix, such as the product of a whole node hierarchy
+GFX_HD inline Mat4 normal_matrix_of(const Mat4& m) {
+    const Vec3 c0 = {m.col[0].x, m.col[0].y, m.col[0].z};
+    const Vec3 c1 = {m.col[1].x, m.col[1].y, m.col[1].z};
+    const Vec3 c2 = {m.col[2].x, m.col[2].y, m.col[2].z};
+
+    const Vec3 r0 = cross(c1, c2);
+    const Vec3 r1 = cross(c2, c0);
+    const Vec3 r2 = cross(c0, c1);
+
+    const float det = dot(c0, r0);
+
+    // The negated comparison also rejects NaN
+    if (!(fabsf(det) > 1.0e-30f)) {
+        return mat4_identity();
+    }
+
+    const float inv_det = 1.0f / det;
+
+    return {{
+        {r0.x * inv_det, r0.y * inv_det, r0.z * inv_det, 0.0f},
+        {r1.x * inv_det, r1.y * inv_det, r1.z * inv_det, 0.0f},
+        {r2.x * inv_det, r2.y * inv_det, r2.z * inv_det, 0.0f},
+        {0.0f, 0.0f, 0.0f, 1.0f}
+    }};
+}
+
 // Transform a point: translation applies because w = 1
 GFX_HD inline Vec3 transform_point(Mat4 m, Vec3 p) {
     const Vec4 result = m * make_vec4(p, 1.0f);

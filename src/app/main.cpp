@@ -1,10 +1,9 @@
-#include "core/image.h"
 #include "core/log.h"
 #include "core/timer.h"
 #include "core/orbit_camera.h"
 #include "core/math_util.h"
 #include "core/mesh.h"
-#include "core/obj_loader.h"
+#include "core/model.h"
 #include "core/transform.h"
 #include "core/transform_edit.h"
 #include "platform/ui_font.h"
@@ -14,7 +13,6 @@
 #include "ui/ui_draw.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -99,11 +97,10 @@ int main(int argc, char** argv) {
     }
 
     // Load and convert the optional model before creating the window.
-    gfx::Mesh mesh;
-
-    // Base colour images, one slot per material (empty when the material
-    // has no texture or its file could not be read)
-    std::vector<gfx::Image> material_images;
+    // A Model is one or more meshes, the images their materials use, and
+    // the instances placing the meshes (OBJ: one mesh, one instance;
+    // glTF: one per node that has a mesh)
+    gfx::Model model;
     const bool has_model = model_path != nullptr;
     gfx::Aabb bounds{};
     gfx::Transform model_transform;
@@ -129,76 +126,97 @@ int main(int argc, char** argv) {
 
         model_name = std::filesystem::path(resolved).filename().string();
 
-        if (!gfx::load_obj(resolved, mesh, error)) {
+        // Loads, converts to Z-up, generates missing normals and edges,
+        // decodes the textures and centres the model on the origin
+        if (!gfx::load_model(resolved, model, error)) {
             LOG_ERROR("failed to load model: %s", error.c_str());
             return 1;
         }
 
-        gfx::mesh_y_up_to_z_up(mesh);
+        std::size_t vertex_count = 0;
+        std::size_t texcoord_meshes = 0;
 
-        const bool normals_generated = gfx::ensure_normals(mesh);
+        for (const gfx::Mesh& mesh : model.meshes) {
+            vertex_count += mesh.positions.size();
 
-        gfx::ensure_edges(mesh);
-
-        if (normals_generated) {
-            LOG_INFO("normals generated (flat)");
-        } else {
-            LOG_INFO("normals in file: yes");
+            if (mesh.has_texcoords()) {
+                ++texcoord_meshes;
+            }
         }
 
         LOG_INFO(
-            "loaded model: %zu vertices, %zu triangles",
-            mesh.positions.size(),
-            mesh.triangle_count()
+            "loaded model: %zu mesh%s, %zu instance%s, %zu vertices, "
+            "%zu triangles",
+            model.meshes.size(), model.meshes.size() == 1 ? "" : "es",
+            model.instances.size(), model.instances.size() == 1 ? "" : "s",
+            vertex_count, gfx::model_triangle_count(model)
         );
 
-        LOG_INFO("texture coordinates: %s",
-                 mesh.has_texcoords() ? "yes" : "no");
-
-        for (const gfx::Material& material : mesh.materials) {
-            LOG_INFO(
-                "material '%s': base colour %.2f %.2f %.2f, roughness "
-                "%.2f, metallic %.2f%s%s",
-                material.name.c_str(),
-                material.base_color.x,
-                material.base_color.y,
-                material.base_color.z,
-                material.roughness,
-                material.metallic,
-                material.base_color_texture.empty() ? "" : ", texture ",
-                material.base_color_texture.c_str());
+        if (model.meshes.size() == 1) {
+            LOG_INFO("texture coordinates: %s",
+                     texcoord_meshes == 1 ? "yes" : "no");
+        } else {
+            LOG_INFO("texture coordinates: %zu of %zu meshes",
+                     texcoord_meshes, model.meshes.size());
         }
 
-        // Decode the textures now; the renderers will use them from
-        // Step 3. A texture that cannot be read only costs its image
-        material_images.resize(mesh.materials.size());
+        // One line per distinct material name (glTF gives every mesh a
+        // copy of the whole list)
+        std::vector<std::string> logged_materials;
 
-        for (std::size_t i = 0; i < mesh.materials.size(); ++i) {
-            const std::string& texture = mesh.materials[i].base_color_texture;
+        for (const gfx::Mesh& mesh : model.meshes) {
+            for (const gfx::Material& material : mesh.materials) {
+                if (std::find(logged_materials.begin(),
+                              logged_materials.end(),
+                              material.name) != logged_materials.end()) {
+                    continue;
+                }
 
-            if (texture.empty()) {
-                continue;
+                logged_materials.push_back(material.name);
+
+                LOG_INFO(
+                    "material '%s': base colour %.2f %.2f %.2f, roughness "
+                    "%.2f, metallic %.2f%s%s",
+                    material.name.c_str(),
+                    material.base_color.x,
+                    material.base_color.y,
+                    material.base_color.z,
+                    material.roughness,
+                    material.metallic,
+                    material.base_color_texture.empty() ? "" : ", texture ",
+                    material.base_color_texture.c_str());
             }
-
-            const auto start = std::chrono::steady_clock::now();
-            std::string image_error;
-
-            if (!gfx::load_image(texture, material_images[i], image_error)) {
-                LOG_WARN("texture not loaded: %s", image_error.c_str());
-                continue;
-            }
-
-            const double ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - start).count();
-
-            LOG_INFO("texture %s: %dx%d, decoded in %.1f ms",
-                     texture.c_str(), material_images[i].width,
-                     material_images[i].height, ms);
         }
 
-        gfx::mesh_center_at_origin(mesh);
-        bounds = gfx::compute_bounds(mesh);
+        // The decoded images (the renderers will use them from Step 3).
+        // The material that uses an image knows its name
+        std::vector<bool> image_logged(model.images.size(), false);
 
+        for (const gfx::Mesh& mesh : model.meshes) {
+            for (const gfx::Material& material : mesh.materials) {
+                const int image = material.base_color_image;
+
+                if (image < 0 ||
+                    static_cast<std::size_t>(image) >= model.images.size() ||
+                    image_logged[static_cast<std::size_t>(image)]) {
+                    continue;
+                }
+
+                image_logged[static_cast<std::size_t>(image)] = true;
+
+                const gfx::Image& decoded =
+                    model.images[static_cast<std::size_t>(image)];
+
+                LOG_INFO("texture %s: %dx%d",
+                         material.base_color_texture.c_str(),
+                         decoded.width, decoded.height);
+            }
+        }
+
+        bounds = gfx::model_bounds(model);
+
+        // Stand on the floor: the model is centred on the origin, so
+        // half its height lifts the lowest point to z = 0
         model_transform.position.z =
             (bounds.max.z - bounds.min.z) * 0.5f;
     }
@@ -295,7 +313,9 @@ int main(int argc, char** argv) {
     gfx::OrbitCamera camera;
     constexpr float kFovY = gfx::to_radians(60.0f);
 
-    gfx::MeshId mesh_id = 0;
+    // One renderer mesh per Model mesh; the instances refer to them by
+    // index
+    std::vector<gfx::MeshId> mesh_ids;
 
     // Half the model's diagonal: frames the camera, and scales how far a
     // drag in the panel's Position fields moves the model
@@ -317,11 +337,15 @@ int main(int argc, char** argv) {
     if (has_model) {
         reset_camera();
 
-        mesh_id = renderer->create_mesh(mesh);
+        for (const gfx::Mesh& mesh : model.meshes) {
+            const gfx::MeshId id = renderer->create_mesh(mesh);
 
-        if (mesh_id == 0) {
-            LOG_ERROR("failed to upload model to the renderer");
-            return 1;
+            if (id == 0) {
+                LOG_ERROR("failed to upload model to the renderer");
+                return 1;
+            }
+
+            mesh_ids.push_back(id);
         }
     }
 
@@ -454,12 +478,25 @@ int main(int argc, char** argv) {
 
             // ---- Model -------------------------------------------
             if (has_model && ui.header("Model", &model_open)) {
+                // Every glTF mesh holds the whole material list, so the
+                // first mesh's count is the model's
+                const std::size_t material_count =
+                    model.meshes.empty() ? 0
+                                         : model.meshes[0].materials.size();
+
                 char info[160];
-                std::snprintf(info, sizeof(info),
-                              "%s | %zu triangles | %zu material%s",
-                              model_name.c_str(), mesh.triangle_count(),
-                              mesh.materials.size(),
-                              mesh.materials.size() == 1 ? "" : "s");
+                int length = std::snprintf(
+                    info, sizeof(info), "%s | %zu triangles | %zu material%s",
+                    model_name.c_str(), gfx::model_triangle_count(model),
+                    material_count, material_count == 1 ? "" : "s");
+
+                if (model.meshes.size() > 1 && length > 0 &&
+                    static_cast<std::size_t>(length) < sizeof(info)) {
+                    std::snprintf(info + length, sizeof(info) -
+                                  static_cast<std::size_t>(length),
+                                  " | %zu meshes", model.meshes.size());
+                }
+
                 ui.text(info);
 
                 // The fields show the live transform, so during a
@@ -611,13 +648,25 @@ int main(int argc, char** argv) {
         frame.ui = &ui_list;
 
         // The application owns the transform. The renderer receives
-        // the resulting matrices and draws the mesh
-        if (mesh_id != 0) {
-            frame.draw_list.push_back({
-                mesh_id,
-                model_transform.model_matrix(),
-                model_transform.normal_matrix()
-            });
+        // the resulting matrices and draws the meshes: each instance
+        // is placed by the model transform (G/R/S edit the whole model)
+        // times its own transform inside the model
+        if (!mesh_ids.empty()) {
+            const gfx::Mat4 model_matrix = model_transform.model_matrix();
+
+            for (const gfx::ModelInstance& instance : model.instances) {
+                if (instance.mesh >= mesh_ids.size()) {
+                    continue;
+                }
+
+                const gfx::Mat4 world = model_matrix * instance.transform;
+
+                frame.draw_list.push_back({
+                    mesh_ids[instance.mesh],
+                    world,
+                    gfx::normal_matrix_of(world)
+                });
+            }
         }
 
         renderer->render(frame);

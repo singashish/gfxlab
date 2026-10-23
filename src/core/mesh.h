@@ -19,7 +19,9 @@ struct Mesh {
 
     // Texture coordinates, parallel to positions. Empty unless every
     // face corner in the file had one. Kept as written in the OBJ:
-    // (0, 0) is the bottom-left corner of the image, v pointing up
+    // (0, 0) is the bottom-left corner of the image, v pointing up.
+    // The glTF loader converts to this convention (glTF has (0, 0) at
+    // the top-left)
     std::vector<Vec2> texcoords;
 
     // Surfaces. A loaded mesh always has at least one (a "default"
