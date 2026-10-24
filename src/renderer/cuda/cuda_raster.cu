@@ -1250,22 +1250,22 @@ struct SurfacePoint {
     Vec3 normal;     // interpolated shading normal (not unit length)
     Vec3 geometric;  // the triangle's own normal (unit length)
     Vec3 base;       // surface colour: material colour times texel
+
+    // What the path tracer needs to look up the rest of the material
+    // (see resolve_surface_material). Both are only filled while
+    // materials are shown; with them off nothing reads them. They are
+    // cheap facts the hit has found out anyway, so recording them costs
+    // the ray tracer nothing; the expensive part (more texture reads) is
+    // left to the path tracer
+    std::uint32_t material;  // index into the renderer-wide table
+    Vec2 uv;                 // texture coordinates at the hit (v up)
 };
 
-// The surface colour at a ray hit: the material's colour times its
-// base-colour texture, or the plain grey when materials are off. The hit
-// is on `triangle` with barycentric weights (w0, w1, w2) for its corners
-// (i0, i1, i2 are the corners' vertex indices).
-//
-// Camera rays have no pixel footprint to measure, so the texture is
-// sampled at level 0 only (bilinear, no mip levels). The price is some
-// shimmer on finely detailed textures far away or at grazing angles,
-// which the rasterizer avoids with trilinear filtering. Mip levels for
-// rays would need ray differentials, which is a step for later
-__device__ __forceinline__ Vec3 hit_base_color(
-                const MaterialTables& tables,
+// The texture coordinates at a hit on the triangle with corners
+// (i0, i1, i2) and barycentric weights (w0, w1, w2). A mesh without
+// texture coordinates uses uv (0, 0)
+__device__ __forceinline__ Vec2 hit_uv(
                 const DeviceMesh& mesh,
-                std::uint32_t triangle,
                 std::uint32_t i0,
                 std::uint32_t i1,
                 std::uint32_t i2,
@@ -1273,11 +1273,6 @@ __device__ __forceinline__ Vec3 hit_base_color(
                 float w1,
                 float w2) {
 
-    if (!tables.show_materials) {
-        return unlit_base_color();
-    }
-
-    // Meshes without texture coordinates use uv (0, 0)
     Vec2 uv{0.0f, 0.0f};
 
     if (mesh.texcoords) {
@@ -1286,8 +1281,22 @@ __device__ __forceinline__ Vec3 hit_base_color(
              mesh.texcoords[i2] * w2;
     }
 
-    const CudaMaterial material = tables.materials[
-        mesh.material_base + mesh.triangle_materials[triangle]];
+    return uv;
+}
+
+// The surface colour at a ray hit: the material's colour times its
+// base-colour texture, at the texture coordinates uv. (The caller uses
+// the plain grey instead when materials are off.)
+//
+// Camera rays have no pixel footprint to measure, so the texture is
+// sampled at level 0 only (bilinear, no mip levels). The price is some
+// shimmer on finely detailed textures far away or at grazing angles,
+// which the rasterizer avoids with trilinear filtering. Mip levels for
+// rays would need ray differentials, which is a step for later
+__device__ __forceinline__ Vec3 hit_base_color(
+                const MaterialTables& tables,
+                const CudaMaterial& material,
+                Vec2 uv) {
 
     // Image rows run top to bottom, v points up: sample at 1 - v
     const Vec3 texel = sample_bilinear(
@@ -1395,9 +1404,18 @@ __device__ __forceinline__ bool closest_surface(
         point.geometric = -point.geometric;
     }
 
-    point.base = hit_base_color(
-        scene.surfaces, mesh, best.triangle, i0, i1, i2,
-        w0, best.u, best.v);
+    if (scene.surfaces.show_materials) {
+        point.material =
+            mesh.material_base + mesh.triangle_materials[best.triangle];
+        point.uv = hit_uv(mesh, i0, i1, i2, w0, best.u, best.v);
+        point.base = hit_base_color(
+            scene.surfaces, scene.surfaces.materials[point.material],
+            point.uv);
+    } else {
+        point.material = 0;
+        point.uv = Vec2{0.0f, 0.0f};
+        point.base = unlit_base_color();
+    }
 
     return true;
 }
@@ -1753,7 +1771,7 @@ __global__ void rt_finish_kernel(
 // Path tracer ("Rendered" mode). The maths and the ideas (linear light,
 // Monte Carlo, cosine sampling, next-event estimation, Russian roulette)
 // are explained in core/path_math.h; the constants (bounces, sun, sky)
-// are defined there. Only Lambert (diffuse) surfaces for now.
+// are defined there. Lambert (diffuse) surfaces and emission for now.
 //
 // Colours: the stored colours (material colour times texel, the values
 // the viewport shows) are display (sRGB) values. The path tracer decodes
@@ -1768,6 +1786,89 @@ __global__ void rt_finish_kernel(
 // object blend with the background correctly.
 // ---------------------------------------------------------------------
 
+// The material of a path-traced surface point, in the units the path
+// tracer computes in (linear light).
+struct PathMaterial {
+    Vec3 albedo;      // linear, 0..1: the fraction of light reflected
+    float roughness;  // 0..1, carried to the hit but not used yet
+    float metallic;   // 0..1, carried to the hit but not used yet
+
+    // Linear radiance the surface gives off by itself, per colour
+    // channel, in the same units as the sky and the sun. Radiance is
+    // "how much light travels along one ray", so this is exactly what
+    // a ray that arrives at the surface from the camera side brings
+    // back: the surface shines this much, seen from any direction and
+    // from both sides. May be far above 1 (a lamp)
+    Vec3 emission;
+};
+
+// Everything the path tracer needs to know about the surface at `point`
+// (a hit found by closest_surface). The expensive part of the lookup,
+// the extra texture reads, happens here and only here, so the ray tracer
+// that shares closest_surface does not pay for it.
+//
+// Three textures play three different roles, and that decides how their
+// texels are read:
+//   - base colour: a COLOUR, stored as sRGB. closest_surface already
+//     multiplied it into point.base; the albedo is decode_srgb of that.
+//   - emissive: also a colour in sRGB, so its texel is decoded to
+//     linear light before it scales the (linear) emission factor.
+//   - metallic-roughness: DATA, not a colour. The texel values are the
+//     numbers themselves (G = roughness, B = metallic, both 0..1 as
+//     stored), so decoding them as sRGB would bend the values: a
+//     roughness of 0.5 stored as 128 must come out as 0.5, not 0.21.
+//
+// With materials off (the M key) the surface is plain grey paint: the
+// grey albedo that closest_surface put in point.base, medium roughness,
+// not metallic and no emission. "No materials" has to mean no lamps too
+__device__ __forceinline__ PathMaterial resolve_surface_material(
+                const MaterialTables& tables,
+                const SurfacePoint& point) {
+
+    PathMaterial result;
+    result.albedo = decode_srgb(point.base);
+
+    if (!tables.show_materials) {
+        result.roughness = 0.5f;
+        result.metallic = 0.0f;
+        result.emission = Vec3{0.0f, 0.0f, 0.0f};
+        return result;
+    }
+
+    const CudaMaterial& material = tables.materials[point.material];
+
+    // Same texture coordinates and the same v flip as the base colour:
+    // image rows run top to bottom while v points up. Level 0 only,
+    // like every ray (no pixel footprint to choose a mip level from)
+    const float u = point.uv.x;
+    const float v = 1.0f - point.uv.y;
+
+    // Data texture: used as stored. The product of two numbers in 0..1
+    // stays in 0..1; clamp01 only guards against a table entry that was
+    // not made by CudaMeshStore
+    const Vec3 packed =
+        sample_bilinear(tables.textures[material.metallic_roughness_texture],
+                        0, u, v);
+
+    result.roughness = clamp01(material.roughness * packed.y);
+    result.metallic = clamp01(material.metallic * packed.z);
+
+    // Most surfaces give off no light: skip the texture read and the
+    // sRGB decoding for them (an emission of 0 times anything is 0)
+    result.emission = Vec3{0.0f, 0.0f, 0.0f};
+
+    if (material.emission.x > 0.0f || material.emission.y > 0.0f ||
+        material.emission.z > 0.0f) {
+        const Vec3 texel = decode_srgb(
+            sample_bilinear(tables.textures[material.emissive_texture],
+                            0, u, v));
+
+        result.emission = modulate(material.emission, texel);
+    }
+
+    return result;
+}
+
 // The radiance (linear light) arriving at the camera through the point
 // (x + jx, y + jy) of the image, for one sample, found by following one
 // random path of up to max_bounces surfaces.
@@ -1775,7 +1876,9 @@ __global__ void rt_finish_kernel(
 // For one sample the estimate is
 //     L = sum over the path's vertices of (throughput there) * (light
 //         added there),
-// where the throughput is the product of the albedos met so far.
+// where the throughput is the product of the albedos met so far and the
+// light added is what the vertex's surface emits, the sun it receives
+// through the shadow ray, or the sky a ray that left the scene sees.
 // Averaging many samples (the accumulation buffer) gives the picture.
 //
 // Random numbers: every sample of every pixel gets its own seed,
@@ -1823,9 +1926,10 @@ __device__ __forceinline__ Vec3 trace_path(
     depth = -1.0f;
 
     // One iteration per ray. Rays 0 .. max_bounces - 1 end on surfaces
-    // that are shaded; ray max_bounces only collects the sky, because it
-    // is the continuation of the last shaded surface (and a miss of the
-    // camera ray, ray 0, collects the viewport background instead)
+    // that are shaded; ray max_bounces only collects the sky and the
+    // emission of the surface it hits, because it is the continuation of
+    // the last shaded surface (and a miss of the camera ray, ray 0,
+    // collects the viewport background instead)
     for (int bounce = 0; bounce <= pt.max_bounces; ++bounce) {
         SurfacePoint point;
 
@@ -1846,14 +1950,33 @@ __device__ __forceinline__ Vec3 trace_path(
             depth = point.t;
         }
 
+        // The albedo is the display colour decoded to linear light. Base
+        // colours are clamped to 0..1 by the decoding, so a surface never
+        // reflects more than it receives
+        const PathMaterial material =
+            resolve_surface_material(scene.surfaces, point);
+        const Vec3 albedo = material.albedo;
+
+        // Emission: this surface is itself a source of light. The ray
+        // that found it travels backwards along the path, so whatever
+        // the surface emits towards us is light that reaches the camera
+        // after being reflected by all the surfaces between (the
+        // throughput, the product of their albedos, says how much of it
+        // survives). The camera ray's first hit has throughput 1, so a
+        // lamp seen directly shows its full emission.
+        //
+        // This comes BEFORE the "out of bounces" test: the last ray of
+        // the path may well end on a lamp, and that light is as real as
+        // any other. Only the shading below (the sun, the next
+        // direction) is limited to max_bounces surfaces; adding what the
+        // hit surface emits costs no further ray, so it is free to count
+        // every hit. (Dropping it would make small lamps vanish from the
+        // image whenever the path that finds them is already long.)
+        radiance = radiance + modulate(throughput, material.emission);
+
         if (bounce == pt.max_bounces) {
             break;  // out of bounces: this surface is not shaded
         }
-
-        // The albedo: display colour to linear. Base colours are
-        // clamped to 0..1 by the decoding, so a surface never reflects
-        // more than it receives
-        const Vec3 albedo = decode_srgb(point.base);
 
         Vec3 n = normalize(point.normal);
 

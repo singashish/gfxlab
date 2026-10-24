@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <utility>
 
@@ -18,6 +19,67 @@ static_assert(sizeof(Vec3) == 12,
               "CUDA mesh upload requires tightly packed Vec3");
 static_assert(sizeof(Vec2) == 8,
               "CUDA mesh upload requires tightly packed Vec2");
+
+// The texture table index for a Model image number: -1 (no texture), a
+// number outside the list, or an image that failed to upload (TextureId
+// 0) all give 0, the 1x1 white texture. Every material texture slot is
+// resolved this way, so the kernels never need a "has texture" branch
+int resolve_texture(int image,
+                    const std::vector<TextureId>& textures,
+                    const CudaTextureStore& store) {
+    if (image < 0 ||
+        static_cast<std::size_t>(image) >= textures.size()) {
+        return 0;
+    }
+
+    return store.table_index(textures[static_cast<std::size_t>(image)]);
+}
+
+// A factor that must lie in 0..1 (roughness, metallic). A NaN or
+// infinite value from a damaged file falls back to `fallback`
+float unit_factor(float value, float fallback) {
+    if (!std::isfinite(value)) {
+        return fallback;
+    }
+
+    return value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
+}
+
+// One component of an emission colour: finite and not negative. There is
+// no upper limit, a lamp may be far brighter than 1. A bad value gives 0
+// (no light) rather than a lamp of unknown strength
+float emission_component(float value) {
+    return std::isfinite(value) && value > 0.0f ? value : 0.0f;
+}
+
+// The device entry of a Material. `textures` and `store` resolve the
+// material's images as described at resolve_texture
+CudaMaterial make_cuda_material(const Material& material,
+                                const std::vector<TextureId>& textures,
+                                const CudaTextureStore& store) {
+    CudaMaterial entry{};
+    entry.base_color = material.base_color;
+    entry.texture =
+        resolve_texture(material.base_color_image, textures, store);
+
+    entry.emission = Vec3{emission_component(material.emission.x),
+                          emission_component(material.emission.y),
+                          emission_component(material.emission.z)};
+    entry.emissive_texture =
+        resolve_texture(material.emissive_image, textures, store);
+
+    entry.roughness = unit_factor(material.roughness, 0.5f);
+    entry.metallic = unit_factor(material.metallic, 0.0f);
+    entry.metallic_roughness_texture =
+        resolve_texture(material.metallic_roughness_image, textures, store);
+
+    return entry;
+}
+
+bool is_emissive(const CudaMaterial& material) {
+    return material.emission.x > 0.0f || material.emission.y > 0.0f ||
+           material.emission.z > 0.0f;
+}
 
 void free_device_mesh(DeviceMesh& mesh) {
     if (mesh.positions) {
@@ -201,27 +263,21 @@ MeshId CudaMeshStore::add(const Mesh& mesh,
     std::vector<CudaMaterial> new_materials;
     new_materials.reserve(material_count + 1);
 
+    const std::vector<TextureId> no_textures;
+    std::size_t emissive_count = 0;
+
     for (const Material& material : mesh.materials) {
-        CudaMaterial entry{};
-        entry.base_color = material.base_color;
-        entry.texture = 0;  // white
+        const CudaMaterial entry =
+            make_cuda_material(material, textures, store);
 
-        if (material.base_color_image >= 0 &&
-            static_cast<std::size_t>(material.base_color_image) <
-                textures.size()) {
-            entry.texture = store.table_index(
-                textures[static_cast<std::size_t>(
-                    material.base_color_image)]);
-        }
-
+        emissive_count += is_emissive(entry) ? 1 : 0;
         new_materials.push_back(entry);
     }
 
-    const Material fallback;
-    CudaMaterial fallback_entry{};
-    fallback_entry.base_color = fallback.base_color;
-    fallback_entry.texture = 0;
-    new_materials.push_back(fallback_entry);
+    // The fallback has no texture and no emission, and it is not
+    // counted as a material of the mesh
+    new_materials.push_back(
+        make_cuda_material(Material{}, no_textures, store));
 
     if (m_materials.size() + new_materials.size() >
         static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -343,11 +399,12 @@ MeshId CudaMeshStore::add(const Mesh& mesh,
 
     LOG_INFO(
         "CUDA mesh uploaded: id=%u, vertices=%u, triangles=%u, "
-        "materials=%zu%s",
+        "materials=%zu (%zu emissive)%s",
         id,
         device.vertex_count,
         device.index_count / 3,
         material_count,
+        emissive_count,
         has_uv ? ", with texcoords" : ""
     );
 

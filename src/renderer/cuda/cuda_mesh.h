@@ -16,7 +16,13 @@ class CudaTextureStore;
 
 // One entry of the renderer-wide material table in device memory. Every
 // mesh appends its own materials to it (see CudaMeshStore::add), so a
-// triangle's material is found with one global index
+// triangle's material is found with one global index.
+//
+// The rasterizer and the ray tracer read only base_color and texture
+// (the first 16 bytes); the rest is for the path tracer. The fields are
+// ordered so that every group of four 4-byte values (a Vec3 and the int
+// after it) fills a 16-byte slot, which is what the GPU's memory system
+// likes: a thread that needs one group never touches the others.
 struct CudaMaterial {
     Vec3 base_color;  // multiplied with the texture, as in the GL shader
 
@@ -24,10 +30,29 @@ struct CudaMaterial {
     // material without a texture, or with an unknown one, holds 0, the
     // 1x1 white texture, so the kernels never branch on "no texture"
     int texture;
+
+    // Light the surface gives off, as linear radiance (R, G, B). Each
+    // component is finite and >= 0, and may exceed 1: a lamp is much
+    // brighter than a white wall lit by it. Multiplied with the emissive
+    // texture (a colour texture, so it is sRGB-decoded when sampled)
+    Vec3 emission;
+    int emissive_texture;  // texture table index, 0 = white
+
+    // 0..1 each. Multiplied with the G (roughness) and B (metallic)
+    // channels of the metallic-roughness texture, which is DATA, not a
+    // colour, so its texels are used as stored (no sRGB decoding)
+    float roughness;
+    float metallic;
+    int metallic_roughness_texture;  // texture table index, 0 = white
+
+    int padding;  // keeps the size at 48 bytes (3 x 16); room to grow
 };
 
-static_assert(sizeof(CudaMaterial) == 16,
+static_assert(sizeof(CudaMaterial) == 48,
               "CudaMaterial must be tightly packed");
+static_assert(offsetof(CudaMaterial, base_color) == 0 &&
+                  offsetof(CudaMaterial, texture) == 12,
+              "the rasterizer reads base_color and texture first");
 
 struct DeviceMesh {
     Vec3* positions = nullptr;

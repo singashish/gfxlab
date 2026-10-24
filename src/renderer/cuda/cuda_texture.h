@@ -24,7 +24,15 @@ namespace gfx {
 // (i >= 1) is the texture with TextureId i. So a TextureId is also its
 // table index, and "no texture" is simply entry 0: white leaves the base
 // colour unchanged, and the kernels never need a branch for a missing
-// texture
+// texture. (White is also the neutral value of the other texture roles:
+// it leaves an emission factor and the roughness and metallic factors
+// unchanged.)
+//
+// The store keeps the texels exactly as the image has them (RGBA8) and
+// knows nothing about what a texture means. Whether its values are
+// colours (base colour, emission: stored as sRGB) or plain data
+// (metallic-roughness: used as stored) is decided where it is sampled,
+// by the material that uses it
 class CudaTextureStore {
 public:
     CudaTextureStore() = default;

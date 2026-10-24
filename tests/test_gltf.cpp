@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -2548,6 +2549,210 @@ void test_cubes_assets() {
     CHECK(bounds.max.x - bounds.min.x > 3.0f);
 }
 
+// assets/gltf/materials.glb (made by make_material_test_model.py): the
+// material test bench of the path tracer. One mesh with ten spheres in a
+// 5 x 2 grid (a primitive and a material each), an emissive panel and a
+// floor. Only three instances: the CUDA ray and path tracers handle at
+// most eight draw items, so ten sphere nodes would not all be drawn
+void test_materials_asset() {
+    gfx::Model model;
+    std::string error;
+
+    CHECK(gfx::load_model(kAssets + "/gltf/materials.glb", model, error));
+    CHECK(error.empty());
+    CHECK(model_is_consistent(model));
+
+    // spheres, panel, floor; no image anywhere (everything is a factor)
+    CHECK(model.meshes.size() == 3);
+    CHECK(model.instances.size() == 3);
+    CHECK(model.images.empty());
+
+    // 10 spheres of 24 x 16 segments (the two pole rings have one
+    // triangle per segment instead of two) plus the two quads
+    CHECK(gfx::model_triangle_count(model) ==
+          10 * (24 * 16 * 2 - 2 * 24) + 4);
+
+    if (model.meshes.size() != 3 || model.instances.size() != 3) {
+        return;
+    }
+
+    // Every mesh holds the whole material list of the file: ten spheres,
+    // the panel and the floor
+    const gfx::Mesh* spheres_mesh = nullptr;
+    const gfx::Mesh* panel_mesh = nullptr;
+    const gfx::Mesh* floor_mesh = nullptr;
+
+    for (const gfx::Mesh& mesh : model.meshes) {
+        CHECK(mesh.materials.size() == 12);
+        CHECK(mesh.has_normals() && mesh.has_texcoords());
+        CHECK(mesh.triangle_materials.size() == mesh.triangle_count());
+
+        if (mesh.triangle_materials.empty() ||
+            mesh.triangle_materials[0] >= mesh.materials.size()) {
+            return;
+        }
+
+        const std::string& first =
+            mesh.materials[mesh.triangle_materials[0]].name;
+
+        if (mesh.triangle_count() == 7200) {
+            spheres_mesh = &mesh;
+        } else if (first == "panel") {
+            panel_mesh = &mesh;
+        } else if (first == "floor") {
+            floor_mesh = &mesh;
+        }
+    }
+
+    CHECK(spheres_mesh != nullptr);
+    CHECK(panel_mesh != nullptr);
+    CHECK(floor_mesh != nullptr);
+
+    if (spheres_mesh == nullptr || panel_mesh == nullptr ||
+        floor_mesh == nullptr) {
+        return;
+    }
+
+    // The sphere grid: for every material number, the box around the
+    // vertices of the triangles that use it (a sphere), in model space
+    // of the Z-up world (the instances are only centred, not rotated)
+    struct Box {
+        gfx::Vec3 low = {1e30f, 1e30f, 1e30f};
+        gfx::Vec3 high = {-1e30f, -1e30f, -1e30f};
+        std::size_t triangles = 0;
+    };
+
+    std::vector<Box> boxes(spheres_mesh->materials.size());
+
+    for (std::size_t t = 0; t < spheres_mesh->triangle_count(); ++t) {
+        Box& box = boxes[spheres_mesh->triangle_materials[t]];
+        ++box.triangles;
+
+        for (std::size_t k = 0; k < 3; ++k) {
+            const gfx::Vec3 p =
+                spheres_mesh->positions[spheres_mesh->indices[t * 3 + k]];
+            box.low = {std::min(box.low.x, p.x), std::min(box.low.y, p.y),
+                       std::min(box.low.z, p.z)};
+            box.high = {std::max(box.high.x, p.x), std::max(box.high.y, p.y),
+                        std::max(box.high.z, p.z)};
+        }
+    }
+
+    const float kRoughness[5] = {0.05f, 0.25f, 0.5f, 0.75f, 1.0f};
+    gfx::Vec3 centres[2][5] = {};
+    int found[2][5] = {};
+
+    for (std::size_t m = 0; m < boxes.size(); ++m) {
+        const gfx::Material& material = spheres_mesh->materials[m];
+
+        if (boxes[m].triangles == 0) {
+            CHECK(material.name == "panel" || material.name == "floor");
+            continue;
+        }
+
+        // dielectric_r005 .. metal_r100
+        const int row = material.name.rfind("dielectric_r", 0) == 0 ? 0 : 1;
+        const std::string digits =
+            material.name.substr(material.name.rfind('r') + 1);
+        const int percent = std::atoi(digits.c_str());
+
+        CHECK(boxes[m].triangles == 720);
+
+        // A sphere of radius 0.45: its box is 0.9 wide in every direction
+        CHECK(approx(boxes[m].high.x - boxes[m].low.x, 0.9, 1e-4));
+        CHECK(approx(boxes[m].high.y - boxes[m].low.y, 0.9, 1e-4));
+        CHECK(approx(boxes[m].high.z - boxes[m].low.z, 0.9, 1e-4));
+
+        for (int col = 0; col < 5; ++col) {
+            if (std::lround(kRoughness[col] * 100.0f) != percent) {
+                continue;
+            }
+
+            ++found[row][col];
+            centres[row][col] = (boxes[m].low + boxes[m].high) * 0.5f;
+
+            // The top row is dielectric and blue-ish, the bottom row
+            // metal and gold-ish; roughness 0.05 .. 1.0 left to right;
+            // none of them emits
+            CHECK(approx(material.roughness, kRoughness[col]));
+            CHECK(approx(material.metallic, row == 0 ? 0.0 : 1.0));
+
+            if (row == 0) {
+                CHECK(approx_vec(material.base_color, {0.2f, 0.4f, 0.9f}));
+            } else {
+                CHECK(approx_vec(material.base_color,
+                                 {1.0f, 0.77f, 0.34f}));
+            }
+
+            CHECK(approx_vec(material.emission, {0.0f, 0.0f, 0.0f}));
+            CHECK(material.base_color_image < 0 &&
+                  material.emissive_image < 0 &&
+                  material.metallic_roughness_image < 0);
+        }
+    }
+
+    for (int row = 0; row < 2; ++row) {
+        for (int col = 0; col < 5; ++col) {
+            CHECK(found[row][col] == 1);
+        }
+    }
+
+    // The grid, in the Z-up world: 1.1 apart in x between columns, the
+    // top row 1.1 higher (z) than the bottom one, all at the same depth
+    for (int col = 0; col < 5; ++col) {
+        CHECK(approx(centres[0][col].x, centres[1][col].x, 1e-4));
+        CHECK(approx(centres[0][col].y, centres[1][col].y, 1e-4));
+        CHECK(approx(centres[0][col].z - centres[1][col].z, 1.1, 1e-4));
+
+        if (col > 0) {
+            CHECK(approx(centres[0][col].x - centres[0][col - 1].x, 1.1,
+                         1e-4));
+            CHECK(approx(centres[1][col].x - centres[1][col - 1].x, 1.1,
+                         1e-4));
+        }
+    }
+
+    CHECK(spheres_mesh->positions.size() == 10 * 25 * 17);
+
+    // The panel: an emitter. emissiveFactor (1, 0.85, 0.6) times the
+    // KHR_materials_emissive_strength 8, over a nearly black base colour
+    const gfx::Material& lamp =
+        panel_mesh->materials[panel_mesh->triangle_materials[0]];
+    CHECK(approx_vec(lamp.emission, {8.0f, 6.8f, 4.8f}, 1e-4));
+    CHECK(lamp.base_color.x < 0.1f && lamp.base_color.y < 0.1f &&
+          lamp.base_color.z < 0.1f);
+    CHECK(panel_mesh->triangle_count() == 2);
+
+    // 2 x 0.3 m, hovering above and behind the grid, facing down and
+    // towards it (in the Z-up world: normal (0, -0.6, -0.8))
+    const gfx::Aabb panel_box = gfx::compute_bounds(*panel_mesh);
+    const gfx::Vec3 panel_centre = (panel_box.min + panel_box.max) * 0.5f;
+    CHECK(approx(panel_box.max.x - panel_box.min.x, 2.0, 1e-4));
+    CHECK(panel_centre.z > centres[0][2].z + 0.9f);
+    CHECK(panel_centre.y > centres[0][2].y + 0.5f);
+
+    if (panel_mesh->normals.size() == 4) {
+        CHECK(approx_vec(panel_mesh->normals[0], {0.0f, -0.6f, -0.8f},
+                         1e-4));
+    }
+
+    // The floor: light grey, fully rough, not metallic, half a metre
+    // under the centres of the bottom row (the spheres' lowest point is
+    // 0.05 above it)
+    const gfx::Material& ground =
+        floor_mesh->materials[floor_mesh->triangle_materials[0]];
+    CHECK(approx_vec(ground.base_color, {0.65f, 0.65f, 0.65f}));
+    CHECK(approx(ground.roughness, 1.0));
+    CHECK(approx(ground.metallic, 0.0));
+    CHECK(approx_vec(ground.emission, {0.0f, 0.0f, 0.0f}));
+    CHECK(floor_mesh->triangle_count() == 2);
+
+    const gfx::Aabb floor_box = gfx::compute_bounds(*floor_mesh);
+    CHECK(approx(floor_box.max.z, floor_box.min.z, 1e-6));
+    CHECK(floor_box.max.x - floor_box.min.x > 5.0f);
+    CHECK(approx(centres[1][0].z - floor_box.min.z, 0.5, 1e-4));
+}
+
 void test_gltf_loader_matches_hand_math() {
     // cubes.glb through parse_gltf, not centred: the instances as the
     // file describes them. cube_right is the cube scaled by 0.5, moved
@@ -2876,6 +3081,7 @@ int main() {
     test_external_files();
     test_load_model_obj();
     test_cubes_assets();
+    test_materials_asset();
     test_gltf_loader_matches_hand_math();
     test_model_bounds_and_centering();
     test_normal_matrix_of();
