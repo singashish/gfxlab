@@ -191,15 +191,20 @@ struct PtParams {
     // Linear light is multiplied by this before tone mapping
     float exposure = kPtExposure;
 
-    // The sun lights the scene (next-event estimation) and its disc is
-    // visible to camera rays. Off: sky light only. Its direction is
-    // RtScene::sun_world
+    // The sun lights the scene (next-event estimation); its disc is never
+    // drawn. Off: sky light only. Its direction is RtScene::sun_world
     bool sun_enabled = true;
     float sun_irradiance = kSunIrradiance;
 
     // cos of the sun's half angle: set it with sun_cone_cos(kSunHalfAngle)
     // (cosf is not a constant expression, so there is no default)
     float sun_cos_half_angle = 1.0f;
+
+    // Linear radiance a camera ray that misses everything sees: the
+    // viewport background colour run backwards through the display
+    // pipeline (background_radiance), so the pixel shows that colour
+    // again after tone mapping. The sky and the sun are never visible
+    Vec3 background = {0.0f, 0.0f, 0.0f};
 };
 
 // Both structs travel as kernel arguments, so together they have to
@@ -320,7 +325,7 @@ bool cuda_ray_trace(
 // it is 0), then turns the accumulated mean into the colour buffer (tone
 // mapped) and writes depth + id 1 for covered pixels into the visibility
 // buffer, so the grid composites unchanged. A pixel that only ever saw
-// the sky leaves the visibility buffer as it is
+// the background leaves the visibility buffer (and the colour) as it is
 bool cuda_path_trace(
                 uchar4* color,
                 std::uint64_t* visibility,

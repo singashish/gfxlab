@@ -39,7 +39,9 @@
  * point of the sun's disc and add its light explicitly. To avoid counting
  * the sun twice, a bounce ray that happens to hit the sun by chance adds
  * nothing: the sun is always handled by the explicit ray, never by chance.
- * Only camera rays see the sun disc, so it appears in the picture.
+ * The sun and the sky are only lights: no ray that leaves the camera and
+ * misses everything shows them, the viewport background is drawn there
+ * instead (see background_radiance), so only their effect is visible.
  *
  * Russian roulette. Paths cannot be followed forever, but cutting them off
  * at a fixed length loses energy. Instead, from some bounce on, a path
@@ -80,8 +82,9 @@ constexpr float kPtExposure = 1.0f;
 // Russian roulette starts at this bounce (counted from 0 = camera hit)
 constexpr int kPtRouletteStart = 3;
 
-// The sun is a disc seen under this half angle (the real sun is about
-// 0.27 degrees; a larger disc gives softer, more visible shadows)
+// The sun is a disc of light seen from the surfaces under this half angle
+// (the real sun is about 0.27 degrees; a larger disc gives softer
+// shadows). The disc is never drawn in the picture, only its light is
 constexpr float kSunHalfAngle = 1.0f * (kPi / 180.0f);
 
 // Irradiance the sun delivers to a surface facing it, in the renderer's
@@ -161,8 +164,8 @@ GFX_HD inline Vec3 encode_srgb(Vec3 l) {
 // ---------------------------------------------------------------------
 // Tone mapping
 //
-// Linear light has no upper limit (the sun disc is thousands of times
-// brighter than a lit wall), but a monitor shows 0..1. Cutting off at 1
+// Linear light has no upper limit (the sun is far brighter than a lit
+// wall), but a monitor shows 0..1. Cutting off at 1
 // would turn every bright area into a flat white patch. A filmic curve
 // compresses instead: nearly linear for dark tones, a soft shoulder for
 // bright ones, so highlights roll off smoothly. This is the ACES fit by
@@ -196,8 +199,48 @@ GFX_HD inline Vec3 linear_to_display(Vec3 radiance, float exposure) {
     return encode_srgb(tonemap_aces(radiance * exposure));
 }
 
+// The inverse of tonemap_aces: the linear value x that the curve maps to
+// y. Rearranging y = x (2.51 x + 0.03) / (x (2.43 x + 0.59) + 0.14) gives
+// the quadratic a x^2 + b x + c = 0 with a = 2.43 y - 2.51,
+// b = 0.59 y - 0.03 and c = 0.14 y. Its one non-negative root is used,
+// written in the form that never subtracts two nearly equal numbers
+// (for b < 0 the other form of the same root). The curve only reaches 1
+// at infinity, so y is limited to 0..0.999 (a finite answer)
+GFX_HD inline float tonemap_aces_inverse(float y) {
+    y = fminf(fmaxf(y, 0.0f), 0.999f);
+
+    const float a = 2.43f * y - 2.51f;  // negative for every y < 1
+    const float b = 0.59f * y - 0.03f;
+    const float c = 0.14f * y;
+    const float root = sqrtf(b * b - 4.0f * a * c);
+
+    return b >= 0.0f ? (b + root) / (-2.0f * a) : 2.0f * c / (root - b);
+}
+
+GFX_HD inline Vec3 tonemap_aces_inverse(Vec3 y) {
+    return {tonemap_aces_inverse(y.x), tonemap_aces_inverse(y.y),
+            tonemap_aces_inverse(y.z)};
+}
+
+// The linear radiance that linear_to_display turns back into the given
+// display colour (0..1 per channel): the path tracer adds it for camera
+// rays that miss everything, so the viewport background stays exactly
+// the background colour, and a pixel half covered by an object blends
+// the object with the background like any other radiance. The three
+// steps are the display pipeline run backwards: sRGB decode, inverse
+// tone map, divide by the exposure. Display values above about 0.999
+// (after decoding) cannot be reached by the tone curve and come back as
+// the nearest value it can reach
+GFX_HD inline Vec3 background_radiance(Vec3 display, float exposure) {
+    const Vec3 radiance = tonemap_aces_inverse(decode_srgb(display));
+
+    return radiance * (1.0f / exposure);
+}
+
 // ---------------------------------------------------------------------
-// The sky
+// The sky: a light, never shown. Rays that bounce off a surface and miss
+// everything collect it, so it lights the scene from all sides. Camera
+// rays that miss get the viewport background instead
 //
 // Nothing here is a texture or a table; the sky is a formula of the
 // direction. Z is up. With up = clamp(dir.z, 0, 1), the weight of the
@@ -282,21 +325,9 @@ GFX_HD inline Vec3 cosine_hemisphere(Vec3 n, float u1, float u2) {
 // The sun
 // ---------------------------------------------------------------------
 
-// cos of the sun's half angle, the form the kernels compare against
+// cos of the sun's half angle, the form sample_sun_cone takes
 GFX_HD inline float sun_cone_cos(float half_angle) {
     return cosf(half_angle);
-}
-
-// Solid angle (in steradians) of a cone: the area it cuts out of the
-// unit sphere. 2 pi (1 - cos(half angle))
-GFX_HD inline float sun_solid_angle(float cos_half) {
-    return 2.0f * kPi * (1.0f - cos_half);
-}
-
-// Radiance of the visible disc: the irradiance it delivers divided by
-// the solid angle it covers. Tone mapping clips it to white
-GFX_HD inline float sun_disc_radiance(float irradiance, float cos_half) {
-    return irradiance / sun_solid_angle(cos_half);
 }
 
 // A direction uniformly distributed over the sun's cone (uniform in

@@ -812,7 +812,18 @@ void CudaRenderer::render(const FrameData& frame) {
         pt.sun_irradiance = kSunIrradiance;
         pt.sun_cos_half_angle = sun_cone_cos(kSunHalfAngle);
 
-        // Runs even with nothing to draw: the picture is then the sky
+        // Camera rays that miss see the same background colour the clear
+        // pass painted (one variable, so they cannot drift apart), as the
+        // linear radiance that the display pipeline turns back into it.
+        // The sky and the sun only light the scene, they are not drawn
+        pt.background = background_radiance(
+            Vec3{static_cast<float>(background.x) / 255.0f,
+                 static_cast<float>(background.y) / 255.0f,
+                 static_cast<float>(background.z) / 255.0f},
+            pt.exposure);
+
+        // Runs even with nothing to draw: the picture is then the plain
+        // background
         if (!cuda_path_trace(
                 color, visibility, m_width, m_height, rt_scene, pt)) {
             return;

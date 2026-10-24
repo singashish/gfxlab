@@ -326,23 +326,6 @@ void test_sun() {
     CHECK(close_to(cos_half, std::cos(gfx::to_radians(1.0f)), 1.0e-7f));
     CHECK(close_to(gfx::sun_cone_cos(0.0f), 1.0f, 1.0e-7f));
 
-    // Solid angle: 2 pi (1 - cos). The sun's 1 degree cone
-    const double exact = 2.0 * 3.14159265358979 *
-                         (1.0 - std::cos(1.0 * 3.14159265358979 / 180.0));
-    const float angle = gfx::sun_solid_angle(cos_half);
-    CHECK(std::fabs(static_cast<double>(angle) - exact) < 1.0e-3 * exact);
-
-    // Half the sphere and the whole sphere
-    CHECK(close_to(gfx::sun_solid_angle(0.0f), 2.0f * gfx::kPi, 1.0e-5f));
-    CHECK(close_to(gfx::sun_solid_angle(-1.0f), 4.0f * gfx::kPi, 1.0e-5f));
-    CHECK(gfx::sun_solid_angle(1.0f) == 0.0f);
-
-    // The disc's radiance times its solid angle is the irradiance
-    const float radiance = gfx::sun_disc_radiance(gfx::kSunIrradiance,
-                                                  cos_half);
-    CHECK(close_to(radiance * angle, gfx::kSunIrradiance, 1.0e-3f));
-    CHECK(radiance > 4000.0f && radiance < 6000.0f);
-
     // Sampling the cone, for the real sun and for a wide cone (the wide
     // one makes the statistics sharper)
     const float cones[] = {cos_half, std::cos(gfx::to_radians(30.0f))};
@@ -415,6 +398,111 @@ void test_sun() {
     CHECK(close_to(gfx::dot(rim, axis), cos_half, 1.0e-6f));
 }
 
+// The byte the renderer writes for a display value (round to nearest)
+int display_byte(float v) {
+    return static_cast<int>(std::lround(v * 255.0f));
+}
+
+void test_background() {
+    // Inverse tone mapping: the curve and its inverse undo each other
+    CHECK(gfx::tonemap_aces_inverse(0.0f) == 0.0f);
+
+    bool forward_back = true;
+
+    for (int i = 0; i <= 2000; ++i) {
+        const float x = static_cast<float>(i) * 0.002f;  // 0 .. 4
+        const float y = gfx::tonemap_aces(x);
+        const float back = gfx::tonemap_aces_inverse(y);
+        forward_back = forward_back && close_to(back, x, 2.0e-4f + 2.0e-4f * x);
+    }
+
+    CHECK(forward_back);
+
+    bool backward_forth = true;
+    bool increasing = true;
+    float previous = -1.0f;
+
+    for (int i = 0; i <= 999; ++i) {
+        const float y = static_cast<float>(i) * 0.001f;
+        const float x = gfx::tonemap_aces_inverse(y);
+        backward_forth = backward_forth &&
+                         close_to(gfx::tonemap_aces(x), y, 2.0e-6f);
+        increasing = increasing && x > previous && gfx::finite_float(x);
+        previous = x;
+    }
+
+    CHECK(backward_forth);
+    CHECK(increasing);
+
+    // Limits: y is clamped to 0 .. 0.999, so the answer is always finite
+    CHECK(close_to(gfx::tonemap_aces_inverse(-1.0f), 0.0f));
+    CHECK(gfx::finite_float(gfx::tonemap_aces_inverse(1.0f)));
+    CHECK(gfx::tonemap_aces_inverse(1.0f) == gfx::tonemap_aces_inverse(0.999f));
+    CHECK(gfx::tonemap_aces_inverse(5.0f) == gfx::tonemap_aces_inverse(0.999f));
+    CHECK(close_to(gfx::tonemap_aces_inverse(2.54f / 3.16f), 1.0f, 1.0e-4f));
+
+    // The Vec3 version works per channel
+    const Vec3 y3{0.1f, 0.5f, 0.9f};
+    const Vec3 x3 = gfx::tonemap_aces_inverse(y3);
+    CHECK(x3.x == gfx::tonemap_aces_inverse(0.1f));
+    CHECK(x3.y == gfx::tonemap_aces_inverse(0.5f));
+    CHECK(x3.z == gfx::tonemap_aces_inverse(0.9f));
+
+    // The viewport background (26, 28, 33): the radiance the path tracer
+    // adds for a missing camera ray comes out of the display pipeline as
+    // the very same bytes, for several exposures
+    const Vec3 shown{26.0f / 255.0f, 28.0f / 255.0f, 33.0f / 255.0f};
+
+    const float exposures[] = {1.0f, 2.0f, 0.5f};
+
+    for (const float exposure : exposures) {
+        const Vec3 radiance = gfx::background_radiance(shown, exposure);
+        const Vec3 out = gfx::linear_to_display(radiance, exposure);
+
+        CHECK(gfx::finite_vec3(radiance));
+        CHECK(radiance.x > 0.0f && radiance.y > radiance.x &&
+              radiance.z > radiance.y);
+        CHECK(display_byte(out.x) == 26);
+        CHECK(display_byte(out.y) == 28);
+        CHECK(display_byte(out.z) == 33);
+        CHECK(close_vec(out, shown, 1.0f / 255.0f));
+    }
+
+    // The exposure only scales the stored radiance
+    const Vec3 r1 = gfx::background_radiance(shown, 1.0f);
+    const Vec3 r2 = gfx::background_radiance(shown, 2.0f);
+    CHECK(close_vec(r1, r2 * 2.0f, 1.0e-6f));
+
+    // Every display byte survives the round trip with the same byte
+    // (255 is out of reach of the tone curve, see below)
+    bool bytes_same = true;
+    bool bytes_close = true;
+
+    for (const float exposure : exposures) {
+        for (int b = 0; b < 255; ++b) {
+            const float v = static_cast<float>(b) / 255.0f;
+            const Vec3 d{v, v, v};
+            const Vec3 out = gfx::linear_to_display(
+                gfx::background_radiance(d, exposure), exposure);
+
+            bytes_same = bytes_same && display_byte(out.x) == b &&
+                         display_byte(out.y) == b &&
+                         display_byte(out.z) == b;
+            bytes_close = bytes_close && close_to(out.x, v, 1.0f / 255.0f);
+        }
+    }
+
+    CHECK(bytes_same);
+    CHECK(bytes_close);
+
+    // White cannot be reached (the curve only gets there at infinity),
+    // but the nearest reachable value is within one byte
+    const Vec3 white{1.0f, 1.0f, 1.0f};
+    const Vec3 white_out =
+        gfx::linear_to_display(gfx::background_radiance(white, 1.0f), 1.0f);
+    CHECK(display_byte(white_out.x) >= 254);
+}
+
 void test_roulette() {
     using gfx::russian_roulette_survival;
 
@@ -479,6 +567,7 @@ int main() {
     test_basis();
     test_cosine_hemisphere();
     test_sun();
+    test_background();
     test_roulette();
 
     if (g_failures == 0) {

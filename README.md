@@ -127,7 +127,7 @@ tracer's settings.
 | **V** | Toggle vsync |
 | **W** | Toggle wireframe (the model's polygon edges, unlit, in every backend) |
 | **T** | Toggle ray tracing (`--backend=cuda` only; wireframe takes priority) |
-| **P** | Toggle the path tracer, the progressive "Rendered" mode with a sun and a sky as lights (`--backend=cuda` only; excludes **T**; wireframe takes priority) |
+| **P** | Toggle the path tracer, the progressive "Rendered" mode, lit by a sun and a sky that are not drawn themselves (`--backend=cuda` only; excludes **T**; wireframe takes priority) |
 | Right mouse drag (ray or path tracing) | Move the sun: left/right around the model, up/down higher or lower |
 | **L** (ray or path tracing) | Sun on/off (ray tracing: the viewport's camera light, no shadows; path tracing: sky light only) |
 | **O** (ray tracing) | Ambient occlusion on/off |

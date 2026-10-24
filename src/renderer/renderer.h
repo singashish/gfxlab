@@ -60,11 +60,12 @@ struct FrameData {
     bool ray_trace = false;
 
     // Path trace the solid view ("Rendered" mode): a progressive Monte
-    // Carlo renderer with the sun and a procedural sky as lights, refined
-    // over frames while nothing changes. Only the CUDA backend implements
-    // it; the others ignore it. It takes priority over ray_trace, and
-    // wireframe takes priority over both. Uses sun_dir, sun_enabled and
-    // show_materials
+    // Carlo renderer with the sun and a procedural sky as lights (only
+    // their light shows: neither is drawn, the background stays the
+    // viewport colour), refined over frames while nothing changes. Only
+    // the CUDA backend implements it; the others ignore it. It takes
+    // priority over ray_trace, and wireframe takes priority over both.
+    // Uses sun_dir, sun_enabled and show_materials
     bool path_trace = false;
 
     // Direction towards the sun in world space (unit length). Used only

@@ -1759,6 +1759,13 @@ __global__ void rt_finish_kernel(
 // the viewport shows) are display (sRGB) values. The path tracer decodes
 // them to linear light for the albedo, one rule for textures and
 // factors alike, and encodes only the final picture.
+//
+// The sky and the sun are lights, not scenery: bounce rays that miss
+// collect the sky, surfaces get the sun through a shadow ray, but a ray
+// that leaves the camera and misses everything sees neither. It gets the
+// viewport background (PtParams::background), which goes through the same
+// accumulation and tone mapping as any radiance, so the edge pixels of an
+// object blend with the background correctly.
 // ---------------------------------------------------------------------
 
 // The radiance (linear light) arriving at the camera through the point
@@ -1817,26 +1824,21 @@ __device__ __forceinline__ Vec3 trace_path(
 
     // One iteration per ray. Rays 0 .. max_bounces - 1 end on surfaces
     // that are shaded; ray max_bounces only collects the sky, because it
-    // is the continuation of the last shaded surface
+    // is the continuation of the last shaded surface (and a miss of the
+    // camera ray, ray 0, collects the viewport background instead)
     for (int bounce = 0; bounce <= pt.max_bounces; ++bounce) {
         SurfacePoint point;
 
         if (!closest_surface(scene, origin, dir, t_min, t_max, point)) {
-            const Vec3 unit_dir = normalize(dir);
-            Vec3 sky = sky_radiance(unit_dir);
+            // The sun is never added here, not even to a bounce ray that
+            // happens to point at it: it lights surfaces through the
+            // explicit shadow ray below, and counting a chance hit as
+            // well would count it twice
+            const Vec3 seen = bounce == 0
+                ? pt.background
+                : sky_radiance(normalize(dir));
 
-            // Only camera rays see the sun disc. Later rays get the sun
-            // through the explicit shadow ray below; counting a chance
-            // hit as well would count the sun twice
-            if (bounce == 0 && pt.sun_enabled &&
-                dot(unit_dir, scene.sun_world) >=
-                    pt.sun_cos_half_angle) {
-                const float disc = sun_disc_radiance(
-                    pt.sun_irradiance, pt.sun_cos_half_angle);
-                sky = sky + Vec3{disc, disc, disc};
-            }
-
-            radiance = radiance + modulate(throughput, sky);
+            radiance = radiance + modulate(throughput, seen);
             break;
         }
 
@@ -2006,6 +2008,16 @@ __global__ void pt_resolve_kernel(
 
     const float4 acc = pt.accum[pixel];
 
+    // Every sample so far missed everything: the pixel is background and
+    // keeps exactly the colour the clear pass gave it, with no visibility
+    // entry, so the grid draws over it. (Their mean would be the same
+    // colour up to rounding; this makes it exact.) A pixel with at least
+    // one hit is resolved below, its mean including the background
+    // radiance of the samples that missed: the anti-aliased edge
+    if (acc.w < 0.0f) {
+        return;
+    }
+
     const Vec3 mean =
         Vec3{acc.x, acc.y, acc.z} * (1.0f / static_cast<float>(count));
 
@@ -2017,8 +2029,7 @@ __global__ void pt_resolve_kernel(
     // Covered pixel: depth + id 1 as the ray tracer writes them. The
     // world position is on the pixel centre's ray at the stored view
     // depth; the depth value only depends on the view depth, so the
-    // jitter of the sample that found it does not matter. Sky pixels
-    // write nothing, so the grid draws over them
+    // jitter of the sample that found it does not matter
     if (acc.w > 0.0f) {
         const Vec3 position =
             scene.eye + acc.w * camera_ray_dir(scene, x, y, width, height);
