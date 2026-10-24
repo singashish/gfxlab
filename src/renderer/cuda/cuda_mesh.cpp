@@ -4,9 +4,11 @@
 
 #include <chrono>
 #include <limits>
+#include <utility>
 
 #include "core/log.h"
 #include "renderer/cuda/cuda_api.h"
+#include "renderer/cuda/cuda_texture.h"
 
 namespace gfx {
 
@@ -14,6 +16,8 @@ namespace {
 
 static_assert(sizeof(Vec3) == 12,
               "CUDA mesh upload requires tightly packed Vec3");
+static_assert(sizeof(Vec2) == 8,
+              "CUDA mesh upload requires tightly packed Vec2");
 
 void free_device_mesh(DeviceMesh& mesh) {
     if (mesh.positions) {
@@ -35,6 +39,18 @@ void free_device_mesh(DeviceMesh& mesh) {
         (void)cuda_ok(
             cudaFree(mesh.edges),
             "cudaFree mesh edges");
+    }
+
+    if (mesh.texcoords) {
+        (void)cuda_ok(
+            cudaFree(mesh.texcoords),
+            "cudaFree mesh texcoords");
+    }
+
+    if (mesh.triangle_materials) {
+        (void)cuda_ok(
+            cudaFree(mesh.triangle_materials),
+            "cudaFree mesh triangle materials");
     }
 
     if (mesh.bvh_nodes) {
@@ -94,7 +110,9 @@ CudaMeshStore::~CudaMeshStore() {
     shutdown();
 }
 
-MeshId CudaMeshStore::add(const Mesh& mesh) {
+MeshId CudaMeshStore::add(const Mesh& mesh,
+                          const std::vector<TextureId>& textures,
+                          const CudaTextureStore& store) {
     if (mesh.positions.empty()) {
         LOG_ERROR("CUDA mesh: positions array is empty");
         return 0;
@@ -163,6 +181,74 @@ MeshId CudaMeshStore::add(const Mesh& mesh) {
         }
     }
 
+    // Texture coordinates are optional. Without a matching count the mesh
+    // gets none and every vertex uses uv (0, 0), like the OpenGL path
+    const bool has_uv = mesh.texcoords.size() == mesh.positions.size();
+
+    if (!mesh.texcoords.empty() && !has_uv) {
+        LOG_WARN("CUDA mesh: texcoords (%zu) and positions (%zu) differ in "
+                 "count; ignoring the texcoords",
+                 mesh.texcoords.size(), mesh.positions.size());
+    }
+
+    // This mesh's part of the material table: its materials in order,
+    // then one extra "fallback" entry (the default Material with no
+    // texture) at index material_count. A triangle whose material number
+    // is out of range uses the fallback, as in the OpenGL path
+    const std::size_t triangle_count = mesh.indices.size() / 3;
+    const std::size_t material_count = mesh.materials.size();
+
+    std::vector<CudaMaterial> new_materials;
+    new_materials.reserve(material_count + 1);
+
+    for (const Material& material : mesh.materials) {
+        CudaMaterial entry{};
+        entry.base_color = material.base_color;
+        entry.texture = 0;  // white
+
+        if (material.base_color_image >= 0 &&
+            static_cast<std::size_t>(material.base_color_image) <
+                textures.size()) {
+            entry.texture = store.table_index(
+                textures[static_cast<std::size_t>(
+                    material.base_color_image)]);
+        }
+
+        new_materials.push_back(entry);
+    }
+
+    const Material fallback;
+    CudaMaterial fallback_entry{};
+    fallback_entry.base_color = fallback.base_color;
+    fallback_entry.texture = 0;
+    new_materials.push_back(fallback_entry);
+
+    if (m_materials.size() + new_materials.size() >
+        static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        LOG_ERROR("CUDA mesh: material count exceeds supported range");
+        return 0;
+    }
+
+    // One material number per triangle, made safe on the CPU so the GPU
+    // can index without checks. A mesh with no list (or one of the wrong
+    // length) uses material 0, the rule of group_triangles_by_material
+    std::vector<std::uint32_t> triangle_materials(triangle_count, 0u);
+
+    if (mesh.triangle_materials.size() == triangle_count) {
+        for (std::size_t t = 0; t < triangle_count; ++t) {
+            const std::uint32_t number = mesh.triangle_materials[t];
+
+            triangle_materials[t] =
+                static_cast<std::size_t>(number) < material_count
+                    ? number
+                    : static_cast<std::uint32_t>(material_count);
+        }
+    } else if (!mesh.triangle_materials.empty()) {
+        LOG_WARN("CUDA mesh: %zu triangle materials for %zu triangles; "
+                 "using material 0 for all",
+                 mesh.triangle_materials.size(), triangle_count);
+    }
+
     // Build the ray-tracing BVH once, on the CPU, then upload it as two
     // flat arrays. The GPU walks the same structure with bvh_trace()
     const auto build_start = std::chrono::steady_clock::now();
@@ -186,9 +272,13 @@ MeshId CudaMeshStore::add(const Mesh& mesh) {
         std::chrono::duration<double, std::milli>(
             build_end - build_start).count());
 
+    // An empty list uploads as a null pointer
+    const std::vector<Vec2> no_texcoords;
+
     DeviceMesh device{};
     device.vertex_count = vertex_count;
     device.bvh_node_count = stats.node_count;
+    device.material_base = static_cast<std::uint32_t>(m_materials.size());
 
     if (!bvh.nodes.empty()) {
         device.bounds_min = bvh.nodes[0].box_min;
@@ -207,6 +297,11 @@ MeshId CudaMeshStore::add(const Mesh& mesh) {
                       "CUDA mesh indices upload") ||
         !upload_array(device.edges, mesh.edges,
                       "CUDA mesh edges upload") ||
+        !upload_array(device.texcoords,
+                      has_uv ? mesh.texcoords : no_texcoords,
+                      "CUDA mesh texcoords upload") ||
+        !upload_array(device.triangle_materials, triangle_materials,
+                      "CUDA mesh triangle materials upload") ||
         !upload_array(device.bvh_nodes, bvh.nodes,
                       "CUDA mesh BVH nodes upload") ||
         !upload_array(device.bvh_tri_indices, bvh.tri_indices,
@@ -217,15 +312,43 @@ MeshId CudaMeshStore::add(const Mesh& mesh) {
         return 0;
     }
 
+    // Append this mesh's materials and upload the whole table again. The
+    // new table is made first, so a failure leaves the old one in place
+    std::vector<CudaMaterial> combined = m_materials;
+    combined.insert(combined.end(), new_materials.begin(),
+                    new_materials.end());
+
+    CudaMaterial* table = nullptr;
+
+    if (!upload_array(table, combined, "CUDA material table upload")) {
+        if (table != nullptr) {
+            (void)cuda_ok(cudaFree(table), "cudaFree material table");
+        }
+
+        free_device_mesh(device);
+        return 0;
+    }
+
+    if (m_device_materials != nullptr) {
+        (void)cuda_ok(cudaFree(m_device_materials),
+                      "cudaFree old material table");
+    }
+
+    m_device_materials = table;
+    m_materials = std::move(combined);
+
     m_meshes.push_back(device);
 
     const MeshId id = static_cast<MeshId>(m_meshes.size());
 
     LOG_INFO(
-        "CUDA mesh uploaded: id=%u, vertices=%u, triangles=%u",
+        "CUDA mesh uploaded: id=%u, vertices=%u, triangles=%u, "
+        "materials=%zu%s",
         id,
         device.vertex_count,
-        device.index_count / 3
+        device.index_count / 3,
+        material_count,
+        has_uv ? ", with texcoords" : ""
     );
 
     return id;
@@ -245,6 +368,14 @@ void CudaMeshStore::shutdown() {
     }
 
     m_meshes.clear();
+
+    if (m_device_materials != nullptr) {
+        (void)cuda_ok(cudaFree(m_device_materials),
+                      "cudaFree material table");
+        m_device_materials = nullptr;
+    }
+
+    m_materials.clear();
 }
 
 } // namespace gfx

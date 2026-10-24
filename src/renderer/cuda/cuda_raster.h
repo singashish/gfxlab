@@ -5,16 +5,24 @@
 
 #include "core/mat4.h"
 #include "core/raster_math.h"
+#include "core/texture_sampling.h"
 #include "renderer/cuda/cuda_mesh.h"
 
 namespace gfx {
 
+// The texture coordinates travel in the w components of view_pos and
+// view_normal, which carry no other information (they were a constant 1
+// and 0). Clipping interpolates all four components of both with the same
+// t as everything else, so the coordinates are clipped and interpolated
+// perspective-correctly for free, and neither this struct nor RasterTri
+// has to grow.
 struct ProjectedVertex {
     float4 screen;       // screen x, screen y, depth01, clip-space w
-    float4 view_pos;     // view-space position
-    float4 view_normal;  // view-space normal
+    float4 view_pos;     // view-space position; w = texture u
+    float4 view_normal;  // view-space normal;   w = texture v
     float4 clip;         // clip-space position, before the divide by w
 };
+
 
 // One triangle that survived setup, ready for rasterization and shading.
 // All per-vertex arrays are in the setup's positive-area order, so
@@ -31,7 +39,11 @@ struct RasterTri {
 
     RasterTriangleSetup setup;  // snapped coordinates, original signed area
     int min_x, max_x, min_y, max_y; // pixel bounds, clamped to the screen
-    int padding[2];
+
+    // Index of the triangle's material in the renderer-wide material table
+    // (the mesh's material_base + the triangle's own material number)
+    int material;
+    int padding;
 };
 
 static_assert(sizeof(RasterTri) ==
@@ -59,6 +71,23 @@ struct RasterWork {
     RasterCounts* counts = nullptr;
     unsigned int capacity = 0;
 };
+
+// What the shading kernels need to find a surface's colour: the material
+// table (CudaMeshStore), the texture table (CudaTextureStore) and whether
+// to use them at all. Both tables are indexed, never searched
+struct MaterialTables {
+    const CudaMaterial* materials = nullptr;
+    const TextureView* textures = nullptr;
+
+    // false: the plain grey viewport shading (the M key)
+    bool show_materials = true;
+};
+
+// The colour a surface has when materials are off, the same grey as the
+// OpenGL and Vulkan shaders
+GFX_HD inline Vec3 unlit_base_color() {
+    return Vec3{0.72f, 0.74f, 0.78f};
+}
 
 // The key light of the rasterized viewport, in view space: up, to the
 // left and towards the viewer, so it moves with the camera like the
@@ -125,7 +154,18 @@ struct RtScene {
 
     // Walk the 4-wide BVH instead of the binary one (same results)
     bool use_bvh4;
+
+    // Materials and textures. Rays have no screen-space derivatives, so
+    // the ray tracer always samples the base texture at level 0 (bilinear):
+    // fine detail far away can shimmer, which the rasterizer's mip
+    // levels avoid
+    MaterialTables surfaces;
 };
+
+// The scene is a kernel argument, and kernel arguments were limited to
+// 4 KB on older GPUs (32 KB now). Staying below keeps it portable
+static_assert(sizeof(RtScene) <= 4096,
+              "RtScene must fit the classic kernel parameter limit");
 
 struct CudaGridParams {
     Mat4 view_proj;
@@ -190,15 +230,21 @@ bool cuda_shade(
                 int width,
                 int height,
                 const RasterWork& work,
+                const MaterialTables& tables,
                 Vec3 up_view);
 
 // Wavefront ray tracing: a camera-ray hit, stored so the shadow and AO
-// rays can run as separate threads. 40 bytes, one per covered pixel
+// rays can run as separate threads. 52 bytes, one per covered pixel
 struct RtHit {
     Vec3 position;      // world-space hit point
     unsigned int pixel; // index into the colour and visibility buffers
     Vec3 normal;        // world shading normal, facing the camera
     Vec3 geometric;     // world triangle normal (unit), facing the camera
+
+    // Base colour at the hit (material colour times texel), found by the
+    // camera pass where the triangle and its barycentrics are known, so
+    // the later passes need neither the triangle nor the texture
+    Vec3 base;
 };
 
 struct RtWavefrontCounts {

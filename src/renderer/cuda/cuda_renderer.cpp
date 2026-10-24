@@ -158,6 +158,12 @@ bool CudaRenderer::init(void* native_window) {
         return false;
     }
 
+    // Texture 0 is a 1x1 white one that materials without a texture
+    // use, so it has to exist before any mesh is added
+    if (!m_textures.init()) {
+        return false;
+    }
+
     // Frame timing and ray statistics are optional;
     // keep rendering if event creation fails
     (void)m_gpu_timer.init();
@@ -737,6 +743,10 @@ void CudaRenderer::render(const FrameData& frame) {
 
         rt_scene.use_bvh4 = kUseBvh4;
 
+        rt_scene.surfaces.materials = m_meshes.device_materials();
+        rt_scene.surfaces.textures = m_textures.device_table();
+        rt_scene.surfaces.show_materials = frame.show_materials;
+
         // Wavefront only when it pays off: while AO rays are being added
         const bool use_wavefront =
             kRtWavefront && rt_scene.ao && rt_scene.ao_rays > 0;
@@ -780,6 +790,11 @@ void CudaRenderer::render(const FrameData& frame) {
             transform_direction(
                 frame.view, Vec3{0.0f, 0.0f, 1.0f});
 
+        MaterialTables tables;
+        tables.materials = m_meshes.device_materials();
+        tables.textures = m_textures.device_table();
+        tables.show_materials = frame.show_materials;
+
         // One pass: every pixel shades the record that won it
         if (!cuda_shade(
                 color,
@@ -787,6 +802,7 @@ void CudaRenderer::render(const FrameData& frame) {
                 m_width,
                 m_height,
                 m_raster,
+                tables,
                 up_view)) {
             return;
         }
@@ -897,12 +913,13 @@ RendererStats CudaRenderer::stats() const {
     return stats;
 }
 
+TextureId CudaRenderer::create_texture(const Image& image) {
+    return m_textures.create(image);
+}
+
 MeshId CudaRenderer::create_mesh(const Mesh& mesh,
                                  const std::vector<TextureId>& textures) {
-    // Textures are used from Step 5c; this backend still draws grey
-    (void)textures;
-
-    return m_meshes.add(mesh);
+    return m_meshes.add(mesh, textures, m_textures);
 }
 
 } // namespace gfx

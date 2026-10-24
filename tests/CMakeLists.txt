@@ -50,6 +50,11 @@ add_executable(test_image test_image.cpp)
 target_link_libraries(test_image PRIVATE gfx_core)
 add_test(NAME image COMMAND test_image)
 
+# Mip chains and the software texture sampling the CUDA backend uses
+add_executable(test_texture test_texture.cpp)
+target_link_libraries(test_texture PRIVATE gfx_core)
+add_test(NAME texture COMMAND test_texture)
+
 add_executable(test_json test_json.cpp)
 target_link_libraries(test_json PRIVATE gfx_core)
 add_test(NAME json COMMAND test_json)

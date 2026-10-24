@@ -11,6 +11,7 @@
 #include "renderer/cuda/cuda_presenter.h"
 #include "renderer/cuda/cuda_raster.h"
 #include "renderer/cuda/cuda_ray_stats.h"
+#include "renderer/cuda/cuda_texture.h"
 #include "renderer/cuda/cuda_timer.h"
 #include "renderer/cuda/cuda_ui.h"
 
@@ -33,6 +34,7 @@ public:
     void set_vsync(bool enabled) override;
     bool last_gpu_ms(double& ms) override;
     RendererStats stats() const override;
+    TextureId create_texture(const Image& image) override;
     MeshId create_mesh(const Mesh& mesh,
                        const std::vector<TextureId>& textures) override;
 
@@ -43,9 +45,11 @@ private:
     void free_raster_work();
 
     // Declaration order is intentional: the presenter owns the display
-    // API's context, so it is destroyed last
+    // API's context, so it is destroyed last. The mesh and texture stores
+    // free device memory, so they must go before it
     std::unique_ptr<ICudaPresenter> m_presenter;
     CudaMeshStore m_meshes;
+    CudaTextureStore m_textures;
     CudaUiRenderer m_ui;
 
     CudaStageTimer m_stage_timer;

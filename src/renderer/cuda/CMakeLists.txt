@@ -23,6 +23,7 @@ if(TARGET gfx_gl)
         cuda_ray_stats.cpp
         cuda_raster.cu
         cuda_renderer.cpp
+        cuda_texture.cpp
         cuda_timer.cpp
         cuda_gl_presenter.cpp
         cuda_ui.cpp

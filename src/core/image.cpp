@@ -627,4 +627,161 @@ bool load_image(const std::string& path, Image& out, std::string& error) {
     return false;
 }
 
+// ---------------------------------------------------------------------
+// Mip chains
+// ---------------------------------------------------------------------
+
+namespace {
+
+// How much of source texel `src` lies inside destination texel `dst`,
+// when `src_size` source texels are squeezed into `dst_size` destination
+// texels. Measured in units of 1/dst_size of the destination, so it is an
+// exact integer: a source texel is dst_size units wide and a destination
+// texel covers src_size units. The weights of all source texels for one
+// destination texel add up to src_size
+long long overlap_weight(long long src, long long dst,
+                         long long src_size, long long dst_size) {
+    const long long begin = std::max(dst * src_size, src * dst_size);
+    const long long end = std::min((dst + 1) * src_size,
+                                   (src + 1) * dst_size);
+    return end > begin ? end - begin : 0;
+}
+
+// First and one-past-last source texel that touch destination texel dst
+void source_range(int dst, int src_size, int dst_size,
+                  int& first, int& last) {
+    first = static_cast<int>(static_cast<long long>(dst) * src_size /
+                             dst_size);
+    last = static_cast<int>(
+        (static_cast<long long>(dst + 1) * src_size + dst_size - 1) /
+        dst_size);
+}
+
+Image downsample(const Image& src) {
+    Image dst;
+    dst.width = mip_size(src.width, 1);
+    dst.height = mip_size(src.height, 1);
+    dst.pixels.resize(static_cast<std::size_t>(dst.width) *
+                      static_cast<std::size_t>(dst.height) * 4);
+
+    // Every weight pair adds up to the same total, so one division by it
+    // turns the weighted sum into the average (rounded to nearest)
+    const std::uint64_t total =
+        static_cast<std::uint64_t>(src.width) *
+        static_cast<std::uint64_t>(src.height);
+
+    for (int dy = 0; dy < dst.height; ++dy) {
+        int y_first = 0;
+        int y_last = 0;
+        source_range(dy, src.height, dst.height, y_first, y_last);
+
+        for (int dx = 0; dx < dst.width; ++dx) {
+            int x_first = 0;
+            int x_last = 0;
+            source_range(dx, src.width, dst.width, x_first, x_last);
+
+            std::uint64_t sum[4] = {0, 0, 0, 0};
+
+            for (int sy = y_first; sy < y_last; ++sy) {
+                const std::uint64_t wy = static_cast<std::uint64_t>(
+                    overlap_weight(sy, dy, src.height, dst.height));
+
+                for (int sx = x_first; sx < x_last; ++sx) {
+                    const std::uint64_t wx = static_cast<std::uint64_t>(
+                        overlap_weight(sx, dx, src.width, dst.width));
+
+                    const std::uint8_t* p =
+                        &src.pixels[(static_cast<std::size_t>(sy) *
+                                         static_cast<std::size_t>(src.width) +
+                                     static_cast<std::size_t>(sx)) * 4];
+
+                    for (int c = 0; c < 4; ++c) {
+                        sum[c] += wx * wy * p[c];
+                    }
+                }
+            }
+
+            std::uint8_t* out =
+                &dst.pixels[(static_cast<std::size_t>(dy) *
+                                 static_cast<std::size_t>(dst.width) +
+                             static_cast<std::size_t>(dx)) * 4];
+
+            for (int c = 0; c < 4; ++c) {
+                out[c] = static_cast<std::uint8_t>(
+                    (sum[c] + total / 2) / total);
+            }
+        }
+    }
+
+    return dst;
+}
+
+} // namespace
+
+std::vector<Image> build_mip_chain(const Image& level0) {
+    std::vector<Image> chain;
+
+    if (!level0.valid()) {
+        return chain;
+    }
+
+    chain.push_back(level0);
+
+    while (chain.back().width > 1 || chain.back().height > 1) {
+        chain.push_back(downsample(chain.back()));
+    }
+
+    return chain;
+}
+
+std::vector<std::uint8_t> pack_mip_chain(const std::vector<Image>& chain,
+                                         TextureView& view) {
+    view = TextureView{};
+
+    if (chain.empty() ||
+        chain.size() > static_cast<std::size_t>(kMaxMipLevels)) {
+        return {};
+    }
+
+    // Check the shape first, so nothing is half filled in on failure
+    std::uint64_t texel_count = 0;
+
+    for (std::size_t level = 0; level < chain.size(); ++level) {
+        const Image& image = chain[level];
+        const int lv = static_cast<int>(level);
+
+        if (!image.valid() ||
+            image.width != mip_size(chain[0].width, lv) ||
+            image.height != mip_size(chain[0].height, lv)) {
+            return {};
+        }
+
+        texel_count += static_cast<std::uint64_t>(image.width) *
+                       static_cast<std::uint64_t>(image.height);
+    }
+
+    // Offsets are 32-bit texel counts
+    if (texel_count > 0xFFFFFFFFull) {
+        return {};
+    }
+
+    std::vector<std::uint8_t> packed;
+    packed.reserve(static_cast<std::size_t>(texel_count) * 4);
+
+    for (std::size_t level = 0; level < chain.size(); ++level) {
+        view.offsets[level] =
+            static_cast<std::uint32_t>(packed.size() / 4);
+
+        packed.insert(packed.end(), chain[level].pixels.begin(),
+                      chain[level].pixels.end());
+    }
+
+    view.texels = packed.data();
+    view.width = chain[0].width;
+    view.height = chain[0].height;
+    view.levels = static_cast<int>(chain.size());
+
+    return packed;
+}
+
 } // namespace gfx

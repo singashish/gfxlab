@@ -161,7 +161,8 @@ __device__ __forceinline__ float4 lerp4(
 }
 
 // A polygon corner during clipping. Every attribute is linear in clip
-// space, so one t interpolates all of them correctly
+// space, so one t interpolates all of them correctly. That includes the
+// texture coordinates in the w components of view_pos and view_normal
 struct ClipVertex {
     float4 clip;
     float4 view_pos;
@@ -315,11 +316,15 @@ __global__ void transform_vertices_kernel(
     const Vec3 view_position =
         transform_point(model_view, position);
 
+    // The texture coordinates (0, 0 for a mesh without) ride in the w
+    // components of the view position and normal; see ProjectedVertex
+    const Vec2 uv = mesh.texcoords ? mesh.texcoords[i] : Vec2{0.0f, 0.0f};
+
     out[i].view_pos = make_float4(
         view_position.x,
         view_position.y,
         view_position.z,
-        1.0f);
+        uv.x);
 
     if (mesh.normals) {
         const Vec3 view_normal =
@@ -329,9 +334,9 @@ __global__ void transform_vertices_kernel(
             view_normal.x,
             view_normal.y,
             view_normal.z,
-            0.0f);
+            uv.y);
     } else {
-        out[i].view_normal = make_float4(0, 0, 0, 0);
+        out[i].view_normal = make_float4(0, 0, 0, uv.y);
     }
 
     const Vec4 clip_v = mvp * make_vec4(position, 1.0f);
@@ -523,14 +528,16 @@ __global__ void resolve_wire_kernel(
 }
 
 // Appends one screen-space triangle to the worklist.
-// screen/view_pos/view_normal are in the triangle's own vertex order
+// screen/view_pos/view_normal are in the triangle's own vertex order;
+// material is the triangle's index in the global material table
 __device__ __forceinline__ void emit_triangle(
                 const RasterWork& work,
                 int width,
                 int height,
                 const float4 (&screen)[3],
                 const float4 (&view_pos)[3],
-                const float4 (&view_normal)[3]) {
+                const float4 (&view_normal)[3],
+                int material) {
 
     RasterTriangleSetup s{};
 
@@ -561,6 +568,8 @@ __device__ __forceinline__ void emit_triangle(
     r.max_x = max_x;
     r.min_y = min_y;
     r.max_y = max_y;
+    r.material = material;
+    r.padding = 0;
 
     // Store the vertices in the setup's positive-area order
     #pragma unroll
@@ -610,6 +619,10 @@ __global__ void setup_triangles_kernel(
         &vertices[mesh.indices[tri * 3 + 2]]
     };
 
+    // Every piece of a clipped triangle keeps the triangle's material
+    const int material = static_cast<int>(
+        mesh.material_base + mesh.triangle_materials[tri]);
+
     #pragma unroll
     for (int k = 0; k < 3; ++k) {
         const float4 c = v[k]->clip;
@@ -657,7 +670,8 @@ __global__ void setup_triangles_kernel(
         };
 
         emit_triangle(
-            work, width, height, screen, view_pos, view_normal);
+            work, width, height, screen, view_pos, view_normal,
+            material);
         return;
     }
 
@@ -729,7 +743,8 @@ __global__ void setup_triangles_kernel(
         };
 
         emit_triangle(
-            work, width, height, screen, view_pos, view_normal);
+            work, width, height, screen, view_pos, view_normal,
+            material);
     }
 }
 
@@ -836,14 +851,18 @@ __device__ __forceinline__ unsigned char to_byte(float c) {
 // shadow ray found something in the way. Only the key light's diffuse
 // and highlight are removed; the ambient fill stays, so shadows are
 // dark but never black. ambient_scale is the ambient occlusion factor
-// (1 = fully open, 0 = fully enclosed). The rasterizer passes 1 for both
+// (1 = fully open, 0 = fully enclosed). The rasterizer passes 1 for both.
+// base is the surface colour the light is multiplied with: the material
+// colour times the texel, or the grey of unlit_base_color(). The
+// highlight is white and is not tinted by it, as in the OpenGL shader
 __device__ __forceinline__ uchar4 lit_color(
                 Vec3 n,
                 Vec3 view_pos,
                 Vec3 up_view,
                 Vec3 key_dir,
                 float key_visibility,
-                float ambient_scale) {
+                float ambient_scale,
+                Vec3 base) {
 
     n = normalize(n);
     const Vec3 v = normalize(-view_pos);
@@ -868,8 +887,6 @@ __device__ __forceinline__ uchar4 lit_color(
         ? powf(fmaxf(dot(n, h), 0.0f), 32.0f) * 0.25f
         : 0.0f;
 
-    const Vec3 base{0.72f, 0.74f, 0.78f};
-
     const float r = fminf(
         base.x * (ambient.x + 0.75f * diff) + spec, 1.0f);
     const float g = fminf(
@@ -880,12 +897,156 @@ __device__ __forceinline__ uchar4 lit_color(
     return make_uchar4(to_byte(r), to_byte(g), to_byte(b), 255);
 }
 
+// The perspective-correct weights of a record's three corners at the
+// sample position (px, py), given in 1/16 pixel units like the rasterizer's
+// sample points. Returns false when they cannot be computed (the position
+// is at or beyond the horizon of the triangle's plane).
+//
+// The position does not have to be inside the triangle: the edge functions
+// are plain linear functions of the position, so outside they simply keep
+// going and give weights below 0 or above 1. Shading needs that to look at
+// the neighbouring pixels (see raster_base_color)
+__device__ __forceinline__ bool perspective_weights(
+                const RasterTri& rec,
+                int px,
+                int py,
+                float inv_area,
+                float& l0,
+                float& l1,
+                float& l2) {
+
+    const RasterTriangleSetup& s = rec.setup;
+
+    const long long e0 = edge_function(
+        s.sx[1], s.sy[1], s.sx[2], s.sy[2], px, py);
+    const long long e1 = edge_function(
+        s.sx[2], s.sy[2], s.sx[0], s.sy[0], px, py);
+    const long long e2 = edge_function(
+        s.sx[0], s.sy[0], s.sx[1], s.sy[1], px, py);
+
+    // Screen-space barycentrics: linear in the screen position, but
+    // attributes are linear in the 3D position, not in the screen position
+    const float b0 = static_cast<float>(e0) * inv_area;
+    const float b1 = static_cast<float>(e1) * inv_area;
+    const float b2 = static_cast<float>(e2) * inv_area;
+
+    // Perspective-correct interpolation: weight each corner by 1 / w
+    // (w = view depth) and renormalize. That undoes the squeezing of far
+    // parts of the triangle on screen
+    const float q0 = b0 / rec.screen[0].w;
+    const float q1 = b1 / rec.screen[1].w;
+    const float q2 = b2 / rec.screen[2].w;
+    const float qsum = q0 + q1 + q2;
+
+    // Every w is positive, so qsum is positive inside the triangle;
+    // outside it can reach 0 where the surface runs off to the horizon
+    if (!isfinite(qsum) || !(qsum > 1.0e-20f)) {
+        return false;
+    }
+
+    l0 = q0 / qsum;
+    l1 = q1 / qsum;
+    l2 = q2 / qsum;
+    return true;
+}
+
+// Texture coordinates of a record at weights (l0, l1, l2); they are
+// stored in the w components of the corners' view_pos and view_normal
+__device__ __forceinline__ float2 interpolate_uv(
+                const RasterTri& rec,
+                float l0,
+                float l1,
+                float l2) {
+
+    return make_float2(
+        l0 * rec.view_pos[0].w +
+            l1 * rec.view_pos[1].w + l2 * rec.view_pos[2].w,
+        l0 * rec.view_normal[0].w +
+            l1 * rec.view_normal[1].w + l2 * rec.view_normal[2].w);
+}
+
+// Perspective-correct texture coordinates of a record at the sample
+// position (px, py), 1/16 pixel units. False where there are none
+__device__ __forceinline__ bool uv_at_sample(
+                const RasterTri& rec,
+                int px,
+                int py,
+                float inv_area,
+                float2& uv) {
+
+    float l0 = 0.0f;
+    float l1 = 0.0f;
+    float l2 = 0.0f;
+
+    if (!perspective_weights(rec, px, py, inv_area, l0, l1, l2)) {
+        return false;
+    }
+
+    uv = interpolate_uv(rec, l0, l1, l2);
+    return true;
+}
+
+// The base colour of a rasterized pixel: material colour times the
+// base-colour texture, sampled trilinearly. uv is the pixel's texture
+// coordinate; (px, py) its centre, in 1/16 pixel units
+__device__ __forceinline__ Vec3 raster_base_color(
+                const RasterTri& rec,
+                const MaterialTables& tables,
+                float2 uv,
+                int px,
+                int py,
+                float inv_area) {
+
+    const CudaMaterial material = tables.materials[rec.material];
+    const TextureView& texture = tables.textures[material.texture];
+
+    // Which mip level fits this pixel. A texture with one level (the white
+    // texture of untextured materials) needs no derivatives at all
+    float lod = 0.0f;
+
+    if (texture.levels > 1) {
+        // How fast the coordinates change per pixel. The hardware would
+        // compare the values of neighbouring fragments of a 2x2 quad
+        // (dFdx, dFdy), but a deferred shader has no such quads: every
+        // thread shades one pixel on its own, from the visibility buffer.
+        // The triangle is known though, so the thread evaluates the same
+        // interpolation one pixel to the right and one pixel down by itself
+        // (16 sub-pixel units = 1 pixel) and takes the differences
+        float2 uv_right = uv;
+        float2 uv_down = uv;
+
+        const bool ok =
+            uv_at_sample(rec, px + 16, py, inv_area, uv_right) &&
+            uv_at_sample(rec, px, py + 16, inv_area, uv_down);
+
+        if (ok) {
+            // The texture is sampled at v_image = 1 - v, so that is the
+            // coordinate whose change counts (only its size matters)
+            lod = texture_lod(
+                texture,
+                uv_right.x - uv.x, -(uv_right.y - uv.y),
+                uv_down.x - uv.x, -(uv_down.y - uv.y));
+        } else {
+            // A neighbour is past the horizon of the surface: the texture
+            // is squeezed infinitely there, so use the blurriest level
+            lod = static_cast<float>(texture.levels - 1);
+        }
+    }
+
+    const Vec3 texel = sample_trilinear(texture, uv.x, 1.0f - uv.y, lod);
+
+    return Vec3{material.base_color.x * texel.x,
+                material.base_color.y * texel.y,
+                material.base_color.z * texel.z};
+}
+
 __global__ void shade_kernel(
                 uchar4* color,
                 const unsigned long long* visibility,
                 int width,
                 int height,
                 RasterWork work,
+                MaterialTables tables,
                 Vec3 up_view) {
 
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -923,25 +1084,8 @@ __global__ void shade_kernel(
     const RasterTri& rec = work.records[idx];
     const RasterTriangleSetup& s = rec.setup;
 
-    // Same layout as a projected vertex, already in setup order.
-    // Shading does not need the clip position
-    const float4 kUnused = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-
-    const ProjectedVertex p[3] = {
-        {rec.screen[0], rec.view_pos[0], rec.view_normal[0], kUnused},
-        {rec.screen[1], rec.view_pos[1], rec.view_normal[1], kUnused},
-        {rec.screen[2], rec.view_pos[2], rec.view_normal[2], kUnused}
-    };
-
     const int px = x * 16 + 8;
     const int py = y * 16 + 8;
-
-    const long long e0 = edge_function(
-        s.sx[1], s.sy[1], s.sx[2], s.sy[2], px, py);
-    const long long e1 = edge_function(
-        s.sx[2], s.sy[2], s.sx[0], s.sy[0], px, py);
-    const long long e2 = edge_function(
-        s.sx[0], s.sy[0], s.sx[1], s.sy[1], px, py);
 
     if (!raster_triangle_covers_sample(s, px, py)) {
         return;
@@ -949,40 +1093,31 @@ __global__ void shade_kernel(
 
     const float inv_area = 1.0f / static_cast<float>(s.area);
 
-    const float b0 = static_cast<float>(e0) * inv_area;
-    const float b1 = static_cast<float>(e1) * inv_area;
-    const float b2 = static_cast<float>(e2) * inv_area;
+    // Perspective-correct weights of the three corners at the pixel centre
+    float l0 = 0.0f;
+    float l1 = 0.0f;
+    float l2 = 0.0f;
 
-    // Perspective-correct interpolation
-    const float q0 = b0 / p[0].screen.w;
-    const float q1 = b1 / p[1].screen.w;
-    const float q2 = b2 / p[2].screen.w;
-    const float qsum = q0 + q1 + q2;
-
-    if (!isfinite(qsum) || fabsf(qsum) < 1.0e-20f) {
+    if (!perspective_weights(rec, px, py, inv_area, l0, l1, l2)) {
         return;
     }
 
-    const float l0 = q0 / qsum;
-    const float l1 = q1 / qsum;
-    const float l2 = q2 / qsum;
-
     Vec3 view_pos = {
-        l0 * p[0].view_pos.x +
-            l1 * p[1].view_pos.x + l2 * p[2].view_pos.x,
-        l0 * p[0].view_pos.y +
-            l1 * p[1].view_pos.y + l2 * p[2].view_pos.y,
-        l0 * p[0].view_pos.z +
-            l1 * p[1].view_pos.z + l2 * p[2].view_pos.z
+        l0 * rec.view_pos[0].x +
+            l1 * rec.view_pos[1].x + l2 * rec.view_pos[2].x,
+        l0 * rec.view_pos[0].y +
+            l1 * rec.view_pos[1].y + l2 * rec.view_pos[2].y,
+        l0 * rec.view_pos[0].z +
+            l1 * rec.view_pos[1].z + l2 * rec.view_pos[2].z
     };
 
     Vec3 n = {
-        l0 * p[0].view_normal.x +
-            l1 * p[1].view_normal.x + l2 * p[2].view_normal.x,
-        l0 * p[0].view_normal.y +
-            l1 * p[1].view_normal.y + l2 * p[2].view_normal.y,
-        l0 * p[0].view_normal.z +
-            l1 * p[1].view_normal.z + l2 * p[2].view_normal.z
+        l0 * rec.view_normal[0].x +
+            l1 * rec.view_normal[1].x + l2 * rec.view_normal[2].x,
+        l0 * rec.view_normal[0].y +
+            l1 * rec.view_normal[1].y + l2 * rec.view_normal[2].y,
+        l0 * rec.view_normal[0].z +
+            l1 * rec.view_normal[1].z + l2 * rec.view_normal[2].z
     };
 
     // Screen coordinates are y-down. CCW front faces therefore
@@ -993,8 +1128,17 @@ __global__ void shade_kernel(
         n = -n;
     }
 
+    // Surface colour: material colour times texture, or the plain grey
+    Vec3 base = unlit_base_color();
+
+    if (tables.show_materials) {
+        base = raster_base_color(
+            rec, tables, interpolate_uv(rec, l0, l1, l2),
+            px, py, inv_area);
+    }
+
     color[pixel] = lit_color(
-        n, view_pos, up_view, key_light_view_dir(), 1.0f, 1.0f);
+        n, view_pos, up_view, key_light_view_dir(), 1.0f, 1.0f, base);
 }
 
 // Does anything in the scene block the ray origin + t * dir for
@@ -1115,7 +1259,54 @@ struct SurfacePoint {
     Vec3 position;
     Vec3 normal;     // interpolated shading normal (not unit length)
     Vec3 geometric;  // the triangle's own normal (unit length)
+    Vec3 base;       // surface colour: material colour times texel
 };
+
+// The surface colour at a ray hit: the material's colour times its
+// base-colour texture, or the plain grey when materials are off. The hit
+// is on `triangle` with barycentric weights (w0, w1, w2) for its corners
+// (i0, i1, i2 are the corners' vertex indices).
+//
+// Camera rays have no pixel footprint to measure, so the texture is
+// sampled at level 0 only (bilinear, no mip levels). The price is some
+// shimmer on finely detailed textures far away or at grazing angles,
+// which the rasterizer avoids with trilinear filtering. Mip levels for
+// rays would need ray differentials, which is a step for later
+__device__ __forceinline__ Vec3 hit_base_color(
+                const MaterialTables& tables,
+                const DeviceMesh& mesh,
+                std::uint32_t triangle,
+                std::uint32_t i0,
+                std::uint32_t i1,
+                std::uint32_t i2,
+                float w0,
+                float w1,
+                float w2) {
+
+    if (!tables.show_materials) {
+        return unlit_base_color();
+    }
+
+    // Meshes without texture coordinates use uv (0, 0)
+    Vec2 uv{0.0f, 0.0f};
+
+    if (mesh.texcoords) {
+        uv = mesh.texcoords[i0] * w0 +
+             mesh.texcoords[i1] * w1 +
+             mesh.texcoords[i2] * w2;
+    }
+
+    const CudaMaterial material = tables.materials[
+        mesh.material_base + mesh.triangle_materials[triangle]];
+
+    // Image rows run top to bottom, v points up: sample at 1 - v
+    const Vec3 texel = sample_bilinear(
+        tables.textures[material.texture], 0, uv.x, 1.0f - uv.y);
+
+    return Vec3{material.base_color.x * texel.x,
+                material.base_color.y * texel.y,
+                material.base_color.z * texel.z};
+}
 
 // Closest hit over every instance. The direction is moved into object
 // space without normalizing it, so t means the same distance in both
@@ -1205,6 +1396,10 @@ __device__ __forceinline__ bool closest_surface(
         point.normal = -point.normal;
         point.geometric = -point.geometric;
     }
+
+    point.base = hit_base_color(
+        scene.surfaces, mesh, best.triangle, i0, i1, i2,
+        w0, best.u, best.v);
 
     return true;
 }
@@ -1298,7 +1493,7 @@ __device__ __forceinline__ void finish_pixel(
 
     color[pixel] = lit_color(
         n_view, view_pos, scene.up_view, scene.sun_view,
-        sun_blocked ? 0.0f : 1.0f, ao);
+        sun_blocked ? 0.0f : 1.0f, ao, point.base);
 
     // Same depth the rasterizer would have written, so the grid's
     // depth test treats both paths alike
@@ -1446,6 +1641,7 @@ __global__ void rt_camera_kernel(
                 hit.position = point.position;
                 hit.normal = point.normal;
                 hit.geometric = point.geometric;
+                hit.base = point.base;
 
                 // Results start empty; pass 2 fills them in
                 wave.shadow_blocked[index] = 0;
@@ -1538,6 +1734,7 @@ __global__ void rt_finish_kernel(
         point.position = hit.position;
         point.normal = hit.normal;
         point.geometric = hit.geometric;
+        point.base = hit.base;
 
         finish_pixel(color, visibility, hit.pixel, scene, point,
                      wave.shadow_blocked[index] != 0,
@@ -2057,9 +2254,11 @@ bool cuda_shade(
                 int width,
                 int height,
                 const RasterWork& work,
+                const MaterialTables& tables,
                 Vec3 up_view) {
 
     if (!color || !visibility || !work.records || !work.counts ||
+        !tables.materials || !tables.textures ||
         width <= 0 || height <= 0) {
         LOG_ERROR("CUDA shade: invalid arguments");
         return false;
@@ -2073,7 +2272,7 @@ bool cuda_shade(
     shade_kernel<<<blocks, threads>>>(
         color,
         reinterpret_cast<const unsigned long long*>(visibility),
-        width, height, work, up_view);
+        width, height, work, tables, up_view);
 
     return check_launch("CUDA shade kernel launch");
 }
@@ -2090,6 +2289,7 @@ bool cuda_ray_trace(
     if (!color || !visibility || width <= 0 || height <= 0 ||
         scene.count < 0 || scene.count > kMaxRtInstances ||
         (scene.ao && !scene.ao_accum) ||
+        !scene.surfaces.materials || !scene.surfaces.textures ||
         (wave && (!wave->hits || !wave->counts ||
                   !wave->shadow_blocked || !wave->ao_escaped))) {
         LOG_ERROR("CUDA ray tracer: invalid arguments");
