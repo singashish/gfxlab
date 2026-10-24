@@ -89,6 +89,18 @@ private:
     // The last frame was ray traced (for stats())
     bool m_last_frame_traced = false;
 
+    // Path tracer accumulation: one float4 per pixel (the sum of the
+    // linear radiance of all samples, and the closest camera-hit depth),
+    // the samples per pixel already in it, and a snapshot of everything
+    // that affects the picture so a change restarts the accumulation.
+    // 16 bytes per pixel: 33 MB at 1080p, 133 MB at 4K
+    float4* m_pt_accum = nullptr;
+    unsigned int m_pt_samples = 0;
+    std::vector<float> m_pt_signature;
+
+    // The last frame was path traced (for stats())
+    bool m_last_frame_path_traced = false;
+
     int m_width = 0;
     int m_height = 0;
 };

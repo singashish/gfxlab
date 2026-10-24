@@ -74,6 +74,32 @@ float world_diagonal(const DeviceMesh& mesh, const Mat4& model) {
     return length(hi - lo);
 }
 
+// Fills in what both ray-based modes share: the camera, the near and far
+// plane, the BVH choice and the materials switch (the caller sets the
+// material and texture tables). Rays start at the near plane and stop at
+// the far plane, exactly the depth range the rasterizer keeps
+void set_rt_camera(RtScene& scene,
+                   const FrameData& frame,
+                   const Mat4& view_proj,
+                   float aspect) {
+    const GridRayBasis rays = make_grid_ray_basis(frame, aspect);
+
+    scene.view = frame.view;
+    scene.view_proj = view_proj;
+    scene.eye = rays.eye;
+    scene.forward = rays.forward;
+    scene.right = rays.right;
+    scene.up = rays.up;
+    scene.up_view = transform_direction(
+        frame.view, Vec3{0.0f, 0.0f, 1.0f});
+
+    scene.t_min = frame.near_plane;
+    scene.t_max = frame.far_plane;
+
+    scene.use_bvh4 = kUseBvh4;
+    scene.surfaces.show_materials = frame.show_materials;
+}
+
 constexpr bool kDebugTriangleIds = false;
 constexpr bool kProfileStages = false;
 
@@ -88,6 +114,13 @@ CudaRenderer::~CudaRenderer() {
             cudaFree(m_ao_accum),
             "cudaFree ambient occlusion buffer");
         m_ao_accum = nullptr;
+    }
+
+    if (m_pt_accum != nullptr) {
+        (void)cuda_ok(
+            cudaFree(m_pt_accum),
+            "cudaFree path tracer accumulation buffer");
+        m_pt_accum = nullptr;
     }
 
     if (m_raster.counts != nullptr) {
@@ -217,8 +250,20 @@ bool CudaRenderer::resize_targets(int width, int height) {
         m_ao_accum = nullptr;
     }
 
+    // Same for the path tracer's accumulation
+    if (m_pt_accum != nullptr) {
+        if (!cuda_ok(
+                cudaFree(m_pt_accum),
+                "cudaFree old path tracer accumulation buffer")) {
+            return false;
+        }
+        m_pt_accum = nullptr;
+    }
+
     m_ao_samples = 0;
     m_rt_signature.clear();
+    m_pt_samples = 0;
+    m_pt_signature.clear();
 
     free_wavefront();
 
@@ -258,6 +303,27 @@ bool CudaRenderer::resize_targets(int width, int height) {
         m_color = nullptr;
         m_visibility = nullptr;
         m_ao_accum = nullptr;
+        return false;
+    }
+
+    // Path tracer accumulation: a float4 per pixel. The kernel ignores
+    // the contents when it starts over, so it needs no clearing
+    if (!cuda_ok(
+            cudaMalloc(
+                reinterpret_cast<void**>(&m_pt_accum),
+                pixels * sizeof(float4)),
+            "cudaMalloc path tracer accumulation buffer")) {
+        (void)cuda_ok(cudaFree(m_ao_accum),
+                      "cudaFree AO buffer after path tracer failure");
+        (void)cuda_ok(cudaFree(m_visibility),
+                      "cudaFree visibility buffer after path tracer "
+                      "failure");
+        (void)cuda_ok(cudaFree(m_color),
+                      "cudaFree colour buffer after path tracer failure");
+        m_color = nullptr;
+        m_visibility = nullptr;
+        m_ao_accum = nullptr;
+        m_pt_accum = nullptr;
         return false;
     }
 
@@ -528,10 +594,15 @@ void CudaRenderer::render(const FrameData& frame) {
     // rare worst case
     // Ray tracing replaces rasterization in solid mode only;
     // wireframe always uses the line rasterizer
-    const bool trace = frame.ray_trace && !frame.wireframe;
+    // The path tracer ("Rendered" mode) takes priority over the ray
+    // tracer; both gather the same instances
+    const bool pathtrace = frame.path_trace && !frame.wireframe;
+    const bool trace =
+        frame.ray_trace && !frame.path_trace && !frame.wireframe;
+    const bool ray_based = trace || pathtrace;
 
     const bool solid =
-        !frame.wireframe && !trace && total_triangles > 0;
+        !frame.wireframe && !ray_based && total_triangles > 0;
 
     if (solid) {
         const std::uint64_t record_capacity =
@@ -559,7 +630,7 @@ void CudaRenderer::render(const FrameData& frame) {
     std::vector<float> signature;
     float largest_diagonal = 0.0f;
 
-    if (trace) {
+    if (ray_based) {
         for (const DrawItem& item : frame.draw_list) {
             const DeviceMesh* mesh = m_meshes.find(item.mesh);
 
@@ -591,6 +662,12 @@ void CudaRenderer::render(const FrameData& frame) {
             ++rt_scene.count;
 
             append_matrix(signature, item.model);
+
+            // Which meshes are drawn (the path tracer's restart check)
+            if (pathtrace) {
+                signature.push_back(static_cast<float>(item.mesh));
+            }
+
             largest_diagonal = std::fmax(
                 largest_diagonal, world_diagonal(*mesh, item.model));
         }
@@ -601,8 +678,8 @@ void CudaRenderer::render(const FrameData& frame) {
     std::size_t vertex_offset = 0;
 
     for (const DrawItem& item : frame.draw_list) {
-        if (trace) {
-            break;  // handled by the ray tracer below
+        if (ray_based) {
+            break;  // handled by the ray or path tracer below
         }
 
         const DeviceMesh* mesh = m_meshes.find(item.mesh);
@@ -683,24 +760,67 @@ void CudaRenderer::render(const FrameData& frame) {
     }
 
     m_last_frame_traced = trace;
+    m_last_frame_path_traced = pathtrace;
+
+    // Leaving the path tracer: the next time starts a fresh accumulation
+    if (!pathtrace) {
+        m_pt_samples = 0;
+        m_pt_signature.clear();
+    }
 
     // Pass 3: resolve wire pixels or shade solid triangles
-    if (trace) {
-        const GridRayBasis rays = make_grid_ray_basis(frame, aspect);
+    if (pathtrace) {
+        set_rt_camera(rt_scene, frame, view_proj, aspect);
 
-        rt_scene.view = frame.view;
-        rt_scene.view_proj = view_proj;
-        rt_scene.eye = rays.eye;
-        rt_scene.forward = rays.forward;
-        rt_scene.right = rays.right;
-        rt_scene.up = rays.up;
-        rt_scene.up_view = transform_direction(
-            frame.view, Vec3{0.0f, 0.0f, 1.0f});
+        rt_scene.surfaces.materials = m_meshes.device_materials();
+        rt_scene.surfaces.textures = m_textures.device_table();
 
-        // Rays start at the near plane and stop at the far plane,
-        // exactly the depth range the rasterizer keeps
-        rt_scene.t_min = frame.near_plane;
-        rt_scene.t_max = frame.far_plane;
+        // The sun is fixed in the world. Its direction is all the path
+        // tracer takes from the scene; sun_enabled goes in PtParams
+        rt_scene.sun_world = normalize(frame.sun_dir);
+
+        // Restart whenever anything that affects the picture changed
+        // since the last frame: the camera, the models' transforms (in
+        // the signature already), the sun, the materials switch, and the
+        // set of meshes and textures (a mesh or texture uploaded after
+        // the first frame changes the scene). A new window size already
+        // restarted in resize_targets
+        append_matrix(signature, frame.view);
+        append_matrix(signature, view_proj);
+        signature.push_back(rt_scene.sun_world.x);
+        signature.push_back(rt_scene.sun_world.y);
+        signature.push_back(rt_scene.sun_world.z);
+        signature.push_back(frame.sun_enabled ? 1.0f : 0.0f);
+        signature.push_back(frame.show_materials ? 1.0f : 0.0f);
+        signature.push_back(static_cast<float>(m_meshes.count()));
+        signature.push_back(static_cast<float>(m_textures.count()));
+
+        // Just switched on: the signature was cleared above
+        if (signature != m_pt_signature) {
+            m_pt_signature = signature;
+            m_pt_samples = 0;
+        }
+
+        PtParams pt;
+        pt.accum = m_pt_accum;
+        pt.samples_before = m_pt_samples;
+        pt.samples_to_add =
+            m_pt_samples < kPtMaxSamples ? kPtSamplesPerFrame : 0u;
+        pt.max_bounces = kPtMaxBounces;
+        pt.exposure = kPtExposure;
+        pt.sun_enabled = frame.sun_enabled;
+        pt.sun_irradiance = kSunIrradiance;
+        pt.sun_cos_half_angle = sun_cone_cos(kSunHalfAngle);
+
+        // Runs even with nothing to draw: the picture is then the sky
+        if (!cuda_path_trace(
+                color, visibility, m_width, m_height, rt_scene, pt)) {
+            return;
+        }
+
+        m_pt_samples += pt.samples_to_add;
+    } else if (trace) {
+        set_rt_camera(rt_scene, frame, view_proj, aspect);
 
         if (frame.sun_enabled) {
             // The sun is fixed in the world: shadow rays use it as it
@@ -741,11 +861,8 @@ void CudaRenderer::render(const FrameData& frame) {
                 : 0;
         rt_scene.ao_radius = kAoRadiusFraction * largest_diagonal;
 
-        rt_scene.use_bvh4 = kUseBvh4;
-
         rt_scene.surfaces.materials = m_meshes.device_materials();
         rt_scene.surfaces.textures = m_textures.device_table();
-        rt_scene.surfaces.show_materials = frame.show_materials;
 
         // Wavefront only when it pays off: while AO rays are being added
         const bool use_wavefront =
@@ -902,6 +1019,12 @@ bool CudaRenderer::last_gpu_ms(double& ms) {
 RendererStats CudaRenderer::stats() const {
     RendererStats stats;
     stats.ray_traced = m_last_frame_traced;
+    stats.path_traced = m_last_frame_path_traced;
+
+    if (m_last_frame_path_traced) {
+        stats.pt_samples = m_pt_samples;
+        stats.pt_max_samples = kPtMaxSamples;
+    }
 
     if (m_last_frame_traced) {
         stats.has_ray_counts = m_ray_stats.latest(

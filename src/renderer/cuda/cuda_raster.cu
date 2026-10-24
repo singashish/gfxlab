@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "core/bvh.h"
 #include "core/bvh4.h"
+#include "core/path_math.h"
 #include "core/raster_math.h"
 #include "renderer/cuda/cuda_api.h"
 
@@ -1206,31 +1207,6 @@ __device__ __forceinline__ float random01(unsigned int& seed) {
     return static_cast<float>(seed >> 8) * (1.0f / 16777216.0f);
 }
 
-// A random direction above the surface with normal n (unit length),
-// cosine-weighted: directions near the normal are picked more often,
-// matching how much each direction contributes to ambient light
-__device__ __forceinline__ Vec3 cosine_hemisphere(
-                Vec3 n,
-                float u1,
-                float u2) {
-
-    // Two tangents perpendicular to n (Duff et al. 2017, branchless)
-    const float sign = copysignf(1.0f, n.z);
-    const float a = -1.0f / (sign + n.z);
-    const float b = n.x * n.y * a;
-
-    const Vec3 t{1.0f + sign * n.x * n.x * a, sign * b, -sign * n.x};
-    const Vec3 bt{b, sign + n.y * n.y * a, -n.y};
-
-    // A uniform point on a disc, lifted onto the hemisphere
-    const float r = sqrtf(u1);
-    const float phi = 6.2831853f * u2;
-
-    return t * (r * cosf(phi)) +
-           bt * (r * sinf(phi)) +
-           n * sqrtf(fmaxf(0.0f, 1.0f - u1));
-}
-
 // ---------------------------------------------------------------------
 // Ray tracer building blocks, shared by both ways of running it:
 //  - the "megakernel": one thread does everything for one pixel
@@ -1238,8 +1214,24 @@ __device__ __forceinline__ Vec3 cosine_hemisphere(
 //    AO ray gets its own thread (see cuda_ray_trace below)
 // ---------------------------------------------------------------------
 
-// Camera ray direction through the centre of pixel (x, y). Not unit
-// length: its view-space z is exactly -1, so t is the view depth
+// Camera ray direction through the point (px, py) of the image, in
+// pixels: (0, 0) is the top-left corner of the first pixel and
+// (x + 0.5, y + 0.5) the centre of pixel (x, y). Not unit length: its
+// view-space z is exactly -1, so t is the view depth (for any px, py)
+__device__ __forceinline__ Vec3 camera_ray_dir_at(
+                const RtScene& scene,
+                float px,
+                float py,
+                int width,
+                int height) {
+
+    const float ndc_x = 2.0f * px / width - 1.0f;
+    const float ndc_y = 1.0f - 2.0f * py / height;
+
+    return scene.forward + ndc_x * scene.right + ndc_y * scene.up;
+}
+
+// The ray through the centre of pixel (x, y)
 __device__ __forceinline__ Vec3 camera_ray_dir(
                 const RtScene& scene,
                 int x,
@@ -1247,15 +1239,13 @@ __device__ __forceinline__ Vec3 camera_ray_dir(
                 int width,
                 int height) {
 
-    const float ndc_x = 2.0f * (x + 0.5f) / width - 1.0f;
-    const float ndc_y = 1.0f - 2.0f * (y + 0.5f) / height;
-
-    return scene.forward + ndc_x * scene.right + ndc_y * scene.up;
+    return camera_ray_dir_at(scene, x + 0.5f, y + 0.5f, width, height);
 }
 
 // The point a ray hit, with everything shading needs, in world space.
 // Both normals are turned towards the side the camera sees
 struct SurfacePoint {
+    float t;         // distance along the ray (view depth for camera rays)
     Vec3 position;
     Vec3 normal;     // interpolated shading normal (not unit length)
     Vec3 geometric;  // the triangle's own normal (unit length)
@@ -1308,15 +1298,22 @@ __device__ __forceinline__ Vec3 hit_base_color(
                 material.base_color.z * texel.z};
 }
 
-// Closest hit over every instance. The direction is moved into object
-// space without normalizing it, so t means the same distance in both
-// spaces and hits can be compared directly. Fills point on a hit
+// Closest hit of the ray origin + t * dir with t_min < t < t_max over
+// every instance. Camera rays start at the eye and use the near and far
+// plane as their range; the rays of a path tracer start at an offset
+// surface point (see shadow_offset), with t_min 0 and a huge t_max.
+// The direction is moved into object space without normalizing it, so t
+// means the same distance in both spaces and hits can be compared
+// directly. Fills point on a hit
 __device__ __forceinline__ bool closest_surface(
                 const RtScene& scene,
+                Vec3 origin,
                 Vec3 dir,
+                float t_min,
+                float t_max,
                 SurfacePoint& point) {
 
-    float best_t = scene.t_max;
+    float best_t = t_max;
     int best_item = -1;
     BvhHit best{};
 
@@ -1326,7 +1323,7 @@ __device__ __forceinline__ bool closest_surface(
         BvhHit hit;
 
         const Vec3 local_origin =
-            transform_point(inst.world_to_object, scene.eye);
+            transform_point(inst.world_to_object, origin);
         const Vec3 local_dir =
             transform_direction(inst.world_to_object, dir);
 
@@ -1336,13 +1333,13 @@ __device__ __forceinline__ bool closest_surface(
                          inst.mesh.positions,
                          inst.mesh.indices,
                          local_origin, local_dir,
-                         scene.t_min, best_t, hit)
+                         t_min, best_t, hit)
             : bvh_trace(inst.mesh.bvh_nodes,
                         inst.mesh.bvh_tri_indices,
                         inst.mesh.positions,
                         inst.mesh.indices,
                         local_origin, local_dir,
-                        scene.t_min, best_t, hit);
+                        t_min, best_t, hit);
 
         if (found) {
             best_t = hit.t;
@@ -1387,7 +1384,8 @@ __device__ __forceinline__ bool closest_surface(
         transform_direction(inst.world_to_object, dir);
     const bool front_facing = dot(geometric, local_dir) < 0.0f;
 
-    point.position = scene.eye + best_t * dir;
+    point.t = best_t;
+    point.position = origin + best_t * dir;
     point.normal = transform_direction(inst.normal_to_world, n_object);
     point.geometric = normalize(
         transform_direction(inst.normal_to_world, geometric));
@@ -1457,6 +1455,24 @@ __device__ __forceinline__ bool trace_ao_ray(
     return true;
 }
 
+// The visibility buffer entry (depth in the high 32 bits, id 1 in the
+// low ones) for a ray-traced surface point. Same depth the rasterizer
+// would have written, so the grid's depth test treats all paths alike
+__device__ __forceinline__ unsigned long long visibility_entry(
+                const RtScene& scene,
+                Vec3 position) {
+
+    const Vec4 clip =
+        scene.view_proj * make_vec4(position, 1.0f);
+
+    float depth01 = (clip.z / clip.w) * 0.5f + 0.5f;
+    depth01 = fminf(fmaxf(depth01, 0.0f), 1.0f);
+
+    return (static_cast<unsigned long long>(__float_as_uint(depth01))
+                << 32) |
+           1ULL;
+}
+
 // Combines the shadow and AO results into the pixel's colour and depth.
 // new_escaped is how many of this frame's AO rays got away
 __device__ __forceinline__ void finish_pixel(
@@ -1495,18 +1511,7 @@ __device__ __forceinline__ void finish_pixel(
         n_view, view_pos, scene.up_view, scene.sun_view,
         sun_blocked ? 0.0f : 1.0f, ao, point.base);
 
-    // Same depth the rasterizer would have written, so the grid's
-    // depth test treats both paths alike
-    const Vec4 clip =
-        scene.view_proj * make_vec4(point.position, 1.0f);
-
-    float depth01 = (clip.z / clip.w) * 0.5f + 0.5f;
-    depth01 = fminf(fmaxf(depth01, 0.0f), 1.0f);
-
-    visibility[pixel] =
-        (static_cast<unsigned long long>(__float_as_uint(depth01))
-             << 32) |
-        1ULL;
+    visibility[pixel] = visibility_entry(scene, point.position);
 }
 
 // Adds a thread's ray counts to the frame's counters: first per block
@@ -1577,8 +1582,9 @@ __global__ void ray_trace_kernel(
         SurfacePoint point;
 
         if (closest_surface(
-                scene, camera_ray_dir(scene, x, y, width, height),
-                point)) {
+                scene, scene.eye,
+                camera_ray_dir(scene, x, y, width, height),
+                scene.t_min, scene.t_max, point)) {
             bool blocked = false;
             shadow = trace_shadow(scene, point, blocked) ? 1u : 0u;
 
@@ -1629,8 +1635,9 @@ __global__ void rt_camera_kernel(
         SurfacePoint point;
 
         if (closest_surface(
-                scene, camera_ray_dir(scene, x, y, width, height),
-                point)) {
+                scene, scene.eye,
+                camera_ray_dir(scene, x, y, width, height),
+                scene.t_min, scene.t_max, point)) {
             const unsigned int index =
                 atomicAdd(&wave.counts->hit_count, 1u);
 
@@ -1739,6 +1746,284 @@ __global__ void rt_finish_kernel(
         finish_pixel(color, visibility, hit.pixel, scene, point,
                      wave.shadow_blocked[index] != 0,
                      wave.ao_escaped[index]);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Path tracer ("Rendered" mode). The maths and the ideas (linear light,
+// Monte Carlo, cosine sampling, next-event estimation, Russian roulette)
+// are explained in core/path_math.h; the constants (bounces, sun, sky)
+// are defined there. Only Lambert (diffuse) surfaces for now.
+//
+// Colours: the stored colours (material colour times texel, the values
+// the viewport shows) are display (sRGB) values. The path tracer decodes
+// them to linear light for the albedo, one rule for textures and
+// factors alike, and encodes only the final picture.
+// ---------------------------------------------------------------------
+
+// The radiance (linear light) arriving at the camera through the point
+// (x + jx, y + jy) of the image, for one sample, found by following one
+// random path of up to max_bounces surfaces.
+//
+// For one sample the estimate is
+//     L = sum over the path's vertices of (throughput there) * (light
+//         added there),
+// where the throughput is the product of the albedos met so far.
+// Averaging many samples (the accumulation buffer) gives the picture.
+//
+// Random numbers: every sample of every pixel gets its own seed,
+// pcg_hash(pixel ^ pcg_hash(sample_index * 0x9E3779B9u + 1u)), and
+// random01 advances it. sample_index is the number of the sample at that
+// pixel (the frames since the last restart), so each frame is a new
+// independent sample. The multiplication by the golden-ratio constant
+// spreads consecutive sample numbers over the 32-bit range before
+// hashing; the +1 keeps sample 0 from hashing the number 0.
+//
+// depth receives the view depth of the camera ray's hit, or -1 for a miss
+__device__ __forceinline__ Vec3 trace_path(
+                const RtScene& scene,
+                const PtParams& pt,
+                unsigned int pixel,
+                int x,
+                int y,
+                int width,
+                int height,
+                unsigned int sample_index,
+                float& depth) {
+
+    unsigned int seed =
+        pcg_hash(pixel ^ pcg_hash(sample_index * 0x9E3779B9u + 1u));
+
+    // Where inside the pixel the camera ray goes: a uniform point of the
+    // pixel's square. Over many samples this averages the pixel's whole
+    // footprint, which is free anti-aliasing
+    const float jitter_x = random01(seed);
+    const float jitter_y = random01(seed);
+
+    Vec3 origin = scene.eye;
+    Vec3 dir = camera_ray_dir_at(
+        scene, static_cast<float>(x) + jitter_x,
+        static_cast<float>(y) + jitter_y, width, height);
+
+    // The camera ray is limited by the near and far plane like in the
+    // other modes; the rays after it are not
+    float t_min = scene.t_min;
+    float t_max = scene.t_max;
+
+    Vec3 radiance{0.0f, 0.0f, 0.0f};
+    Vec3 throughput{1.0f, 1.0f, 1.0f};
+
+    depth = -1.0f;
+
+    // One iteration per ray. Rays 0 .. max_bounces - 1 end on surfaces
+    // that are shaded; ray max_bounces only collects the sky, because it
+    // is the continuation of the last shaded surface
+    for (int bounce = 0; bounce <= pt.max_bounces; ++bounce) {
+        SurfacePoint point;
+
+        if (!closest_surface(scene, origin, dir, t_min, t_max, point)) {
+            const Vec3 unit_dir = normalize(dir);
+            Vec3 sky = sky_radiance(unit_dir);
+
+            // Only camera rays see the sun disc. Later rays get the sun
+            // through the explicit shadow ray below; counting a chance
+            // hit as well would count the sun twice
+            if (bounce == 0 && pt.sun_enabled &&
+                dot(unit_dir, scene.sun_world) >=
+                    pt.sun_cos_half_angle) {
+                const float disc = sun_disc_radiance(
+                    pt.sun_irradiance, pt.sun_cos_half_angle);
+                sky = sky + Vec3{disc, disc, disc};
+            }
+
+            radiance = radiance + modulate(throughput, sky);
+            break;
+        }
+
+        if (bounce == 0) {
+            depth = point.t;
+        }
+
+        if (bounce == pt.max_bounces) {
+            break;  // out of bounces: this surface is not shaded
+        }
+
+        // The albedo: display colour to linear. Base colours are
+        // clamped to 0..1 by the decoding, so a surface never reflects
+        // more than it receives
+        const Vec3 albedo = decode_srgb(point.base);
+
+        Vec3 n = normalize(point.normal);
+
+        if (dot(n, n) == 0.0f) {
+            n = point.geometric;  // degenerate vertex normals
+        }
+
+        const Vec3 start =
+            point.position + point.geometric * shadow_offset(point.position);
+
+        // Next-event estimation: one shadow ray towards a random point
+        // of the sun's disc. The disc has radiance E / solid_angle and a
+        // uniformly chosen direction has density 1 / solid_angle, so the
+        // solid angle cancels and the surface receives
+        //     albedo / pi * E * cos(angle to the normal).
+        // Directions below the surface (shading normal or the real
+        // triangle) get nothing
+        if (pt.sun_enabled) {
+            const float u1 = random01(seed);
+            const float u2 = random01(seed);
+
+            const Vec3 l = sample_sun_cone(
+                scene.sun_world, pt.sun_cos_half_angle, u1, u2);
+
+            const float cos_l = dot(n, l);
+
+            if (cos_l > 0.0f && dot(point.geometric, l) > 0.0f &&
+                !scene_occluded(scene, start, l, 1.0e30f)) {
+                const float scale = pt.sun_irradiance * cos_l / kPi;
+
+                radiance = radiance +
+                    modulate(throughput, albedo) * scale;
+            }
+        }
+
+        // Continue the path with a cosine-distributed direction. The
+        // density cos / pi cancels the Lambert factor albedo / pi * cos,
+        // so only the albedo is left to multiply the throughput by
+        const float v1 = random01(seed);
+        const float v2 = random01(seed);
+
+        const Vec3 d = cosine_hemisphere(n, v1, v2);
+
+        // A direction that dips below the actual triangle (possible where
+        // smooth normals bend away from it) ends the path, like in the
+        // ambient occlusion rays
+        if (dot(d, point.geometric) <= 0.0f) {
+            break;
+        }
+
+        throughput = modulate(throughput, albedo);
+
+        // Russian roulette: terminate with probability 1 - q, otherwise
+        // divide by q, which keeps the average the same
+        if (bounce >= kPtRouletteStart) {
+            const float q = russian_roulette_survival(throughput);
+
+            if (random01(seed) >= q) {
+                break;
+            }
+
+            throughput = throughput * (1.0f / q);
+        }
+
+        origin = start;
+        dir = d;
+        t_min = 0.0f;
+        t_max = 1.0e30f;
+    }
+
+    return radiance;
+}
+
+// Adds pt.samples_to_add samples to every pixel's accumulator. A sum is
+// a running mean in disguise: the mean after N samples is sum / N, so
+// storing the sum and the count (not the mean) needs no rounding
+// compensation, and one more sample is just one more addition
+__global__ void path_trace_kernel(
+                int width,
+                int height,
+                RtScene scene,
+                PtParams pt) {
+
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height) {
+        return;
+    }
+
+    const unsigned int pixel =
+        static_cast<unsigned int>(pixel_index(x, y, width));
+
+    // Starting over: whatever is in the buffer is from an older picture
+    float4 acc = make_float4(0.0f, 0.0f, 0.0f, -1.0f);
+
+    if (pt.samples_before > 0) {
+        acc = pt.accum[pixel];
+    }
+
+    for (unsigned int i = 0; i < pt.samples_to_add; ++i) {
+        float depth = -1.0f;
+
+        const Vec3 radiance = trace_path(
+            scene, pt, pixel, x, y, width, height,
+            pt.samples_before + i, depth);
+
+        // A NaN or infinite sample adds nothing (it still counts as a
+        // sample), so one bad value can never poison the sum
+        if (finite_vec3(radiance)) {
+            acc.x += radiance.x;
+            acc.y += radiance.y;
+            acc.z += radiance.z;
+        }
+
+        // The depth the grid is tested against: the closest camera hit
+        // of any sample, so a pixel on an object's silhouette keeps
+        // hiding the grid instead of flickering with the jitter
+        if (depth > 0.0f && (acc.w < 0.0f || depth < acc.w)) {
+            acc.w = depth;
+        }
+    }
+
+    pt.accum[pixel] = acc;
+}
+
+// Always runs: turns the accumulated sums into the picture. Idempotent
+// (it only reads the accumulator), so a converged picture is just
+// resolved again every frame
+__global__ void pt_resolve_kernel(
+                uchar4* color,
+                unsigned long long* visibility,
+                int width,
+                int height,
+                RtScene scene,
+                PtParams pt) {
+
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height) {
+        return;
+    }
+
+    const std::size_t pixel = pixel_index(x, y, width);
+
+    const unsigned int count = pt.samples_before + pt.samples_to_add;
+
+    if (count == 0) {
+        return;  // nothing accumulated yet: keep the cleared background
+    }
+
+    const float4 acc = pt.accum[pixel];
+
+    const Vec3 mean =
+        Vec3{acc.x, acc.y, acc.z} * (1.0f / static_cast<float>(count));
+
+    const Vec3 display = linear_to_display(mean, pt.exposure);
+
+    color[pixel] = make_uchar4(
+        to_byte(display.x), to_byte(display.y), to_byte(display.z), 255);
+
+    // Covered pixel: depth + id 1 as the ray tracer writes them. The
+    // world position is on the pixel centre's ray at the stored view
+    // depth; the depth value only depends on the view depth, so the
+    // jitter of the sample that found it does not matter. Sky pixels
+    // write nothing, so the grid draws over them
+    if (acc.w > 0.0f) {
+        const Vec3 position =
+            scene.eye + acc.w * camera_ray_dir(scene, x, y, width, height);
+
+        visibility[pixel] = visibility_entry(scene, position);
     }
 }
 
@@ -2338,6 +2623,47 @@ bool cuda_ray_trace(
     rt_finish_kernel<<<sms * 4, kThreads>>>(color, vis, scene, *wave);
 
     return check_launch("CUDA ray tracer finish pass launch");
+}
+
+bool cuda_path_trace(
+                uchar4* color,
+                std::uint64_t* visibility,
+                int width,
+                int height,
+                const RtScene& scene,
+                const PtParams& params) {
+
+    if (!color || !visibility || !params.accum ||
+        width <= 0 || height <= 0 ||
+        scene.count < 0 || scene.count > kMaxRtInstances ||
+        (scene.count > 0 && (!scene.surfaces.materials ||
+                             !scene.surfaces.textures)) ||
+        params.max_bounces < 1) {
+        LOG_ERROR("CUDA path tracer: invalid arguments");
+        return false;
+    }
+
+    const dim3 tile_threads(kTile, kTile);
+    const dim3 tile_blocks(
+        (width + kTile - 1) / kTile,
+        (height + kTile - 1) / kTile);
+
+    auto* vis = reinterpret_cast<unsigned long long*>(visibility);
+
+    // Same stream, so the resolve sees the finished sums
+    if (params.samples_to_add > 0) {
+        path_trace_kernel<<<tile_blocks, tile_threads>>>(
+            width, height, scene, params);
+
+        if (!check_launch("CUDA path trace kernel launch")) {
+            return false;
+        }
+    }
+
+    pt_resolve_kernel<<<tile_blocks, tile_threads>>>(
+        color, vis, width, height, scene, params);
+
+    return check_launch("CUDA path trace resolve kernel launch");
 }
 
 bool cuda_resolve_ids(

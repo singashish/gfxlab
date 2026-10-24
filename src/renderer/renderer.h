@@ -59,10 +59,19 @@ struct FrameData {
     // Wireframe takes priority over ray tracing
     bool ray_trace = false;
 
+    // Path trace the solid view ("Rendered" mode): a progressive Monte
+    // Carlo renderer with the sun and a procedural sky as lights, refined
+    // over frames while nothing changes. Only the CUDA backend implements
+    // it; the others ignore it. It takes priority over ray_trace, and
+    // wireframe takes priority over both. Uses sun_dir, sun_enabled and
+    // show_materials
+    bool path_trace = false;
+
     // Direction towards the sun in world space (unit length). Used only
     // by the ray tracer, which lights the scene with this sun instead of
-    // the camera-attached key light, so shadows stay put while orbiting.
-    // With sun_enabled off it uses the camera light, without shadows
+    // the camera-attached key light, so shadows stay put while orbiting,
+    // and by the path tracer. With sun_enabled off the ray tracer uses
+    // the camera light, without shadows, and the path tracer only the sky
     Vec3 sun_dir = {0.0f, 0.0f, 1.0f};
     bool sun_enabled = true;
 
@@ -125,6 +134,12 @@ struct RendererStats {
     // Ambient occlusion samples per pixel so far, and where it stops
     unsigned int ao_samples = 0;
     unsigned int ao_max_samples = 0;
+
+    // The path tracer drew the last frame (CUDA only), the samples per
+    // pixel accumulated so far and where it stops
+    bool path_traced = false;
+    unsigned int pt_samples = 0;
+    unsigned int pt_max_samples = 0;
 };
 
 class IRenderer {

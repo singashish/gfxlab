@@ -67,3 +67,9 @@ target_compile_definitions(test_gltf PRIVATE
     GFX_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets"
 )
 add_test(NAME gltf COMMAND test_gltf)
+
+# The maths of the CUDA path tracer: sRGB, tone mapping, the sky, sun cone
+# sampling, Russian roulette (all header-only in core/path_math.h)
+add_executable(test_path test_path.cpp)
+target_link_libraries(test_path PRIVATE gfx_core)
+add_test(NAME path COMMAND test_path)

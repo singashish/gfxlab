@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "core/mat4.h"
+#include "core/path_math.h"
 #include "core/raster_math.h"
 #include "core/texture_sampling.h"
 #include "renderer/cuda/cuda_mesh.h"
@@ -167,6 +168,46 @@ struct RtScene {
 static_assert(sizeof(RtScene) <= 4096,
               "RtScene must fit the classic kernel parameter limit");
 
+// The path tracer ("Rendered" mode) uses the same RtScene for the camera,
+// the instances and the sun direction (sun_world), and this second small
+// struct for what is specific to it. Passed to the kernels by value
+struct PtParams {
+    // One float4 per pixel: xyz = sum of the linear radiance of all
+    // samples so far, w = the smallest view depth of any sample's camera
+    // hit (negative: every sample so far missed). Device memory
+    float4* accum = nullptr;
+
+    // Samples per pixel already in accum before this frame (0 = start
+    // over: the kernel then ignores whatever accum holds)
+    unsigned int samples_before = 0;
+
+    // Samples per pixel to add this frame (0 = converged: the picture is
+    // only resolved again from the accumulated sums)
+    unsigned int samples_to_add = 0;
+
+    // Surfaces a path may shade (>= 1)
+    int max_bounces = kPtMaxBounces;
+
+    // Linear light is multiplied by this before tone mapping
+    float exposure = kPtExposure;
+
+    // The sun lights the scene (next-event estimation) and its disc is
+    // visible to camera rays. Off: sky light only. Its direction is
+    // RtScene::sun_world
+    bool sun_enabled = true;
+    float sun_irradiance = kSunIrradiance;
+
+    // cos of the sun's half angle: set it with sun_cone_cos(kSunHalfAngle)
+    // (cosf is not a constant expression, so there is no default)
+    float sun_cos_half_angle = 1.0f;
+};
+
+// Both structs travel as kernel arguments, so together they have to
+// stay within the classic 4 KB limit as well
+static_assert(sizeof(RtScene) + sizeof(PtParams) <= 4096,
+              "RtScene and PtParams must fit the classic kernel "
+              "parameter limit");
+
 struct CudaGridParams {
     Mat4 view_proj;
     Vec3 eye;
@@ -273,6 +314,20 @@ bool cuda_ray_trace(
                 const RtScene& scene,
                 const RtWavefront* wave,
                 int sm_count);
+
+// Path traces the solid view ("Rendered" mode): first adds
+// params.samples_to_add samples per pixel to params.accum (skipped when
+// it is 0), then turns the accumulated mean into the colour buffer (tone
+// mapped) and writes depth + id 1 for covered pixels into the visibility
+// buffer, so the grid composites unchanged. A pixel that only ever saw
+// the sky leaves the visibility buffer as it is
+bool cuda_path_trace(
+                uchar4* color,
+                std::uint64_t* visibility,
+                int width,
+                int height,
+                const RtScene& scene,
+                const PtParams& params);
 
 bool cuda_resolve_ids(
                 uchar4* color,

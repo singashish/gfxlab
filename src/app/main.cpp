@@ -267,6 +267,7 @@ int main(int argc, char** argv) {
     // Which panel sections are unfolded
     bool view_open = true;
     bool model_open = true;
+    bool path_tracing_open = is_cuda;
     bool ray_tracing_open = is_cuda;
     bool controls_open = false;
 
@@ -274,11 +275,15 @@ int main(int argc, char** argv) {
     bool wireframe = false;
     bool ray_trace = false;
 
+    // The path tracer ("Rendered" mode, CUDA only); P toggles it. It and
+    // the ray tracer exclude each other
+    bool path_trace = false;
+
     // Material colours and textures; off = plain grey shading. M toggles it
     bool show_materials = true;
 
-    // Sun for the ray tracer, as two angles in degrees: azimuth around
-    // the Z axis (0 = +X, 90 = +Y) and elevation above the floor.
+    // Sun for the ray and path tracers, as two angles in degrees: azimuth
+    // around the Z axis (0 = +X, 90 = +Y) and elevation above the floor.
     // The default lights the front of the model from the default camera
     float sun_azimuth = 250.0f;
     float sun_elevation = 45.0f;
@@ -426,6 +431,7 @@ int main(int argc, char** argv) {
         frame.wireframe = wireframe;
         frame.show_materials = show_materials;
         frame.ray_trace = ray_trace;
+        frame.path_trace = path_trace;
         frame.sun_enabled = sun_enabled;
         frame.ambient_occlusion = ambient_occlusion;
 
@@ -584,6 +590,39 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // ---- Path tracing (CUDA only) -------------------------
+            if (ui.header("Path tracing", &path_tracing_open)) {
+                if (!is_cuda) {
+                    ui.set_enabled(false);
+                    ui.text("Needs --backend=cuda");
+                }
+
+                if (ui.checkbox("Path tracing", &path_trace)) {
+                    LOG_INFO("path tracing: %s",
+                             path_trace ? "on" : "off");
+
+                    // The two tracers exclude each other
+                    if (path_trace && ray_trace) {
+                        ray_trace = false;
+                        LOG_INFO("ray tracing: off");
+                    }
+                }
+
+                // How far the accumulation has come, from the renderer
+                const gfx::RendererStats pt_stats = renderer->stats();
+
+                if (is_cuda && path_trace && pt_stats.path_traced) {
+                    char line[64];
+                    std::snprintf(line, sizeof(line),
+                                  "Samples: %u / %u",
+                                  pt_stats.pt_samples,
+                                  pt_stats.pt_max_samples);
+                    ui.text(line);
+                }
+
+                ui.set_enabled(true);
+            }
+
             // ---- Ray tracing (CUDA only) --------------------------
             if (ui.header("Ray tracing", &ray_tracing_open)) {
                 if (!is_cuda) {
@@ -593,15 +632,25 @@ int main(int argc, char** argv) {
 
                 if (ui.checkbox("Ray tracing", &ray_trace)) {
                     LOG_INFO("ray tracing: %s", ray_trace ? "on" : "off");
+
+                    // The two tracers exclude each other
+                    if (ray_trace && path_trace) {
+                        path_trace = false;
+                        LOG_INFO("path tracing: off");
+                    }
                 }
 
-                ui.set_enabled(is_cuda && ray_trace);
+                // The sun controls drive both tracers' sun
+                const bool sun_active =
+                    is_cuda && (ray_trace || path_trace);
+
+                ui.set_enabled(sun_active);
 
                 if (ui.checkbox("Sun", &sun_enabled)) {
                     LOG_INFO("sun: %s", sun_enabled ? "on" : "off");
                 }
 
-                ui.set_enabled(is_cuda && ray_trace && sun_enabled);
+                ui.set_enabled(sun_active && sun_enabled);
 
                 ui.slider("Sun azimuth", &sun_azimuth, 0.0f, 360.0f,
                           "%.0f deg");
@@ -669,6 +718,7 @@ int main(int argc, char** argv) {
                 ui.text("W wireframe, M materials, V vsync");
                 ui.text("H hide panel");
                 ui.text("T ray tracing, L sun, O AO (CUDA)");
+                ui.text("P path tracing (CUDA, excludes T)");
                 ui.text("Right drag: move the sun (CUDA)");
                 ui.text("Esc: quit");
             }
@@ -861,13 +911,13 @@ int main(int argc, char** argv) {
             camera.zoom(in.scroll());
         }
 
-        // Right-button drag moves the sun while ray tracing: left/right
-        // turns it around the scene, up/down raises and lowers it.
-        // Right click also cancels a G/R/S edit, so a drag only starts
-        // when the button goes down with no edit active
+        // Right-button drag moves the sun while ray or path tracing:
+        // left/right turns it around the scene, up/down raises and
+        // lowers it. Right click also cancels a G/R/S edit, so a drag
+        // only starts when the button goes down with no edit active
         if (in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_RIGHT)) {
             sun_dragging =
-                ray_trace && sun_enabled && !wireframe &&
+                (ray_trace || path_trace) && sun_enabled && !wireframe &&
                 !was_editing_at_frame_start && !ui_has_mouse;
         }
 
@@ -1028,16 +1078,40 @@ int main(int argc, char** argv) {
             LOG_INFO("materials: %s", show_materials ? "on" : "off");
         }
 
-        // Toggle ray tracing with T (CUDA backend only)
+        // Toggle ray tracing with T (CUDA backend only). It turns the
+        // path tracer off, and P turns this one off
         if (in.key_pressed(gfx::Key::GFX_KEY_T)) {
             ray_trace = !ray_trace;
 
             if (backend == gfx::RendererBackend::GFX_BACKEND_CUDA) {
                 LOG_INFO("ray tracing: %s", ray_trace ? "on" : "off");
+
+                if (ray_trace && path_trace) {
+                    path_trace = false;
+                    LOG_INFO("path tracing: off");
+                }
             } else {
                 LOG_INFO("ray tracing is only available with "
                          "--backend=cuda");
                 ray_trace = false;
+            }
+        }
+
+        // Toggle path tracing with P (CUDA backend only)
+        if (in.key_pressed(gfx::Key::GFX_KEY_P)) {
+            path_trace = !path_trace;
+
+            if (backend == gfx::RendererBackend::GFX_BACKEND_CUDA) {
+                LOG_INFO("path tracing: %s", path_trace ? "on" : "off");
+
+                if (path_trace && ray_trace) {
+                    ray_trace = false;
+                    LOG_INFO("ray tracing: off");
+                }
+            } else {
+                LOG_INFO("path tracing is only available with "
+                         "--backend=cuda");
+                path_trace = false;
             }
         }
 

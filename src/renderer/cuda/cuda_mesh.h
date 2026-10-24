@@ -6,6 +6,7 @@
 #include "core/vec3.h"
 #include "renderer/renderer.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -79,6 +80,12 @@ public:
                const std::vector<TextureId>& textures,
                const CudaTextureStore& store);
     const DeviceMesh* find(MeshId id) const;
+
+    // Meshes added so far. The renderer compares it between frames to
+    // notice an upload
+    std::size_t count() const {
+        return m_meshes.size();
+    }
 
     // The global material table in device memory; null while no mesh has
     // been added. The pointer changes when a mesh is added, so read it
