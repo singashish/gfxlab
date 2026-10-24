@@ -897,7 +897,11 @@ RendererStats CudaRenderer::stats() const {
     return stats;
 }
 
-MeshId CudaRenderer::create_mesh(const Mesh& mesh) {
+MeshId CudaRenderer::create_mesh(const Mesh& mesh,
+                                 const std::vector<TextureId>& textures) {
+    // Textures are used from Step 5c; this backend still draws grey
+    (void)textures;
+
     return m_meshes.add(mesh);
 }
 

@@ -33,7 +33,8 @@ public:
     void set_vsync(bool enabled) override;
     bool last_gpu_ms(double& ms) override;
     RendererStats stats() const override;
-    MeshId create_mesh(const Mesh& mesh) override;
+    MeshId create_mesh(const Mesh& mesh,
+                       const std::vector<TextureId>& textures) override;
 
 private:
     bool resize_targets(int width, int height);

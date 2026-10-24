@@ -28,7 +28,8 @@ public:
     bool init(void* native_window) override;
     void render(const FrameData& frame) override;
     void set_vsync(bool enabled) override;
-    MeshId create_mesh(const Mesh& mesh) override;
+    MeshId create_mesh(const Mesh& mesh,
+                       const std::vector<TextureId>& textures) override;
 
 private:
     bool recreate_swapchain();

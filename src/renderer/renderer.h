@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/camera_math.h"
+#include "core/image.h"
 #include "core/mat4.h"
 #include "core/vec3.h"
 #include "core/mesh.h"
@@ -14,6 +15,7 @@
 namespace gfx {
 
 using MeshId = std::uint32_t; // 0 means no mesh
+using TextureId = std::uint32_t; // 0 means no texture
 
 struct DrawItem {
     MeshId mesh = 0;
@@ -47,6 +49,10 @@ struct FrameData {
 
     // Render polygon edges instead of filled triangles
     bool wireframe = false;
+
+    // Shade with the materials' colours and base-colour textures.
+    // False is the plain grey viewport shading used before materials
+    bool show_materials = true;
 
     // Ray trace the solid view instead of rasterizing it.
     // Only the CUDA backend implements it; the others ignore it.
@@ -139,7 +145,19 @@ public:
         return {};
     }
     virtual void set_vsync(bool enabled) = 0;
-    virtual MeshId create_mesh(const Mesh& mesh) = 0;
+
+    // Uploads an RGBA8 image (rows top to bottom) as a texture with
+    // mipmaps. Returns 0 if the backend does not support textures (yet) or
+    // the upload fails
+    virtual TextureId create_texture(const Image& image) {
+        (void)image;
+        return 0;
+    }
+
+    // textures[i] is the TextureId of Model::images[i] (0 = none); a
+    // material's base_color_image indexes this list
+    virtual MeshId create_mesh(const Mesh& mesh,
+                               const std::vector<TextureId>& textures) = 0;
 };
 
 // Returns nullptr and logs an error when the backend is unavailable

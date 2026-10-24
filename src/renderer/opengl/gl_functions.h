@@ -64,4 +64,7 @@
         GLenum type, const void* pixels)) \
     X(void, TexParameteri, (GLenum target, GLenum pname, GLint param)) \
     X(void, ActiveTexture, (GLenum texture)) \
-    X(void, Uniform1i, (GLint location, GLint v0))
+    X(void, Uniform1i, (GLint location, GLint v0)) \
+    X(void, GenerateMipmap, (GLenum target)) \
+    X(void, TexParameterf, (GLenum target, GLenum pname, GLfloat param)) \
+    X(void, GetFloatv, (GLenum pname, GLfloat* data))

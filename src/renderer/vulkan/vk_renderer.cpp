@@ -625,7 +625,11 @@ void VulkanRenderer::render(const FrameData& frame) {
     }
 }
 
-MeshId VulkanRenderer::create_mesh(const Mesh& mesh) {
+MeshId VulkanRenderer::create_mesh(const Mesh& mesh,
+                                   const std::vector<TextureId>& textures) {
+    // Textures are used from Step 5b; this backend still draws grey
+    (void)textures;
+
     return m_meshes.create(m_context, m_uploader, mesh);
 }
 

@@ -274,6 +274,9 @@ int main(int argc, char** argv) {
     bool wireframe = false;
     bool ray_trace = false;
 
+    // Material colours and textures; off = plain grey shading. M toggles it
+    bool show_materials = true;
+
     // Sun for the ray tracer, as two angles in degrees: azimuth around
     // the Z axis (0 = +X, 90 = +Y) and elevation above the floor.
     // The default lights the front of the model from the default camera
@@ -337,8 +340,31 @@ int main(int argc, char** argv) {
     if (has_model) {
         reset_camera();
 
+        // Upload every image once; textures[i] belongs to model.images[i]
+        // (0 = this backend has no textures, or the upload failed).
+        // model.images stays in memory: the path tracer will need it
+        std::vector<gfx::TextureId> textures;
+        textures.reserve(model.images.size());
+
+        std::size_t textures_uploaded = 0;
+
+        for (const gfx::Image& image : model.images) {
+            const gfx::TextureId texture = renderer->create_texture(image);
+
+            if (texture != 0) {
+                ++textures_uploaded;
+            }
+
+            textures.push_back(texture);
+        }
+
+        if (!model.images.empty()) {
+            LOG_INFO("textures uploaded: %zu of %zu", textures_uploaded,
+                     model.images.size());
+        }
+
         for (const gfx::Mesh& mesh : model.meshes) {
-            const gfx::MeshId id = renderer->create_mesh(mesh);
+            const gfx::MeshId id = renderer->create_mesh(mesh, textures);
 
             if (id == 0) {
                 LOG_ERROR("failed to upload model to the renderer");
@@ -398,6 +424,7 @@ int main(int argc, char** argv) {
         frame.width = window.width();
         frame.height = window.height();
         frame.wireframe = wireframe;
+        frame.show_materials = show_materials;
         frame.ray_trace = ray_trace;
         frame.sun_enabled = sun_enabled;
         frame.ambient_occlusion = ambient_occlusion;
@@ -463,6 +490,11 @@ int main(int argc, char** argv) {
             if (ui.header("View", &view_open)) {
                 if (ui.checkbox("Wireframe", &wireframe)) {
                     LOG_INFO("wireframe: %s", wireframe ? "on" : "off");
+                }
+
+                if (ui.checkbox("Materials", &show_materials)) {
+                    LOG_INFO("materials: %s",
+                             show_materials ? "on" : "off");
                 }
 
                 if (ui.checkbox("Vsync", &vsync)) {
@@ -634,7 +666,8 @@ int main(int argc, char** argv) {
                 ui.text("G / R / S: grab, rotate, scale");
                 ui.text("  X / Y / Z: axis, left click: confirm");
                 ui.text("  Right click / Esc: cancel");
-                ui.text("W wireframe, V vsync, H hide panel");
+                ui.text("W wireframe, M materials, V vsync");
+                ui.text("H hide panel");
                 ui.text("T ray tracing, L sun, O AO (CUDA)");
                 ui.text("Right drag: move the sun (CUDA)");
                 ui.text("Esc: quit");
@@ -987,6 +1020,12 @@ int main(int argc, char** argv) {
         if (in.key_pressed(gfx::Key::GFX_KEY_W)) {
             wireframe = !wireframe;
             LOG_INFO("wireframe: %s", wireframe ? "on" : "off");
+        }
+
+        // Toggle material colours and textures with M
+        if (in.key_pressed(gfx::Key::GFX_KEY_M)) {
+            show_materials = !show_materials;
+            LOG_INFO("materials: %s", show_materials ? "on" : "off");
         }
 
         // Toggle ray tracing with T (CUDA backend only)

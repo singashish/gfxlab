@@ -13,6 +13,10 @@ bool GLRenderer::init(void* native_window) {
     // GPU timing is optional; rendering must still work without it
     (void)m_gpu_timer.init();
 
+    if (!m_textures.init()) {
+        return false;
+    }
+
     if (!m_meshes.init()) {
         return false;
     }
@@ -74,7 +78,8 @@ void GLRenderer::render(const FrameData& frame) {
     } else if (frame.wireframe) {
         m_meshes.draw_wireframe(frame.draw_list, view_proj);
     } else {
-        m_meshes.draw(frame.draw_list, view_proj, frame.view);
+        m_meshes.draw(frame.draw_list, view_proj, frame.view,
+                      frame.show_materials);
     }
 
     // Build OpenGL-specific grid parameters from the shared ray basis
@@ -107,8 +112,13 @@ bool GLRenderer::last_gpu_ms(double& ms) {
     return m_gpu_timer.take_latest(ms);
 }
 
-MeshId GLRenderer::create_mesh(const Mesh& mesh) {
-    return m_meshes.add(mesh);
+TextureId GLRenderer::create_texture(const Image& image) {
+    return m_textures.create(image);
+}
+
+MeshId GLRenderer::create_mesh(const Mesh& mesh,
+                               const std::vector<TextureId>& textures) {
+    return m_meshes.add(mesh, textures, m_textures);
 }
 
 } // namespace gfx

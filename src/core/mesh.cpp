@@ -254,4 +254,62 @@ void ensure_edges(Mesh& mesh) {
     }
 }
 
+std::vector<MaterialRange> group_triangles_by_material(
+    const Mesh& mesh, std::vector<std::uint32_t>& out_indices) {
+    out_indices.clear();
+
+    std::vector<MaterialRange> ranges;
+    const std::size_t triangle_count = mesh.indices.size() / 3;
+
+    if (triangle_count == 0) {
+        return ranges;
+    }
+
+    const bool has_materials =
+        mesh.triangle_materials.size() == triangle_count;
+
+    const auto material_of = [&](std::size_t triangle) -> std::uint32_t {
+        return has_materials ? mesh.triangle_materials[triangle] : 0u;
+    };
+
+    // Sort triangle numbers by material. stable_sort keeps triangles with
+    // the same material in their original order, so a single-material mesh
+    // comes out exactly as it went in
+    std::vector<std::uint32_t> order(triangle_count);
+
+    for (std::size_t t = 0; t < triangle_count; ++t) {
+        order[t] = static_cast<std::uint32_t>(t);
+    }
+
+    std::stable_sort(order.begin(), order.end(),
+                     [&](std::uint32_t a, std::uint32_t b) {
+                         return material_of(a) < material_of(b);
+                     });
+
+    out_indices.reserve(triangle_count * 3);
+
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        const std::size_t triangle = order[i];
+        const std::uint32_t material = material_of(triangle);
+
+        // A new material starts a new range (materials without triangles
+        // never get one)
+        if (ranges.empty() || ranges.back().material != material) {
+            MaterialRange range;
+            range.material = material;
+            range.first_index = static_cast<std::uint32_t>(out_indices.size());
+            range.index_count = 0;
+            ranges.push_back(range);
+        }
+
+        for (std::size_t corner = 0; corner < 3; ++corner) {
+            out_indices.push_back(mesh.indices[triangle * 3 + corner]);
+        }
+
+        ranges.back().index_count += 3;
+    }
+
+    return ranges;
+}
+
 } // namespace gfx

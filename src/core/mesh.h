@@ -64,4 +64,23 @@ bool ensure_normals(Mesh& mesh);
 // Builds deduplicated triangle edges if the mesh has no edge list
 void ensure_edges(Mesh& mesh);
 
+// A run of triangles that share one material, as indices into a reordered
+// index list. A rasterizer draws one range per draw call, because the
+// material (colour, texture) is set once per call
+struct MaterialRange {
+    std::uint32_t material = 0;     // index into Mesh::materials
+    std::uint32_t first_index = 0;  // into the reordered index list
+    std::uint32_t index_count = 0;  // 3 per triangle
+};
+
+// Reorders the mesh's triangles so each material's triangles are contiguous
+// (materials in ascending order, triangles keep their relative order: a
+// stable grouping), writing the new index list to out_indices and returning
+// one range per material that has triangles. A mesh without
+// triangle_materials (or with the wrong number of them) is treated as all
+// material 0. Triangle material numbers are not range-checked against
+// Mesh::materials: the caller decides what an unknown material means
+std::vector<MaterialRange> group_triangles_by_material(
+    const Mesh& mesh, std::vector<std::uint32_t>& out_indices);
+
 } // namespace gfx

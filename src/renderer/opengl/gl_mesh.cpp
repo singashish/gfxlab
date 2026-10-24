@@ -22,6 +22,7 @@ constexpr const char* kMeshVertexShader = R"GLSL(
 
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
 
 uniform mat4 u_model;
 uniform mat4 u_normal_model;
@@ -30,6 +31,7 @@ uniform mat4 u_view_proj;
 
 out vec3 v_view_pos;
 out vec3 v_view_normal;
+out vec2 v_uv;
 
 void main() {
     vec4 world = u_model * vec4(a_position, 1.0);
@@ -37,6 +39,7 @@ void main() {
     v_view_pos = (u_view * world).xyz;
     v_view_normal =
         mat3(u_view) * (mat3(u_normal_model) * a_normal);
+    v_uv = a_uv;
 
     gl_Position = u_view_proj * world;
 }
@@ -47,8 +50,15 @@ constexpr const char* kMeshFragmentShader = R"GLSL(
 
 in vec3 v_view_pos;
 in vec3 v_view_normal;
+in vec2 v_uv;
 
 uniform mat4 u_view;
+
+// Material of the range being drawn. The texture is 1x1 white for
+// surfaces without one, so no branch is needed for that case
+uniform vec3 u_base_color;
+uniform sampler2D u_base_texture;
+uniform bool u_show_materials;
 
 out vec4 frag_color;
 
@@ -83,7 +93,19 @@ void main() {
         ? pow(max(dot(n, h), 0.0), 32.0) * 0.25
         : 0.0;
 
-    vec3 base = vec3(0.72, 0.74, 0.78);
+    // Colours: this shading works directly in display values, with no
+    // linear / sRGB conversion. Textures are uploaded as plain RGBA8 and
+    // the base colour factor is used as given, which keeps the grey look
+    // and the three backends consistent (the path tracer will do proper
+    // linear light)
+    //
+    // Our UVs have (0, 0) at the bottom-left of the image and v pointing
+    // up, but the image rows are stored top row first, so row 0 of the
+    // texture is v = 1: sample at 1 - v
+    vec3 base = u_show_materials
+        ? u_base_color *
+              texture(u_base_texture, vec2(v_uv.x, 1.0 - v_uv.y)).rgb
+        : vec3(0.72, 0.74, 0.78);
     vec3 color = base * (ambient + 0.75 * diff) + vec3(spec);
 
     frag_color = vec4(min(color, vec3(1.0)), 1.0);
@@ -123,7 +145,9 @@ GLMesh::~GLMesh() {
     shutdown();
 }
 
-bool GLMesh::upload(const Mesh& mesh) {
+bool GLMesh::upload(const Mesh& mesh,
+                    const std::vector<TextureId>& textures,
+                    const GLTextureStore& store) {
     shutdown();
 
     if (mesh.positions.empty() ||
@@ -164,10 +188,20 @@ bool GLMesh::upload(const Mesh& mesh) {
         }
     }
 
+    // Texture coordinates are optional; without them every vertex gets
+    // (0, 0) and the texture is just a single texel
+    const bool has_uv = mesh.texcoords.size() == mesh.positions.size();
+
+    if (!mesh.texcoords.empty() && !has_uv) {
+        LOG_WARN("mesh texcoords and positions have different sizes; "
+                 "ignoring the texcoords");
+    }
+
     // Interleave each vertex as:
     // position.x, position.y, position.z,
-    // normal.x, normal.y, normal.z
-    constexpr std::size_t kFloatsPerVertex = 6;
+    // normal.x, normal.y, normal.z,
+    // u, v
+    constexpr std::size_t kFloatsPerVertex = 8;
 
     if (mesh.positions.size() >
         std::numeric_limits<std::size_t>::max() /
@@ -190,6 +224,20 @@ bool GLMesh::upload(const Mesh& mesh) {
         vertex_data.push_back(n.x);
         vertex_data.push_back(n.y);
         vertex_data.push_back(n.z);
+
+        vertex_data.push_back(has_uv ? mesh.texcoords[i].x : 0.0f);
+        vertex_data.push_back(has_uv ? mesh.texcoords[i].y : 0.0f);
+    }
+
+    // Triangles of the same material next to each other: one draw call
+    // per material instead of switching the material per triangle
+    std::vector<std::uint32_t> grouped_indices;
+    const std::vector<MaterialRange> material_ranges =
+        group_triangles_by_material(mesh, grouped_indices);
+
+    if (grouped_indices.empty()) {
+        LOG_ERROR("mesh has no complete triangle");
+        return false;
     }
 
     const std::size_t vertex_buffer_bytes =
@@ -202,7 +250,7 @@ bool GLMesh::upload(const Mesh& mesh) {
         return false;
     }
 
-    if (mesh.indices.size() >
+    if (grouped_indices.size() >
         std::numeric_limits<std::size_t>::max() /
             sizeof(std::uint32_t)) {
         LOG_ERROR("mesh index buffer size overflow");
@@ -210,7 +258,7 @@ bool GLMesh::upload(const Mesh& mesh) {
     }
 
     const std::size_t index_buffer_bytes =
-        mesh.indices.size() * sizeof(std::uint32_t);
+        grouped_indices.size() * sizeof(std::uint32_t);
 
     if (index_buffer_bytes >
         static_cast<std::size_t>(
@@ -236,7 +284,39 @@ bool GLMesh::upload(const Mesh& mesh) {
         return false;
     }
 
-    m_index_count = static_cast<GLsizei>(mesh.indices.size());
+    // One draw call per material range, with the material's colour and
+    // texture. An unknown material or texture falls back to the default
+    // colour and the white texture
+    m_ranges.clear();
+
+    for (const MaterialRange& range : material_ranges) {
+        const Material fallback;
+        const Material& material =
+            static_cast<std::size_t>(range.material) <
+                    mesh.materials.size()
+                ? mesh.materials[static_cast<std::size_t>(range.material)]
+                : fallback;
+
+        unsigned int texture = 0;
+
+        if (material.base_color_image >= 0 &&
+            static_cast<std::size_t>(material.base_color_image) <
+                textures.size()) {
+            texture = store.gl_name(
+                textures[static_cast<std::size_t>(
+                    material.base_color_image)]);
+        }
+
+        GLDrawRange draw_range;
+        draw_range.first_index_byte =
+            static_cast<std::size_t>(range.first_index) *
+            sizeof(std::uint32_t);
+        draw_range.index_count = static_cast<GLsizei>(range.index_count);
+        draw_range.base_color = material.base_color;
+        draw_range.texture = texture != 0 ? texture : store.white();
+        m_ranges.push_back(draw_range);
+    }
+
     m_edge_index_count = static_cast<GLsizei>(mesh.edges.size());
 
     // Discard stale OpenGL errors without an unbounded loop
@@ -271,7 +351,7 @@ bool GLMesh::upload(const Mesh& mesh) {
     constexpr GLsizei kStride =
         static_cast<GLsizei>(kFloatsPerVertex * sizeof(float));
 
-    // Attribute 0: position XYZ, stride 24 bytes, offset 0
+    // Attribute 0: position XYZ, stride 32 bytes, offset 0
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(
         0,
@@ -282,7 +362,7 @@ bool GLMesh::upload(const Mesh& mesh) {
         nullptr
     );
 
-    // Attribute 1: normal XYZ, stride 24 bytes, offset 12 bytes
+    // Attribute 1: normal XYZ, stride 32 bytes, offset 12 bytes
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(
         1,
@@ -291,6 +371,17 @@ bool GLMesh::upload(const Mesh& mesh) {
         GL_FALSE,
         kStride,
         reinterpret_cast<const void*>(3 * sizeof(float))
+    );
+
+    // Attribute 2: texture coordinates UV, stride 32 bytes, offset 24 bytes
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(
+        2,
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        kStride,
+        reinterpret_cast<const void*>(6 * sizeof(float))
     );
 
     glGenBuffers(1, &m_ebo);
@@ -306,7 +397,7 @@ bool GLMesh::upload(const Mesh& mesh) {
     glBufferData(
         GL_ELEMENT_ARRAY_BUFFER,
         static_cast<GLsizeiptr>(index_buffer_bytes),
-        mesh.indices.data(),
+        grouped_indices.data(),
         GL_STATIC_DRAW
     );
 
@@ -333,7 +424,7 @@ bool GLMesh::upload(const Mesh& mesh) {
         3,
         GL_FLOAT,
         GL_FALSE,
-        static_cast<GLsizei>(6 * sizeof(float)),
+        static_cast<GLsizei>(kFloatsPerVertex * sizeof(float)),
         nullptr
     );
 
@@ -366,18 +457,35 @@ bool GLMesh::upload(const Mesh& mesh) {
     return true;
 }
 
-void GLMesh::draw() const {
-    if (m_vao == 0 || m_index_count <= 0) {
+void GLMesh::draw(int base_color_location) const {
+    if (m_vao == 0 || m_ranges.empty()) {
         return;
     }
 
     glBindVertexArray(m_vao);
-    glDrawElements(
-        GL_TRIANGLES,
-        m_index_count,
-        GL_UNSIGNED_INT,
-        nullptr
-    );
+    glActiveTexture(GL_TEXTURE0);
+
+    for (const GLDrawRange& range : m_ranges) {
+        glUniform3f(
+            base_color_location,
+            range.base_color.x,
+            range.base_color.y,
+            range.base_color.z
+        );
+
+        glBindTexture(GL_TEXTURE_2D, range.texture);
+
+        // With an element buffer bound, the last argument is a byte
+        // offset into it, not a pointer
+        glDrawElements(
+            GL_TRIANGLES,
+            range.index_count,
+            GL_UNSIGNED_INT,
+            reinterpret_cast<const void*>(range.first_index_byte)
+        );
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
     glBindVertexArray(0);
 }
 
@@ -422,7 +530,7 @@ void GLMesh::shutdown() {
         m_edge_ebo = 0;
     }
 
-    m_index_count = 0;
+    m_ranges.clear();
     m_edge_index_count = 0;
 }
 
@@ -455,10 +563,22 @@ bool GLMeshRenderer::init() {
     m_normal_model_location =
         gl_uniform_location(m_program, "u_normal_model");
 
+    m_base_color_location =
+        gl_uniform_location(m_program, "u_base_color");
+
+    m_base_texture_location =
+        gl_uniform_location(m_program, "u_base_texture");
+
+    m_show_materials_location =
+        gl_uniform_location(m_program, "u_show_materials");
+
     if (m_view_location < 0 ||
         m_view_proj_location < 0 ||
         m_model_location < 0 ||
-        m_normal_model_location < 0) {
+        m_normal_model_location < 0 ||
+        m_base_color_location < 0 ||
+        m_base_texture_location < 0 ||
+        m_show_materials_location < 0) {
         LOG_ERROR("mesh shader uniforms are missing");
         shutdown();
         return false;
@@ -495,7 +615,9 @@ bool GLMeshRenderer::init() {
     return true;
 }
 
-MeshId GLMeshRenderer::add(const Mesh& mesh) {
+MeshId GLMeshRenderer::add(const Mesh& mesh,
+                           const std::vector<TextureId>& textures,
+                           const GLTextureStore& store) {
     if (m_program == 0 ||
         m_meshes.size() >=
             static_cast<std::size_t>(
@@ -506,7 +628,7 @@ MeshId GLMeshRenderer::add(const Mesh& mesh) {
     std::unique_ptr<GLMesh> gpu_mesh =
         std::make_unique<GLMesh>();
 
-    if (!gpu_mesh->upload(mesh)) {
+    if (!gpu_mesh->upload(mesh, textures, store)) {
         return 0;
     }
 
@@ -516,7 +638,8 @@ MeshId GLMeshRenderer::add(const Mesh& mesh) {
 }
 
 void GLMeshRenderer::draw(const std::vector<DrawItem>& items,
-                          const Mat4& view_proj, const Mat4& view) const {
+                          const Mat4& view_proj, const Mat4& view,
+                          bool show_materials) const {
     if (m_program == 0 || items.empty()) {
         return;
     }
@@ -537,6 +660,10 @@ void GLMeshRenderer::draw(const std::vector<DrawItem>& items,
         GL_FALSE,
         &view_proj.col[0].x
     );
+
+    // Texture unit 0 holds the base-colour texture
+    glUniform1i(m_base_texture_location, 0);
+    glUniform1i(m_show_materials_location, show_materials ? 1 : 0);
 
     // Each object has its own model and normal matrices
     for (const DrawItem& item : items) {
@@ -559,7 +686,8 @@ void GLMeshRenderer::draw(const std::vector<DrawItem>& items,
             &item.normal_matrix.col[0].x
         );
 
-        m_meshes[static_cast<std::size_t>(item.mesh) - 1]->draw();
+        m_meshes[static_cast<std::size_t>(item.mesh) - 1]->draw(
+            m_base_color_location);
     }
 }
 
@@ -624,6 +752,9 @@ void GLMeshRenderer::shutdown() {
     m_view_proj_location = -1;
     m_model_location = -1;
     m_normal_model_location = -1;
+    m_base_color_location = -1;
+    m_base_texture_location = -1;
+    m_show_materials_location = -1;
 
     m_wire_view_proj_location = -1;
     m_wire_model_location = -1;

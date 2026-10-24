@@ -7,6 +7,7 @@ add_library(gfx_gl STATIC
     gl_renderer.cpp
     gl_timer.cpp
     gl_shader.cpp
+    gl_texture.cpp
     gl_triangle_demo.cpp
     gl_ui.cpp
 )

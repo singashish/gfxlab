@@ -1,3 +1,4 @@
+#include "core/mesh.h"
 #include "core/obj_loader.h"
 #include "check.h"
 
@@ -867,8 +868,139 @@ f 2/2 4/4 3/3
     CHECK(mesh.triangle_materials[1] == 1);
 }
 
-} // namespace
+// ---- group_triangles_by_material --------------------------------------
 
+// Five triangles with distinct vertex indices (triangle t uses 3t .. 3t+2),
+// so each one can be recognised in the reordered list
+gfx::Mesh make_five_triangle_mesh() {
+    gfx::Mesh mesh;
+
+    for (std::uint32_t t = 0; t < 5; ++t) {
+        mesh.indices.push_back(t * 3);
+        mesh.indices.push_back(t * 3 + 1);
+        mesh.indices.push_back(t * 3 + 2);
+    }
+
+    return mesh;
+}
+
+void test_group_by_material_order_and_stability() {
+    gfx::Mesh mesh = make_five_triangle_mesh();
+    mesh.triangle_materials = {1, 0, 1, 0, 1};
+
+    std::vector<std::uint32_t> out;
+    const std::vector<gfx::MaterialRange> ranges =
+        gfx::group_triangles_by_material(mesh, out);
+
+    CHECK(ranges.size() == 2);
+    CHECK(out.size() == 15);
+
+    // Material 0: triangles 1 and 3; material 1: triangles 0, 2 and 4
+    const std::vector<std::uint32_t> expected = {
+        3, 4, 5,  9, 10, 11,
+        0, 1, 2,  6, 7, 8,  12, 13, 14
+    };
+    CHECK(out == expected);
+
+    if (ranges.size() == 2) {
+        CHECK(ranges[0].material == 0);
+        CHECK(ranges[0].first_index == 0);
+        CHECK(ranges[0].index_count == 6);
+        CHECK(ranges[1].material == 1);
+        CHECK(ranges[1].first_index == 6);
+        CHECK(ranges[1].index_count == 9);
+    }
+}
+
+void test_group_by_material_single_material_unchanged() {
+    gfx::Mesh mesh = make_five_triangle_mesh();
+    mesh.triangle_materials = {2, 2, 2, 2, 2};
+
+    std::vector<std::uint32_t> out;
+    const std::vector<gfx::MaterialRange> ranges =
+        gfx::group_triangles_by_material(mesh, out);
+
+    CHECK(out == mesh.indices);
+    CHECK(ranges.size() == 1);
+
+    if (ranges.size() == 1) {
+        CHECK(ranges[0].material == 2);
+        CHECK(ranges[0].first_index == 0);
+        CHECK(ranges[0].index_count == 15);
+    }
+}
+
+void test_group_by_material_missing_triangle_materials() {
+    gfx::Mesh mesh = make_five_triangle_mesh();
+
+    // No list at all
+    std::vector<std::uint32_t> out;
+    std::vector<gfx::MaterialRange> ranges =
+        gfx::group_triangles_by_material(mesh, out);
+
+    CHECK(out == mesh.indices);
+    CHECK(ranges.size() == 1);
+
+    if (ranges.size() == 1) {
+        CHECK(ranges[0].material == 0);
+        CHECK(ranges[0].first_index == 0);
+        CHECK(ranges[0].index_count == 15);
+    }
+
+    // A list of the wrong size is ignored too
+    mesh.triangle_materials = {1, 1};
+    ranges = gfx::group_triangles_by_material(mesh, out);
+
+    CHECK(out == mesh.indices);
+    CHECK(ranges.size() == 1);
+
+    if (ranges.size() == 1) {
+        CHECK(ranges[0].material == 0);
+        CHECK(ranges[0].index_count == 15);
+    }
+}
+
+void test_group_by_material_empty_mesh() {
+    gfx::Mesh mesh;
+
+    // Stale content in out_indices must be cleared
+    std::vector<std::uint32_t> out = {7, 8, 9};
+    const std::vector<gfx::MaterialRange> ranges =
+        gfx::group_triangles_by_material(mesh, out);
+
+    CHECK(ranges.empty());
+    CHECK(out.empty());
+}
+
+void test_group_by_material_gaps() {
+    // Only materials 1 and 4 are used; 0, 2, 3 get no range
+    gfx::Mesh mesh = make_five_triangle_mesh();
+    mesh.triangle_materials = {4, 1, 4, 1, 1};
+
+    std::vector<std::uint32_t> out;
+    const std::vector<gfx::MaterialRange> ranges =
+        gfx::group_triangles_by_material(mesh, out);
+
+    CHECK(ranges.size() == 2);
+
+    if (ranges.size() == 2) {
+        CHECK(ranges[0].material == 1);
+        CHECK(ranges[0].first_index == 0);
+        CHECK(ranges[0].index_count == 9);
+        CHECK(ranges[1].material == 4);
+        CHECK(ranges[1].first_index == 9);
+        CHECK(ranges[1].index_count == 6);
+    }
+
+    // Material 1: triangles 1, 3, 4; material 4: triangles 0, 2
+    const std::vector<std::uint32_t> expected = {
+        3, 4, 5,  9, 10, 11,  12, 13, 14,
+        0, 1, 2,  6, 7, 8
+    };
+    CHECK(out == expected);
+}
+
+} // namespace
 
 int main() {
     test_triangle();
@@ -906,6 +1038,11 @@ int main() {
     test_roughness_from_phong();
     test_load_obj_with_mtl();
     test_flat_normals_keep_texcoords();
+    test_group_by_material_order_and_stability();
+    test_group_by_material_single_material_unchanged();
+    test_group_by_material_missing_triangle_materials();
+    test_group_by_material_empty_mesh();
+    test_group_by_material_gaps();
 
     if (g_failures == 0) {
         std::printf("All OBJ tests passed\n");

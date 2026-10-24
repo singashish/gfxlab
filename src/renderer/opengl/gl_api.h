@@ -98,6 +98,13 @@ constexpr GLenum GL_R8 = 0x8229;
 constexpr GLenum GL_TEXTURE_WRAP_S = 0x2802;
 constexpr GLenum GL_TEXTURE_WRAP_T = 0x2803;
 constexpr GLenum GL_CLAMP_TO_EDGE = 0x812F;
+constexpr GLenum GL_LINEAR = 0x2601;
+constexpr GLenum GL_LINEAR_MIPMAP_LINEAR = 0x2703;
+constexpr GLenum GL_REPEAT = 0x2901;
+
+// Anisotropic filtering (core since OpenGL 4.6)
+constexpr GLenum GL_TEXTURE_MAX_ANISOTROPY = 0x84FE;
+constexpr GLenum GL_MAX_TEXTURE_MAX_ANISOTROPY = 0x84FF;
 
 // Buffer constants
 constexpr GLenum GL_ARRAY_BUFFER = 0x8892;
