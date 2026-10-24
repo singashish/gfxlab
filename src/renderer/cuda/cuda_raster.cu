@@ -1939,6 +1939,27 @@ __device__ __forceinline__ Vec3 trace_path(
 
     depth = -1.0f;
 
+    // The sun as seen by multiple importance sampling (MIS; the long
+    // explanation is in core/brdf.h). The sun is found in two ways: the
+    // shadow ray below aims at it, and a bounce ray may escape through
+    // it. Each way gets a weight from the densities of both, and the two
+    // weights add up to 1 for every direction in the cone, so the sun is
+    // counted exactly once:
+    //     shadow ray:  w_sun  = 1 / (1 + (pdf_bsdf / pdf_sun)^2)
+    //     bounce ray:  w_bsdf = 1 / (1 + (pdf_sun / pdf_bsdf)^2)
+    // pdf_sun = 1 / sun_solid_angle is the density of the shadow ray's
+    // direction (uniform in the cone), pdf_bsdf the density with which
+    // the surface's bounce would generate that same direction.
+    // sun_radiance = E / solid angle is the radiance inside the cone.
+    // prev_pdf is the density of the bounce that produced the current
+    // ray (0 for the camera ray, which has no bounce behind it)
+    const float sun_solid_angle =
+        2.0f * kPi * (1.0f - pt.sun_cos_half_angle);
+    const bool sun_mis = pt.sun_enabled && sun_solid_angle > 0.0f;
+    const float sun_radiance =
+        sun_mis ? pt.sun_irradiance / sun_solid_angle : 0.0f;
+    float prev_pdf = 0.0f;
+
     // One iteration per ray. Rays 0 .. max_bounces - 1 end on surfaces
     // that are shaded; ray max_bounces only collects the sky and the
     // emission of the surface it hits, because it is the continuation of
@@ -1948,15 +1969,32 @@ __device__ __forceinline__ Vec3 trace_path(
         SurfacePoint point;
 
         if (!closest_surface(scene, origin, dir, t_min, t_max, point)) {
-            // The sun is never added here, not even to a bounce ray that
-            // happens to point at it: it lights surfaces through the
-            // explicit shadow ray below, and counting a chance hit as
-            // well would count it twice
+            const Vec3 unit_dir = normalize(dir);
             const Vec3 seen = bounce == 0
                 ? pt.background
-                : sky_radiance(normalize(dir));
+                : sky_radiance(unit_dir);
 
             radiance = radiance + modulate(throughput, seen);
+
+            // A bounce ray that escapes through the sun's cone found the
+            // sun by chance. It counts, with the weight w_bsdf of the MIS
+            // above; the shadow ray of the surface it left counts the
+            // same light with w_sun, and the two weights add up to 1.
+            // The final ray (bounce == max_bounces) must count too:
+            // the shadow ray of the last shaded surface already used a
+            // weight w_sun < 1, and the rest of the sun's light is only
+            // accounted for by this ray. The camera ray shows no sun disc
+            // (the plain background), and a bounce ray that hits
+            // geometry is not an escape: the surface blocks the sun
+            if (bounce > 0 && sun_mis && prev_pdf > 0.0f &&
+                dot(unit_dir, scene.sun_world) >= pt.sun_cos_half_angle) {
+                const float ratio = 1.0f / (prev_pdf * sun_solid_angle);
+
+                radiance = radiance + modulate(throughput,
+                    Vec3{sun_radiance, sun_radiance, sun_radiance}) *
+                    (1.0f / (1.0f + ratio * ratio));
+            }
+
             break;
         }
 
@@ -2040,14 +2078,27 @@ __device__ __forceinline__ Vec3 trace_path(
             fresnel_dielectric_layer(material.dielectric_f0, cos_v);
         const Vec3 kd = albedo * ((1.0f - material.metallic) * (1.0f - fd));
 
+        // The probability of bouncing off the glossy lobe (see below); it
+        // is also needed here, to weigh the shadow ray against the bounce
+        const float p_spec = specular_lobe_probability(
+            has_specular ? fresnel_schlick(f0, cos_v)
+                         : Vec3{0.0f, 0.0f, 0.0f},
+            kd);
+
         // Next-event estimation: one shadow ray towards a random point
         // of the sun's disc. The disc has radiance E / solid_angle and a
         // uniformly chosen direction has density 1 / solid_angle, so the
         // solid angle cancels and the surface receives
         //     (Kd / pi + f_s(l, v)) * E * cos(angle to the normal),
-        // both lobes at once (the sun is never found by chance, so both
-        // lobes need it explicitly). Directions below the surface
-        // (shading normal or the real triangle) get nothing
+        // both lobes at once (the lobes are not picked here: the sun is
+        // a light to aim at, not a direction to bounce into). This
+        // is multiplied by the MIS weight w_sun, which is close to 1
+        // where the bounce rays would rarely find the sun (diffuse and
+        // rough surfaces: pdf_bsdf is about a thousand times smaller than
+        // pdf_sun, so the weight is 1 to six digits and nothing changes
+        // for them) and close to 0 on a smooth glossy highlight, where
+        // the bounce rays do the job better. Directions below the
+        // surface (shading normal or the real triangle) get nothing
         if (pt.sun_enabled) {
             const float u1 = random01(seed);
             const float u2 = random01(seed);
@@ -2059,19 +2110,29 @@ __device__ __forceinline__ Vec3 trace_path(
 
             if (cos_l > 0.0f && dot(point.geometric, l) > 0.0f &&
                 !scene_occluded(scene, start, l, 1.0e30f)) {
-                const float scale = pt.sun_irradiance * cos_l / kPi;
+                const Vec3 h = normalize(l + v);
+                const float n_dot_h = dot(n, h);
 
-                radiance = radiance +
-                    modulate(throughput, kd) * scale;
+                Vec3 f = kd * (1.0f / kPi);
 
                 if (has_specular) {
-                    const Vec3 h = normalize(l + v);
-                    const Vec3 f_s = ggx_specular_brdf(
-                        alpha, f0, cos_l, cos_v, dot(n, h), dot(v, h));
-
-                    radiance = radiance + modulate(throughput, f_s) *
-                        (pt.sun_irradiance * cos_l);
+                    f = f + ggx_specular_brdf(
+                        alpha, f0, cos_l, cos_v, n_dot_h, dot(v, h));
                 }
+
+                // pdf_bsdf / pdf_sun = pdf_bsdf * solid angle
+                float w_sun = 1.0f;
+
+                if (sun_mis) {
+                    const float ratio = sun_solid_angle *
+                        bsdf_mixture_pdf(p_spec, alpha, cos_v, cos_l,
+                                         n_dot_h);
+
+                    w_sun = 1.0f / (1.0f + ratio * ratio);
+                }
+
+                radiance = radiance + modulate(throughput, f) *
+                    (pt.sun_irradiance * cos_l * w_sun);
             }
         }
 
@@ -2079,67 +2140,69 @@ __device__ __forceinline__ Vec3 trace_path(
         // lobes. The two random numbers v1 and v2 are used by whichever
         // lobe is picked. The lobe is picked with probability p_spec for
         // the glossy one and 1 - p_spec for the diffuse one (the
-        // probability follows how much light each lobe reflects). The
-        // lobe that was not picked is not evaluated at all: dividing the
-        // weight by the probability of having picked its lobe keeps the
-        // estimate unbiased, because on average the lobe that is picked
-        // with probability p and weighted by 1 / p counts exactly once.
-        // A third random number is only drawn when there is really a
-        // choice (0 < p_spec < 1), so a surface with a single lobe uses
-        // the same random numbers as before the glossy lobe existed
+        // probability follows how much light each lobe reflects). A third
+        // random number is only drawn when there is really a choice
+        // (0 < p_spec < 1), so a surface with a single lobe uses the same
+        // random numbers as before the glossy lobe existed
         const float v1 = random01(seed);
         const float v2 = random01(seed);
+        const float v3 = (p_spec > 0.0f && p_spec < 1.0f)
+            ? random01(seed) : 0.0f;
 
-        const float p_spec = specular_lobe_probability(
-            has_specular ? fresnel_schlick(f0, cos_v)
-                         : Vec3{0.0f, 0.0f, 0.0f},
-            kd);
+        const BsdfSample bounce_sample =
+            sample_bsdf_mixture(n, v, alpha, p_spec, v1, v2, v3);
 
-        bool pick_specular = p_spec >= 1.0f;
+        const Vec3 d = bounce_sample.d;
+        const float cos_out = dot(n, d);
 
-        if (p_spec > 0.0f && p_spec < 1.0f) {
-            pick_specular = random01(seed) < p_spec;
+        // A glossy bounce can end up below the surface (the microfacet's
+        // mirror points into the surface), and a diffuse one can dip below
+        // the actual triangle (smooth normals bend away from it): such a
+        // sample carries no light, the path ends
+        if (cos_out <= 0.0f || dot(d, point.geometric) <= 0.0f) {
+            break;
         }
 
-        Vec3 d{0.0f, 0.0f, 0.0f};
-        Vec3 weight{0.0f, 0.0f, 0.0f};
+        // The density with which this bounce generated d: the mixture of
+        // both lobes, whichever one was picked (core/brdf.h). It is the
+        // divisor of the weight below and, kept for the next ray, the
+        // pdf_bsdf of the MIS weight if that ray escapes through the sun
+        const Vec3 h_out = normalize(d + v);
+        const float n_dot_h_out = dot(n, h_out);
+        const float pdf = bsdf_mixture_pdf(
+            p_spec, alpha, cos_v, cos_out, n_dot_h_out);
 
-        if (pick_specular) {
-            // Glossy bounce: a microfacet normal h among those the viewer
-            // can see, and the mirror direction of v in it. The weight
-            // F(v.h) G2 / G1(v) is what remains of f_s cos / pdf; the
-            // cancellation is explained in core/brdf.h. The reflected
-            // direction can end up below the surface (the microfacet's
-            // mirror points into the surface): that sample carries no
-            // light, the path ends, like for a direction below the real
-            // triangle
-            const Vec3 h = ggx_sample_visible_normal(n, v, alpha, v1, v2);
+        if (!finite_float(pdf) || !(pdf > 0.0f)) {
+            break;
+        }
 
-            d = normalize(reflect_about(v, h));
+        // The weight of the bounce, f(d) cos(d) / pdf(d), with the
+        // mixture density. Written out like this it is the same for any
+        // lobe that gets picked, which is what makes it consistent with
+        // the MIS weights. When the surface has a single lobe the density
+        // cancels the BRDF almost completely and the plain forms are used
+        // (they are exact and well behaved):
+        //  - glossy only: F(v.h) G2 / G1(v), at most 1 per channel (the
+        //    cancellation is explained in core/brdf.h)
+        //  - diffuse only: Kd (the density cos / pi cancels Kd / pi cos)
+        // so for them the result is the same as before MIS. With both
+        // lobes the full f = Kd / pi + f_s is divided by the mixture
+        Vec3 weight;
 
-            const float cos_out = dot(n, d);
-
-            if (cos_out <= 0.0f || dot(d, point.geometric) <= 0.0f) {
-                break;
-            }
-
-            weight = fresnel_schlick(f0, dot(v, h)) *
-                     (smith_g2_over_g1(alpha, cos_out, cos_v) / p_spec);
+        if (p_spec >= 1.0f) {
+            weight = fresnel_schlick(f0, dot(v, bounce_sample.h)) *
+                     smith_g2_over_g1(alpha, cos_out, cos_v);
+        } else if (p_spec <= 0.0f) {
+            weight = kd;
         } else {
-            // Diffuse bounce: the cosine-distributed direction has the
-            // density cos / pi, which cancels the Lambert factor
-            // Kd / pi * cos, so only Kd is left (divided by the lobe
-            // probability). A direction that dips below the actual
-            // triangle (possible where smooth normals bend away from it)
-            // ends the path, like in the ambient occlusion rays
-            d = cosine_hemisphere(n, v1, v2);
+            const Vec3 f = kd * (1.0f / kPi) +
+                ggx_specular_brdf(alpha, f0, cos_out, cos_v, n_dot_h_out,
+                                  dot(v, h_out));
 
-            if (dot(d, point.geometric) <= 0.0f) {
-                break;
-            }
-
-            weight = kd * (1.0f / (1.0f - p_spec));
+            weight = f * (cos_out / pdf);
         }
+
+        prev_pdf = pdf;
 
         throughput = modulate(throughput, weight);
 

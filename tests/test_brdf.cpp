@@ -509,6 +509,322 @@ void test_specular_brdf() {
                    1.0e-5 * static_cast<double>(f.x)));
 }
 
+
+// The density of the visible-normal sampling. Two ways to get the share of
+// the sampled directions that point above the surface must agree: count
+// them (the sampler discards the ones that mirror v below the horizon),
+// and add up the density over the hemisphere of directions l
+void test_vndf_pdf() {
+    const float alphas[] = {0.2f, 0.5f, 1.0f};
+    const float cos_vs[] = {1.0f, 0.5f, 0.15f};
+    const int kSamples = 200000;
+    const int kGrid = 500;
+
+    for (const float alpha : alphas) {
+        for (const float cos_v : cos_vs) {
+            const Vec3 v = view_vector(cos_v, 0.4f);
+
+            // (1) the fraction of sampled normals whose mirror image of v
+            // is above the surface
+            Rng rng(1234u);
+            int valid = 0;
+
+            for (int i = 0; i < kSamples; ++i) {
+                const float u1 = rng.next();
+                const float u2 = rng.next();
+                const Vec3 h =
+                    gfx::ggx_sample_visible_normal_local(alpha, v, u1, u2);
+
+                if (gfx::reflect_about(v, h).z > 0.0f) {
+                    ++valid;
+                }
+            }
+
+            const double fraction =
+                static_cast<double>(valid) / static_cast<double>(kSamples);
+
+            // (2) the integral of the density over the hemisphere of l,
+            // midpoint rule on a (cos theta, phi) grid: a uniform grid
+            // there is uniform in solid angle, each cell has
+            // 2 pi / (grid * grid) steradians
+            double integral = 0.0;
+
+            for (int i = 0; i < kGrid; ++i) {
+                const float z = (static_cast<float>(i) + 0.5f) /
+                                static_cast<float>(kGrid);
+                const float r = std::sqrt(1.0f - z * z);
+
+                for (int j = 0; j < kGrid; ++j) {
+                    const float phi = 6.2831853f *
+                        (static_cast<float>(j) + 0.5f) /
+                        static_cast<float>(kGrid);
+                    const Vec3 l{r * std::cos(phi), r * std::sin(phi), z};
+                    const Vec3 h = gfx::normalize(l + v);
+
+                    integral += static_cast<double>(
+                        gfx::ggx_vndf_pdf(alpha, z, cos_v, h.z));
+                }
+            }
+
+            integral *= 2.0 * kPiD /
+                        (static_cast<double>(kGrid) *
+                         static_cast<double>(kGrid));
+
+            CHECK(rel_diff(integral, fraction) < 0.015);
+
+            // Below the horizon: no density
+            CHECK(gfx::ggx_vndf_pdf(alpha, -0.1f, cos_v, 0.9f) == 0.0f);
+        }
+    }
+}
+
+// The mixture density: its two terms, and the single-lobe limits
+void test_mixture_pdf() {
+    const float alpha = 0.3f;
+    const float cl = 0.6f;
+    const float cv = 0.8f;
+    const float ch = 0.95f;
+
+    const double diffuse = static_cast<double>(cl) / kPiD;
+    const double glossy =
+        static_cast<double>(gfx::ggx_vndf_pdf(alpha, cl, cv, ch));
+
+    CHECK(close_to(static_cast<double>(
+                       gfx::bsdf_mixture_pdf(0.0f, alpha, cv, cl, ch)),
+                   diffuse, 1.0e-6));
+    CHECK(close_to(static_cast<double>(
+                       gfx::bsdf_mixture_pdf(1.0f, alpha, cv, cl, ch)),
+                   glossy, 1.0e-6 * glossy));
+    CHECK(close_to(static_cast<double>(
+                       gfx::bsdf_mixture_pdf(0.25f, alpha, cv, cl, ch)),
+                   0.75 * diffuse + 0.25 * glossy, 1.0e-6 * glossy));
+    CHECK(gfx::bsdf_mixture_pdf(0.5f, alpha, cv, -0.2f, ch) == 0.0f);
+}
+
+// ---------------------------------------------------------------------
+// Multiple importance sampling of the sun
+// ---------------------------------------------------------------------
+
+// A surface with both lobes, seen from a fixed direction (the normal is
+// +Z), for the check that the three ways of estimating the light it
+// reflects from the sun agree
+struct MisSurface {
+    float alpha;
+    Vec3 f0;
+    float kd;
+    Vec3 v;
+    float cos_v;
+    float p_spec;
+};
+
+// The BRDF Kd / pi + f_s(l, v) in the green channel
+double mis_brdf(const MisSurface& s, Vec3 l) {
+    const Vec3 h = gfx::normalize(l + s.v);
+    const Vec3 f_s = gfx::ggx_specular_brdf(
+        s.alpha, s.f0, l.z, s.cos_v, h.z, gfx::dot(s.v, h));
+
+    return static_cast<double>(s.kd) / kPiD + static_cast<double>(f_s.y);
+}
+
+double mis_pdf(const MisSurface& s, Vec3 l) {
+    const Vec3 h = gfx::normalize(l + s.v);
+
+    return static_cast<double>(
+        gfx::bsdf_mixture_pdf(s.p_spec, s.alpha, s.cos_v, l.z, h.z));
+}
+
+struct MeanAndError {
+    double mean;
+    double error;   // standard error of the mean
+};
+
+// Mean and standard error from the sums of kBatches equal batches
+MeanAndError batch_statistics(const double* batch_sums, int batches,
+                              int per_batch) {
+    double mean = 0.0;
+
+    for (int b = 0; b < batches; ++b) {
+        mean += batch_sums[b] / static_cast<double>(per_batch);
+    }
+
+    mean /= static_cast<double>(batches);
+
+    double var = 0.0;
+
+    for (int b = 0; b < batches; ++b) {
+        const double dev =
+            batch_sums[b] / static_cast<double>(per_batch) - mean;
+
+        var += dev * dev;
+    }
+
+    var /= static_cast<double>(batches - 1);
+
+    return {mean, std::sqrt(var / static_cast<double>(batches))};
+}
+
+// The radiance a surface reflects towards the viewer from the sun (a cone
+// of radiance L_sun = E / solid angle, E = 1), the integral of
+// f(l) cos(l) L_sun over the cone, by four methods:
+//  - a fine grid over the cone (the reference),
+//  - (a) aiming at the cone, weight 1,
+//  - (b) bouncing, counting the bounce rays that land in the cone,
+//  - (c) both, with the power-heuristic weights of the path tracer.
+// The estimates and their standard errors are returned in out.
+struct MisResult {
+    double reference;
+    MeanAndError nee;
+    MeanAndError bounce;
+    MeanAndError mis;
+};
+
+MisResult run_mis_case(float alpha, float cos_v, float offset_degrees) {
+    const int kBatches = 64;
+    const int kPerBatch = 3000;
+    const int kGrid = 300;
+
+    MisSurface s;
+
+    s.alpha = alpha;
+    s.f0 = {0.9f, 0.7f, 0.4f};
+    s.kd = 0.5f;
+    s.v = view_vector(cos_v, 0.3f);
+    s.cos_v = cos_v;
+    s.p_spec = gfx::specular_lobe_probability(
+        gfx::fresnel_schlick(s.f0, cos_v), Vec3{s.kd, s.kd, s.kd});
+
+    // The cone: its axis is the mirror direction of v, tilted by the
+    // offset (sideways, perpendicular to the mirror direction)
+    const Vec3 normal{0.0f, 0.0f, 1.0f};
+    const Vec3 mirror = gfx::reflect_about(s.v, normal);
+    const Vec3 side = gfx::normalize(gfx::cross(normal, mirror));
+    const float offset = offset_degrees * (gfx::kPi / 180.0f);
+    const Vec3 axis = gfx::normalize(
+        mirror * std::cos(offset) + side * std::sin(offset));
+
+    const float cos_half = gfx::sun_cone_cos(gfx::kSunHalfAngle);
+    const double omega =
+        2.0 * kPiD * (1.0 - static_cast<double>(cos_half));
+    const double l_sun = 1.0 / omega;
+    const double pdf_sun = 1.0 / omega;
+
+    MisResult r;
+
+    // The reference: the average of f cos over the cone, E = 1
+    double sum = 0.0;
+
+    for (int i = 0; i < kGrid; ++i) {
+        for (int j = 0; j < kGrid; ++j) {
+            const Vec3 l = gfx::sample_sun_cone(
+                axis, cos_half,
+                (static_cast<float>(i) + 0.5f) / static_cast<float>(kGrid),
+                (static_cast<float>(j) + 0.5f) / static_cast<float>(kGrid));
+
+            if (l.z > 0.0f) {
+                sum += mis_brdf(s, l) * static_cast<double>(l.z);
+            }
+        }
+    }
+
+    r.reference = sum / (static_cast<double>(kGrid) *
+                         static_cast<double>(kGrid));
+
+    double sums_a[kBatches] = {};
+    double sums_b[kBatches] = {};
+    double sums_c[kBatches] = {};
+    Rng rng(777u);
+
+    for (int b = 0; b < kBatches; ++b) {
+        for (int i = 0; i < kPerBatch; ++i) {
+            // (a) the aimed ray: f cos (E = 1), weight w_sun
+            double est_a = 0.0;
+            double est_a_weighted = 0.0;
+            const Vec3 l = gfx::sample_sun_cone(
+                axis, cos_half, rng.next(), rng.next());
+
+            if (l.z > 0.0f) {
+                est_a = mis_brdf(s, l) * static_cast<double>(l.z);
+
+                const double ratio = mis_pdf(s, l) / pdf_sun;
+
+                est_a_weighted = est_a / (1.0 + ratio * ratio);
+            }
+
+            // (b) the bounce ray: f cos L_sun / pdf if it is in the cone,
+            // weight w_bsdf. The third random number is only drawn when
+            // there is a choice, like in the path tracer
+            const float u1 = rng.next();
+            const float u2 = rng.next();
+            const float u3 = (s.p_spec > 0.0f && s.p_spec < 1.0f)
+                ? rng.next() : 0.0f;
+            const gfx::BsdfSample bs = gfx::sample_bsdf_mixture(
+                normal, s.v, s.alpha, s.p_spec, u1, u2, u3);
+
+            double est_b = 0.0;
+            double est_b_weighted = 0.0;
+
+            if (bs.d.z > 0.0f && gfx::dot(bs.d, axis) >= cos_half) {
+                const double pdf = mis_pdf(s, bs.d);
+
+                if (pdf > 0.0) {
+                    est_b = mis_brdf(s, bs.d) * static_cast<double>(bs.d.z) *
+                            l_sun / pdf;
+
+                    const double ratio = pdf_sun / pdf;
+
+                    est_b_weighted = est_b / (1.0 + ratio * ratio);
+                }
+            }
+
+            sums_a[b] += est_a;
+            sums_b[b] += est_b;
+            sums_c[b] += est_a_weighted + est_b_weighted;
+        }
+    }
+
+    r.nee = batch_statistics(sums_a, kBatches, kPerBatch);
+    r.bounce = batch_statistics(sums_b, kBatches, kPerBatch);
+    r.mis = batch_statistics(sums_c, kBatches, kPerBatch);
+
+    return r;
+}
+
+void test_mis_sun() {
+    // alpha 0.005 is a roughness of about 0.07: the lobe is narrower than
+    // the sun's disc, where the aimed ray alone is sparkly
+    const float alphas[] = {0.005f, 0.03f, 0.1f, 0.4f};
+    const float cos_vs[] = {0.9f, 0.4f};
+    const float offsets[] = {0.0f, 2.0f};
+
+    for (const float alpha : alphas) {
+        for (const float cos_v : cos_vs) {
+            for (const float offset : offsets) {
+                const MisResult r = run_mis_case(alpha, cos_v, offset);
+
+                // All three agree with the reference, the combination
+                // tightly, the single strategies within what their own
+                // noise says
+                CHECK(rel_diff(r.mis.mean, r.reference) < 0.02);
+                CHECK(std::fabs(r.nee.mean - r.reference) <
+                      std::fmax(0.02 * r.reference, 4.0 * r.nee.error));
+                CHECK(std::fabs(r.bounce.mean - r.reference) <
+                      std::fmax(0.02 * r.reference, 4.0 * r.bounce.error));
+
+                // The point of MIS: on the sharpest lobe the combination
+                // is much less noisy than the aimed ray alone, and it is
+                // never much worse than the better single strategy
+                if (alpha < 0.01f && offset == 0.0f) {
+                    CHECK(r.mis.error < r.nee.error);
+                }
+
+                CHECK(r.mis.error < 1.5 * std::fmin(r.nee.error,
+                                                    r.bounce.error) +
+                                        1.0e-3 * r.reference);
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -521,6 +837,9 @@ int main() {
     test_albedo_consistency();
     test_lobe_probability();
     test_specular_brdf();
+    test_vndf_pdf();
+    test_mixture_pdf();
+    test_mis_sun();
 
     if (g_failures == 0) {
         std::printf("All brdf tests passed\n");

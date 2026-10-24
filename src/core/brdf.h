@@ -405,6 +405,35 @@ GFX_HD inline Vec3 reflect_about(Vec3 v, Vec3 h) {
     return h * (2.0f * dot(v, h)) - v;
 }
 
+// The density (per steradian of the outgoing direction l) with which the
+// visible-normal sampling above followed by reflect_about produces the
+// direction l, for h = normalize(l + v):
+//     pdf(l) = G1(v) D(h) / (4 n.v)
+// Derivation: the visible normals have the density
+//     D_v(h) = G1(v) max(0, v.h) D(h) / (n.v)
+// per steradian of h, and mirroring v in h to get l stretches the solid
+// angle by the factor 4 v.h (dl = 4 (v.h) dh), so the density of l is
+// D_v(h) / (4 v.h); the v.h cancels. This is the number the path tracer
+// needs to weigh the sun against the other ways of finding it (see the
+// notes on multiple importance sampling below). It is 0 for an l at or
+// below the horizon: such a direction is never generated as a valid
+// bounce. Note that the density integrates to LESS than 1 over the
+// hemisphere of l: a share of the sampled normals mirror v below the
+// horizon and those samples are discarded
+GFX_HD inline float ggx_vndf_pdf(
+                float alpha,
+                float n_dot_l,
+                float n_dot_v,
+                float n_dot_h) {
+
+    if (!(n_dot_l > 0.0f) || !(n_dot_v > 0.0f)) {
+        return 0.0f;
+    }
+
+    return smith_g1(alpha, n_dot_v) * ggx_d(alpha, n_dot_h) /
+           (4.0f * n_dot_v);
+}
+
 // ---------------------------------------------------------------------
 // Choosing between the two lobes
 //
@@ -446,6 +475,114 @@ GFX_HD inline float specular_lobe_probability(
 
     return fminf(fmaxf(w_s / (w_s + w_d), kSpecularProbabilityMin),
                  kSpecularProbabilityMax);
+}
+
+// ---------------------------------------------------------------------
+// The bounce direction as one density, and multiple importance sampling
+//
+// The bounce picks a lobe at random (probability p_spec for the glossy
+// one) and a direction from that lobe. Seen from outside, the direction l
+// comes out with the MIXTURE density
+//     pdf(l) = (1 - p_spec) * (n.l) / pi + p_spec * ggx_vndf_pdf(l),
+// no matter which lobe produced it. Knowing that density for ANY
+// direction is what makes multiple importance sampling (MIS) possible.
+//
+// The problem MIS solves. The sun can be found two ways: (a) aim a ray
+// at the sun on purpose (next-event estimation, "NEE"), or (b) bounce in
+// a random direction and hope the ray escapes through the sun. Each is
+// good where the other is bad. On a rough or diffuse surface the bounce
+// rays spread over the whole hemisphere and almost none of them hit the
+// small sun, but the aimed ray always does: (a) wins. On a nearly
+// mirror-like surface the BRDF is a narrow spike, and the aimed ray
+// lands on a random point of the sun's disc, nearly always outside the
+// spike (value 0) and now and then on it (a value thousands of times too
+// big): the result is sparkly. The bounce rays are generated INSIDE the
+// spike, so those that escape through the sun give smooth values: (b)
+// wins. Using only one of them is bad somewhere; adding both would count
+// the sun twice.
+//
+// The fix: use both and give each sample a weight, with the weights of
+// all the ways of generating the same direction adding up to exactly 1.
+// For a direction l, let p_a be the density with which NEE would
+// generate it and p_b the density with which the bounce would. The
+// power heuristic gives the NEE sample the weight
+//     w_a = p_a^2 / (p_a^2 + p_b^2)
+// and the bounce sample w_b = p_b^2 / (p_a^2 + p_b^2). They add up to 1
+// by construction, so each light path is counted once in total (the
+// estimate stays unbiased), and the squares make the strategy that is
+// much better at this direction take almost all the weight (the
+// strategy that is bad there is almost silenced, together with its
+// huge values). Squares are the usual choice (Veach 1995); plain
+// proportions work but are noisier.
+// ---------------------------------------------------------------------
+
+// The mixture density of the bounce direction l, per steradian, for the
+// lobe probability p_spec (0 when the surface has no glossy lobe, 1 when
+// it has no diffuse lobe). n_dot_v, n_dot_l and n_dot_h are the cosines
+// with the normal of v, l and h = normalize(l + v). 0 for an l at or
+// below the horizon
+GFX_HD inline float bsdf_mixture_pdf(
+                float p_spec,
+                float alpha,
+                float n_dot_v,
+                float n_dot_l,
+                float n_dot_h) {
+
+    if (!(n_dot_l > 0.0f)) {
+        return 0.0f;
+    }
+
+    float pdf = (1.0f - p_spec) * n_dot_l * (1.0f / kPi);
+
+    if (p_spec > 0.0f) {
+        pdf += p_spec * ggx_vndf_pdf(alpha, n_dot_l, n_dot_v, n_dot_h);
+    }
+
+    return pdf;
+}
+
+// A bounce direction and the lobe that produced it
+struct BsdfSample {
+    Vec3 d;          // the direction (unit length), may be below the surface
+    Vec3 h;          // the sampled microfacet normal, only set if specular
+    bool specular;   // true: the glossy lobe was picked
+};
+
+// Picks a lobe and a direction like the path tracer's bounce does. n is
+// the shading normal and v the direction to the viewer (unit vectors),
+// p_spec the probability of the glossy lobe, u1 and u2 the random
+// numbers the picked lobe uses, and u3 the one that picks the lobe: it is
+// only looked at when 0 < p_spec < 1, so the caller draws it only then
+// (a surface with a single lobe uses the same random numbers as before
+// the glossy lobe existed)
+GFX_HD inline BsdfSample sample_bsdf_mixture(
+                Vec3 n,
+                Vec3 v,
+                float alpha,
+                float p_spec,
+                float u1,
+                float u2,
+                float u3) {
+
+    bool pick_specular = p_spec >= 1.0f;
+
+    if (p_spec > 0.0f && p_spec < 1.0f) {
+        pick_specular = u3 < p_spec;
+    }
+
+    BsdfSample s;
+
+    s.specular = pick_specular;
+    s.h = Vec3{0.0f, 0.0f, 0.0f};
+
+    if (pick_specular) {
+        s.h = ggx_sample_visible_normal(n, v, alpha, u1, u2);
+        s.d = normalize(reflect_about(v, s.h));
+    } else {
+        s.d = cosine_hemisphere(n, u1, u2);
+    }
+
+    return s;
 }
 
 } // namespace gfx
