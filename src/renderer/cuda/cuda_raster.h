@@ -104,6 +104,13 @@ struct RtInstance {
     DeviceMesh mesh;
     Mat4 world_to_object;  // inverse of the model matrix
     Mat4 normal_to_world;  // the model's normal matrix
+
+    // For sampling the emissive triangles (path tracer only): the model
+    // matrix itself, and how likely this instance is picked as a light:
+    // area_scale(model) times the mesh's light_weight (0 = no lamp
+    // triangles, or materials are off)
+    Mat4 object_to_world;
+    float light_weight;
 };
 
 // Passed to the kernel by value (well under the 4 KB parameter limit),
@@ -113,6 +120,10 @@ constexpr int kMaxRtInstances = 8;
 struct RtScene {
     RtInstance items[kMaxRtInstances];
     int count;
+
+    // The sum of the instances' light_weight; 0 means "no area lights"
+    // and the path tracer then skips light sampling entirely
+    float light_total;
 
     Mat4 view;       // world -> view, for lighting
     Mat4 view_proj;  // for the depth the grid tests against

@@ -83,6 +83,16 @@ struct DeviceMesh {
     // The same tree collapsed to 4-wide nodes; shares bvh_tri_indices
     Bvh4Node* bvh4_nodes = nullptr;
 
+    // The emissive triangles of the mesh (area lights, see
+    // core/light_sampling.h): their numbers in ascending order, and the
+    // inclusive cumulative sum of weight = object-space area times the
+    // luminance of the emission factor. light_weight is the total (the
+    // last cdf entry), 0 when the mesh has no lamp triangle
+    std::uint32_t* light_tris = nullptr;
+    float* light_cdf = nullptr;
+    std::uint32_t light_count = 0;
+    float light_weight = 0.0f;
+
     // Object-space bounding box (the BVH root), kept on the host side of
     // this struct so the renderer can size effects to the model
     Vec3 bounds_min = {0.0f, 0.0f, 0.0f};

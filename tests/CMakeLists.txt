@@ -79,3 +79,10 @@ add_test(NAME path COMMAND test_path)
 add_executable(test_brdf test_brdf.cpp)
 target_link_libraries(test_brdf PRIVATE gfx_core)
 add_test(NAME brdf COMMAND test_brdf)
+
+# Sampling the emissive triangles of the path tracer: area scale,
+# barycentric sampling, the light CDF, MIS against the bounce rays
+# (header-only, core/light_sampling.h and core/light_list.h)
+add_executable(test_light test_light.cpp)
+target_link_libraries(test_light PRIVATE gfx_core)
+add_test(NAME light COMMAND test_light)

@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "core/bvh.h"
 #include "core/brdf.h"
+#include "core/light_sampling.h"
 #include "core/bvh4.h"
 #include "core/path_math.h"
 #include "core/raster_math.h"
@@ -1260,6 +1261,13 @@ struct SurfacePoint {
     // left to the path tracer
     std::uint32_t material;  // index into the renderer-wide table
     Vec2 uv;                 // texture coordinates at the hit (v up)
+
+    // Which instance (index into RtScene::items) and which triangle of
+    // its mesh was hit. The path tracer needs them to work out how likely
+    // the light sampling would have been to pick this very point of a
+    // lamp (multiple importance sampling). Two plain stores
+    std::uint32_t instance;
+    std::uint32_t triangle;
 };
 
 // The texture coordinates at a hit on the triangle with corners
@@ -1395,6 +1403,8 @@ __device__ __forceinline__ bool closest_surface(
     const bool front_facing = dot(geometric, local_dir) < 0.0f;
 
     point.t = best_t;
+    point.instance = static_cast<std::uint32_t>(best_item);
+    point.triangle = best.triangle;
     point.position = origin + best_t * dir;
     point.normal = transform_direction(inst.normal_to_world, n_object);
     point.geometric = normalize(
@@ -1811,6 +1821,28 @@ struct PathMaterial {
     Vec3 emission;
 };
 
+// The light a material gives off at the texture coordinates uv: the
+// emission factor times the emissive texture (a colour, stored as sRGB,
+// so decoded to linear light first). Level 0 only and the same v flip as
+// every other texture lookup of the path tracer. Most surfaces give off
+// no light: those skip the texture read and the decoding
+__device__ __forceinline__ Vec3 surface_emission(
+                const MaterialTables& tables,
+                const CudaMaterial& material,
+                Vec2 uv) {
+
+    if (material.emission.x > 0.0f || material.emission.y > 0.0f ||
+        material.emission.z > 0.0f) {
+        const Vec3 texel = decode_srgb(
+            sample_bilinear(tables.textures[material.emissive_texture],
+                            0, uv.x, 1.0f - uv.y));
+
+        return modulate(material.emission, texel);
+    }
+
+    return Vec3{0.0f, 0.0f, 0.0f};
+}
+
 // Everything the path tracer needs to know about the surface at `point`
 // (a hit found by closest_surface). The expensive part of the lookup,
 // the extra texture reads, happens here and only here, so the ray tracer
@@ -1865,20 +1897,209 @@ __device__ __forceinline__ PathMaterial resolve_surface_material(
     result.metallic = clamp01(material.metallic * packed.z);
     result.dielectric_f0 = kDielectricF0;
 
-    // Most surfaces give off no light: skip the texture read and the
-    // sRGB decoding for them (an emission of 0 times anything is 0)
-    result.emission = Vec3{0.0f, 0.0f, 0.0f};
-
-    if (material.emission.x > 0.0f || material.emission.y > 0.0f ||
-        material.emission.z > 0.0f) {
-        const Vec3 texel = decode_srgb(
-            sample_bilinear(tables.textures[material.emissive_texture],
-                            0, u, v));
-
-        result.emission = modulate(material.emission, texel);
-    }
+    result.emission = surface_emission(tables, material, point.uv);
 
     return result;
+}
+
+// ---------------------------------------------------------------------
+// Area lights: sampling the emissive triangles (see core/light_sampling.h)
+// ---------------------------------------------------------------------
+
+// A point chosen on a lamp triangle
+struct LightSample {
+    Vec3 position;
+    Vec3 normal;     // unit, orientation arbitrary (lamps are two-sided)
+    float area;      // world-space area of the triangle
+    float prob;      // probability of having picked this triangle
+    Vec3 emission;   // linear radiance leaving the sampled point
+};
+
+// The world-space corners of a triangle of an instance
+__device__ __forceinline__ void instance_triangle(
+                const RtInstance& inst,
+                std::uint32_t triangle,
+                std::uint32_t& i0,
+                std::uint32_t& i1,
+                std::uint32_t& i2,
+                Vec3& w0,
+                Vec3& w1,
+                Vec3& w2) {
+
+    const DeviceMesh& mesh = inst.mesh;
+
+    i0 = mesh.indices[triangle * 3 + 0];
+    i1 = mesh.indices[triangle * 3 + 1];
+    i2 = mesh.indices[triangle * 3 + 2];
+
+    w0 = transform_point(inst.object_to_world, mesh.positions[i0]);
+    w1 = transform_point(inst.object_to_world, mesh.positions[i1]);
+    w2 = transform_point(inst.object_to_world, mesh.positions[i2]);
+}
+
+// Picks a lamp point: the instance by a scan over the instance weights
+// (u0), the triangle by binary search in the mesh's cdf (u1), the point
+// uniformly by area inside it (u2, u3). Four independent random numbers
+// keep the three choices from being correlated. False when the scene has
+// no usable lamp
+__device__ __forceinline__ bool sample_light(
+                const RtScene& scene,
+                float u0,
+                float u1,
+                float u2,
+                float u3,
+                std::uint32_t& instance,
+                std::uint32_t& triangle,
+                LightSample& out) {
+
+    const float target = u0 * scene.light_total;
+    float running = 0.0f;
+    int chosen = -1;
+    int last = -1;
+
+    for (int i = 0; i < scene.count; ++i) {
+        const float w = scene.items[i].light_weight;
+
+        if (w > 0.0f) {
+            last = i;
+            running += w;
+
+            if (running >= target) {
+                chosen = i;
+                break;
+            }
+        }
+    }
+
+    if (chosen < 0) {
+        chosen = last;  // rounding: the scan ended just short of target
+    }
+
+    if (chosen < 0) {
+        return false;
+    }
+
+    const RtInstance& inst = scene.items[chosen];
+    const DeviceMesh& mesh = inst.mesh;
+
+    float tri_prob = 0.0f;
+    const unsigned int pick =
+        pick_from_cdf(mesh.light_cdf, mesh.light_count, u1, tri_prob);
+
+    if (!(tri_prob > 0.0f)) {
+        return false;
+    }
+
+    instance = static_cast<std::uint32_t>(chosen);
+    triangle = mesh.light_tris[pick];
+
+    std::uint32_t i0;
+    std::uint32_t i1;
+    std::uint32_t i2;
+    Vec3 p0;
+    Vec3 p1;
+    Vec3 p2;
+
+    instance_triangle(inst, triangle, i0, i1, i2, p0, p1, p2);
+    triangle_area_normal(p0, p1, p2, out.area, out.normal);
+
+    if (!(out.area > 0.0f)) {
+        return false;
+    }
+
+    float b0;
+    float b1;
+    float b2;
+
+    sample_triangle_barycentric(u2, u3, b0, b1, b2);
+
+    out.position = p0 * b0 + p1 * b1 + p2 * b2;
+    out.prob = (inst.light_weight / scene.light_total) * tri_prob;
+
+    // The emission at the sampled point: factor times emissive texture
+    const CudaMaterial& material = scene.surfaces.materials[
+        mesh.material_base + mesh.triangle_materials[triangle]];
+
+    out.emission = surface_emission(
+        scene.surfaces, material, hit_uv(mesh, i0, i1, i2, b0, b1, b2));
+
+    return true;
+}
+
+// The solid-angle density with which sample_light would have produced
+// the point where a ray from the surface hit the lamp triangle in
+// `point`: exactly the same formula, evaluated from the hit. Returns 0
+// when the hit is not a lamp triangle of the lists, or it is a case
+// the light sampling skips (grazing, or at the surface); the caller then
+// gives the bounce ray the full weight 1
+__device__ __forceinline__ float light_hit_pdf(
+                const RtScene& scene,
+                const SurfacePoint& point,
+                Vec3 unit_dir) {
+
+    const RtInstance& inst = scene.items[point.instance];
+    const DeviceMesh& mesh = inst.mesh;
+
+    const unsigned int index = find_in_sorted(
+        mesh.light_tris, mesh.light_count, point.triangle);
+
+    if (index >= mesh.light_count || !(inst.light_weight > 0.0f)) {
+        return 0.0f;
+    }
+
+    std::uint32_t i0;
+    std::uint32_t i1;
+    std::uint32_t i2;
+    Vec3 p0;
+    Vec3 p1;
+    Vec3 p2;
+    float area;
+    Vec3 normal;
+
+    instance_triangle(inst, point.triangle, i0, i1, i2, p0, p1, p2);
+    triangle_area_normal(p0, p1, p2, area, normal);
+
+    const float cos_light = fabsf(dot(normal, unit_dir));
+
+    if (!(area > 0.0f) || cos_light < kMinLightCosine ||
+        point.t < kMinLightDistance) {
+        return 0.0f;
+    }
+
+    const float prob =
+        (inst.light_weight / scene.light_total) *
+        cdf_probability(mesh.light_cdf, mesh.light_count, index);
+
+    return area_to_solid_angle_pdf(prob / area, point.t, cos_light);
+}
+
+// Kd / pi + f_s(l, v): the whole BRDF of the surface for the light
+// direction l, and the cosine of h = normalize(l + v) with the normal
+// (the density of the bounce needs it too)
+__device__ __forceinline__ Vec3 surface_brdf(
+                Vec3 n,
+                Vec3 v,
+                Vec3 l,
+                float cos_v,
+                float cos_l,
+                float alpha,
+                Vec3 kd,
+                Vec3 f0,
+                bool has_specular,
+                float& n_dot_h) {
+
+    const Vec3 h = normalize(l + v);
+
+    n_dot_h = dot(n, h);
+
+    Vec3 f = kd * (1.0f / kPi);
+
+    if (has_specular) {
+        f = f + ggx_specular_brdf(
+            alpha, f0, cos_l, cos_v, n_dot_h, dot(v, h));
+    }
+
+    return f;
 }
 
 // The radiance (linear light) arriving at the camera through the point
@@ -1960,6 +2181,14 @@ __device__ __forceinline__ Vec3 trace_path(
         sun_mis ? pt.sun_irradiance / sun_solid_angle : 0.0f;
     float prev_pdf = 0.0f;
 
+    // Area lights (emissive triangles) get the same treatment as the sun:
+    // a shadow ray aimed at a random point of a lamp, and the bounce rays
+    // that hit a lamp by chance, weighed against each other so that the
+    // light is counted once. With no lamps (or materials off, which
+    // switches emission off) none of this runs
+    const bool lights_on =
+        scene.light_total > 0.0f && scene.surfaces.show_materials;
+
     // One iteration per ray. Rays 0 .. max_bounces - 1 end on surfaces
     // that are shaded; ray max_bounces only collects the sky and the
     // emission of the surface it hits, because it is the continuation of
@@ -2024,7 +2253,33 @@ __device__ __forceinline__ Vec3 trace_path(
         // hit surface emits costs no further ray, so it is free to count
         // every hit. (Dropping it would make small lamps vanish from the
         // image whenever the path that finds them is already long.)
-        radiance = radiance + modulate(throughput, material.emission);
+        // A bounce ray that hits a lamp by chance gets the weight w_bsdf
+        // = 1 / (1 + (pdf_light / pdf_bsdf)^2) of the MIS: pdf_light is
+        // the density with which the light sampling of the previous
+        // surface would have picked this very point, pdf_bsdf (prev_pdf)
+        // the density of the bounce that found it. Where light sampling
+        // is better (small, distant lamps) the weight is near 0 and
+        // that strategy's share is used instead (below). The camera ray
+        // (bounce 0) sees the lamp directly: weight 1. This applies to
+        // the final ray too: the previous surface's shadow ray used a
+        // weight below 1, and this ray supplies the rest
+        float emission_weight = 1.0f;
+
+        if (bounce > 0 && lights_on && prev_pdf > 0.0f &&
+            (material.emission.x > 0.0f || material.emission.y > 0.0f ||
+             material.emission.z > 0.0f)) {
+            const float pdf_light =
+                light_hit_pdf(scene, point, normalize(dir));
+
+            if (pdf_light > 0.0f) {
+                const float ratio = pdf_light / prev_pdf;
+
+                emission_weight = 1.0f / (1.0f + ratio * ratio);
+            }
+        }
+
+        radiance = radiance +
+            modulate(throughput, material.emission) * emission_weight;
 
         if (bounce == pt.max_bounces) {
             break;  // out of bounces: this surface is not shaded
@@ -2110,15 +2365,10 @@ __device__ __forceinline__ Vec3 trace_path(
 
             if (cos_l > 0.0f && dot(point.geometric, l) > 0.0f &&
                 !scene_occluded(scene, start, l, 1.0e30f)) {
-                const Vec3 h = normalize(l + v);
-                const float n_dot_h = dot(n, h);
-
-                Vec3 f = kd * (1.0f / kPi);
-
-                if (has_specular) {
-                    f = f + ggx_specular_brdf(
-                        alpha, f0, cos_l, cos_v, n_dot_h, dot(v, h));
-                }
+                float n_dot_h;
+                const Vec3 f = surface_brdf(
+                    n, v, l, cos_v, cos_l, alpha, kd, f0, has_specular,
+                    n_dot_h);
 
                 // pdf_bsdf / pdf_sun = pdf_bsdf * solid angle
                 float w_sun = 1.0f;
@@ -2133,6 +2383,69 @@ __device__ __forceinline__ Vec3 trace_path(
 
                 radiance = radiance + modulate(throughput, f) *
                     (pt.sun_irradiance * cos_l * w_sun);
+            }
+        }
+
+        // Next-event estimation for the area lights: one shadow ray
+        // towards a random point of a random lamp triangle. A point on
+        // the lamp has the solid-angle density pdf_light (see
+        // core/light_sampling.h), so the light the surface receives is
+        //     f(l) cos(l) L_e / pdf_light,
+        // times the MIS weight w_light = 1 / (1 + (pdf_bsdf / pdf_light)^2)
+        // (pdf_bsdf: the density with which this surface's bounce would
+        // have generated l). Written as one fraction,
+        //     f cos L_e / (pdf_light + pdf_bsdf^2 / pdf_light),
+        // so a tiny pdf_light cannot turn "huge times zero" into a NaN.
+        // Lamps are two-sided, and the lamp triangle the surface point
+        // itself is on is skipped (it cannot light itself)
+        if (lights_on) {
+            const float lu0 = random01(seed);
+            const float lu1 = random01(seed);
+            const float lu2 = random01(seed);
+            const float lu3 = random01(seed);
+
+            std::uint32_t light_instance = 0u;
+            std::uint32_t light_triangle = 0u;
+            LightSample ls;
+
+            if (sample_light(scene, lu0, lu1, lu2, lu3,
+                             light_instance, light_triangle, ls) &&
+                !(light_instance == point.instance &&
+                  light_triangle == point.triangle)) {
+                const Vec3 to_light = ls.position - start;
+                const float dist = length(to_light);
+
+                if (dist >= kMinLightDistance) {
+                    const Vec3 l = to_light * (1.0f / dist);
+                    const float cos_l = dot(n, l);
+                    const float cos_light = fabsf(dot(ls.normal, l));
+
+                    if (cos_l > 0.0f && dot(point.geometric, l) > 0.0f &&
+                        cos_light >= kMinLightCosine &&
+                        !scene_occluded(
+                            scene, start, l,
+                            dist * (1.0f - kLightShadowShortening))) {
+                        const float pdf_light = area_to_solid_angle_pdf(
+                            ls.prob / ls.area, dist, cos_light);
+
+                        float n_dot_h;
+                        const Vec3 f = surface_brdf(
+                            n, v, l, cos_v, cos_l, alpha, kd, f0,
+                            has_specular, n_dot_h);
+                        const float pdf_bsdf = bsdf_mixture_pdf(
+                            p_spec, alpha, cos_v, cos_l, n_dot_h);
+
+                        if (pdf_light > 0.0f && finite_float(pdf_light)) {
+                            const float scale = cos_l /
+                                (pdf_light + pdf_bsdf * pdf_bsdf /
+                                                 pdf_light);
+
+                            radiance = radiance +
+                                modulate(throughput,
+                                         modulate(f, ls.emission)) * scale;
+                        }
+                    }
+                }
             }
         }
 

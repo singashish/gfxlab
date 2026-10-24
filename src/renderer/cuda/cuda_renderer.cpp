@@ -4,6 +4,7 @@
 
 #include "renderer/cuda/cuda_api.h"
 #include "renderer/cuda/cuda_raster.h"
+#include "core/light_sampling.h"
 #include "core/log.h"
 
 #include <cstdint>
@@ -659,6 +660,14 @@ void CudaRenderer::render(const FrameData& frame) {
 
             inst.mesh = *mesh;
             inst.normal_to_world = item.normal_matrix;
+            inst.object_to_world = item.model;
+
+            // Area lights exist only while materials are shown (emission
+            // is off otherwise)
+            inst.light_weight = frame.show_materials
+                ? area_scale(item.model) * mesh->light_weight
+                : 0.0f;
+            rt_scene.light_total += inst.light_weight;
             ++rt_scene.count;
 
             append_matrix(signature, item.model);

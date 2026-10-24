@@ -7,6 +7,7 @@
 #include <limits>
 #include <utility>
 
+#include "core/light_list.h"
 #include "core/log.h"
 #include "renderer/cuda/cuda_api.h"
 #include "renderer/cuda/cuda_texture.h"
@@ -131,6 +132,18 @@ void free_device_mesh(DeviceMesh& mesh) {
         (void)cuda_ok(
             cudaFree(mesh.bvh_tri_indices),
             "cudaFree mesh BVH triangle indices");
+    }
+
+    if (mesh.light_tris) {
+        (void)cuda_ok(
+            cudaFree(mesh.light_tris),
+            "cudaFree mesh light triangles");
+    }
+
+    if (mesh.light_cdf) {
+        (void)cuda_ok(
+            cudaFree(mesh.light_cdf),
+            "cudaFree mesh light cdf");
     }
 
     mesh = {};
@@ -305,6 +318,19 @@ MeshId CudaMeshStore::add(const Mesh& mesh,
                  mesh.triangle_materials.size(), triangle_count);
     }
 
+    // The lamp triangles for light sampling: the luminance of each
+    // triangle's emission factor (the fallback material has none), then
+    // the list and cumulative weights (core/light_list.h)
+    std::vector<float> triangle_luminance(triangle_count, 0.0f);
+
+    for (std::size_t t = 0; t < triangle_count; ++t) {
+        triangle_luminance[t] = emission_luminance(
+            new_materials[triangle_materials[t]].emission);
+    }
+
+    const LightList lights = build_light_list(
+        mesh.positions, mesh.indices, triangle_luminance);
+
     // Build the ray-tracing BVH once, on the CPU, then upload it as two
     // flat arrays. The GPU walks the same structure with bvh_trace()
     const auto build_start = std::chrono::steady_clock::now();
@@ -344,6 +370,9 @@ MeshId CudaMeshStore::add(const Mesh& mesh,
         static_cast<std::uint32_t>(mesh.indices.size());
     device.edge_index_count =
         static_cast<std::uint32_t>(mesh.edges.size());
+    device.light_count = static_cast<std::uint32_t>(lights.cdf.size());
+    device.light_weight =
+        lights.cdf.empty() ? 0.0f : lights.cdf.back();
 
     if (!upload_array(device.positions, mesh.positions,
                       "CUDA mesh positions upload") ||
@@ -363,7 +392,11 @@ MeshId CudaMeshStore::add(const Mesh& mesh,
         !upload_array(device.bvh_tri_indices, bvh.tri_indices,
                       "CUDA mesh BVH triangle indices upload") ||
         !upload_array(device.bvh4_nodes, bvh4.nodes,
-                      "CUDA mesh 4-wide BVH nodes upload")) {
+                      "CUDA mesh 4-wide BVH nodes upload") ||
+        !upload_array(device.light_tris, lights.triangles,
+                      "CUDA mesh light triangles upload") ||
+        !upload_array(device.light_cdf, lights.cdf,
+                      "CUDA mesh light cdf upload")) {
         free_device_mesh(device);
         return 0;
     }
