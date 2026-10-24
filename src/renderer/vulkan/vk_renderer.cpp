@@ -76,7 +76,8 @@ bool VulkanRenderer::init_pipelines(VkFormat color_format,
     if (!m_meshes.init(m_context.device(),
                        color_format,
                        depth_format,
-            m_uniforms.layout())) {
+                       m_uniforms.layout(),
+                       m_textures.set_layout())) {
         LOG_ERROR("failed to initialize Vulkan mesh pipeline");
         return false;
     }
@@ -148,6 +149,13 @@ bool VulkanRenderer::init(void* native_window) {
 
     if (!m_uploader.init(m_context)) {
         LOG_ERROR("failed to initialize Vulkan uploader");
+        return false;
+    }
+
+    // The texture store must exist before init_pipelines: the mesh
+    // pipeline layout contains the store's descriptor set layout
+    if (!m_textures.init(m_context, m_uploader)) {
+        LOG_ERROR("failed to initialize the Vulkan texture store");
         return false;
     }
 
@@ -341,7 +349,10 @@ void VulkanRenderer::render(const FrameData& frame) {
         make_vec4(grid.forward, 0.0f),
         make_vec4(grid.right, 0.0f),
         make_vec4(grid.up, 0.0f),
-        Vec4{grid.fade_end, 0.0f, 0.0f, 0.0f}
+        // x = grid fade distance, y = 1 to shade with the materials'
+        // colours and textures (0 = plain grey)
+        Vec4{grid.fade_end, frame.show_materials ? 1.0f : 0.0f,
+             0.0f, 0.0f}
     };
 
     if (!m_uniforms.update(frame_index, uniforms)) {
@@ -625,12 +636,20 @@ void VulkanRenderer::render(const FrameData& frame) {
     }
 }
 
+TextureId VulkanRenderer::create_texture(const Image& image) {
+    const TextureId id = m_textures.create(m_context, m_uploader, image);
+
+    if (id == 0) {
+        LOG_ERROR("failed to create a Vulkan texture");
+    }
+
+    return id;
+}
+
 MeshId VulkanRenderer::create_mesh(const Mesh& mesh,
                                    const std::vector<TextureId>& textures) {
-    // Textures are used from Step 5b; this backend still draws grey
-    (void)textures;
-
-    return m_meshes.create(m_context, m_uploader, mesh);
+    return m_meshes.create(
+        m_context, m_uploader, mesh, textures, m_textures);
 }
 
 } // namespace gfx

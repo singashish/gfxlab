@@ -7,6 +7,7 @@
 #include "renderer/vulkan/vk_grid.h"
 #include "renderer/vulkan/vk_mesh.h"
 #include "renderer/vulkan/vk_swapchain.h"
+#include "renderer/vulkan/vk_texture.h"
 #include "renderer/vulkan/vk_timer.h"
 #include "renderer/vulkan/vk_triangle_demo.h"
 #include "renderer/vulkan/vk_ui.h"
@@ -28,6 +29,7 @@ public:
     bool init(void* native_window) override;
     void render(const FrameData& frame) override;
     void set_vsync(bool enabled) override;
+    TextureId create_texture(const Image& image) override;
     MeshId create_mesh(const Mesh& mesh,
                        const std::vector<TextureId>& textures) override;
 
@@ -44,6 +46,11 @@ private:
     VulkanFrames m_frames;
     VulkanUploader m_uploader;
     VulkanFrameUniforms m_uniforms;
+
+    // Declared after the uploader (it uploads through it) and before
+    // the mesh renderer, so it is destroyed after the meshes that keep
+    // its descriptor sets and before the uploader and the context
+    VulkanTextureStore m_textures;
     VulkanTriangleDemo m_triangle;
     VulkanMeshRenderer m_meshes;
     VulkanGridRenderer m_grid;

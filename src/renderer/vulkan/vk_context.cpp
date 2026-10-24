@@ -198,6 +198,8 @@ void VulkanContext::destroy() {
     m_queue = VK_NULL_HANDLE;
     m_physical_device = VK_NULL_HANDLE;
     m_queue_family = 0;
+    m_sampler_anisotropy = false;
+    m_max_sampler_anisotropy = 1.0f;
 
     // 2. The surface belongs to the instance.
     if (m_surface != VK_NULL_HANDLE &&
@@ -403,6 +405,7 @@ bool VulkanContext::create(void* native_window) {
 
     VkPhysicalDevice best_device = VK_NULL_HANDLE;
     std::uint32_t best_queue_family = 0;
+    bool best_sampler_anisotropy = false;
     int best_score = -1;
 
     for (VkPhysicalDevice candidate : devices) {
@@ -448,6 +451,11 @@ bool VulkanContext::create(void* native_window) {
             continue;
         }
 
+        // Optional: anisotropic texture filtering. Not a requirement,
+        // so a GPU without it is still suitable
+        const bool sampler_anisotropy =
+            features2.features.samplerAnisotropy == VK_TRUE;
+
         std::uint32_t queue_family = 0;
 
         if (!find_graphics_present_queue(
@@ -475,6 +483,7 @@ bool VulkanContext::create(void* native_window) {
             best_score = score;
             best_device = candidate;
             best_queue_family = queue_family;
+            best_sampler_anisotropy = sampler_anisotropy;
         }
     }
 
@@ -495,6 +504,11 @@ bool VulkanContext::create(void* native_window) {
     LOG_INFO("selected Vulkan GPU: %s",
              selected_properties.deviceName);
 
+    m_sampler_anisotropy = best_sampler_anisotropy;
+    m_max_sampler_anisotropy = best_sampler_anisotropy
+        ? selected_properties.limits.maxSamplerAnisotropy
+        : 1.0f;
+
     // Step 8: Create the logical device.
     constexpr float queue_priority = 1.0f;
 
@@ -511,13 +525,24 @@ bool VulkanContext::create(void* native_window) {
     enabled_features.synchronization2 = VK_TRUE;
     enabled_features.shaderDemoteToHelperInvocation = VK_TRUE;
 
+    // The Vulkan 1.3 features go in a VkPhysicalDeviceFeatures2 chain:
+    // the core 1.0 features (here samplerAnisotropy) are in
+    // features2.features, the 1.3 struct hangs off its pNext. With a
+    // Features2 in pNext, pEnabledFeatures below must stay nullptr
+    VkPhysicalDeviceFeatures2 enabled_features2{};
+    enabled_features2.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    enabled_features2.pNext = &enabled_features;
+    enabled_features2.features.samplerAnisotropy =
+        m_sampler_anisotropy ? VK_TRUE : VK_FALSE;
+
     const char* device_extensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
     };
 
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    device_info.pNext = &enabled_features;
+    device_info.pNext = &enabled_features2;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
     device_info.enabledExtensionCount = 1;

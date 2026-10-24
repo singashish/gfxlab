@@ -28,6 +28,16 @@ public:
         return m_queue_family;
     }
 
+    // Anisotropic filtering is an optional device feature. It is
+    // enabled whenever the GPU offers it; samplers must only ask for
+    // anisotropy when this is true
+    bool sampler_anisotropy() const { return m_sampler_anisotropy; }
+
+    // Largest anisotropy a sampler may request (1 without the feature)
+    float max_sampler_anisotropy() const {
+        return m_max_sampler_anisotropy;
+    }
+
 private:
     VkInstance m_instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT m_debug_messenger =
@@ -39,6 +49,9 @@ private:
 
     std::uint32_t m_queue_family = 0;
     bool m_validation_enabled = false;
+
+    bool m_sampler_anisotropy = false;
+    float m_max_sampler_anisotropy = 1.0f;
 
     PFN_vkDestroyDebugUtilsMessengerEXT m_destroy_debug_messenger =
         nullptr;

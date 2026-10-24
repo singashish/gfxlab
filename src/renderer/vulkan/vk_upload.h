@@ -37,6 +37,23 @@ public:
                          const void* data,
                          VkDeviceSize size);
 
+    // Uploads RGBA8 pixels (tightly packed, width * height * 4 bytes, top
+    // row first) into mip level 0 of a 2D image and fills the other
+    // mip levels by repeatedly blitting the level above at half size
+    // with a linear filter. The image must have mip_levels levels, one
+    // layer, format R8G8B8A8_UNORM, optimal tiling, usage SAMPLED |
+    // TRANSFER_SRC | TRANSFER_DST, and be in VK_IMAGE_LAYOUT_UNDEFINED.
+    // Afterwards every level is in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL.
+    // With mip_levels == 1 no blit happens, so the format needs no blit
+    // support in that case
+    bool upload_texture(const VulkanContext& ctx,
+                        VkImage image,
+                        std::uint32_t width,
+                        std::uint32_t height,
+                        std::uint32_t mip_levels,
+                        const void* data,
+                        VkDeviceSize size);
+
 private:
     // Records commands with record(), submits them and waits until the
     // GPU has finished. what names the operation in error messages

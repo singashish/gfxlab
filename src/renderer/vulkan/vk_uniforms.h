@@ -22,6 +22,11 @@ struct FrameUniforms {
     Vec4 forward;
     Vec4 right;
     Vec4 up;
+
+    // x = world distance at which the grid fades out (grid shader)
+    // y = 1 when the mesh shader uses material colours and textures,
+    //     0 for plain grey shading
+    // z, w unused
     Vec4 params;
 };
 
