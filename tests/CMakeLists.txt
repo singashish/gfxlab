@@ -73,3 +73,9 @@ add_test(NAME gltf COMMAND test_gltf)
 add_executable(test_path test_path.cpp)
 target_link_libraries(test_path PRIVATE gfx_core)
 add_test(NAME path COMMAND test_path)
+
+# The glossy surface maths of the path tracer: GGX distribution, Smith
+# shadowing, Fresnel, visible-normal sampling (header-only, core/brdf.h)
+add_executable(test_brdf test_brdf.cpp)
+target_link_libraries(test_brdf PRIVATE gfx_core)
+add_test(NAME brdf COMMAND test_brdf)

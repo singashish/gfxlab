@@ -32,6 +32,11 @@
  * one bounce simply multiplies the path's "throughput" by a: no cosines,
  * no pi, no division left in the loop (see cosine_hemisphere).
  *
+ * Glossy surfaces. A surface is a mix of this diffuse layer and a glossy
+ * (GGX) specular lobe: the next direction is sampled from one of the two,
+ * and the sun is evaluated for both. The maths of the glossy lobe has its
+ * own portable header, brdf.h.
+ *
  * Next-event estimation. The sun covers only a tiny part of the sky (a
  * cone of 1 degree half angle). A random bounce direction would hit it
  * about once in 10000 tries, so the picture would be almost all noise. So

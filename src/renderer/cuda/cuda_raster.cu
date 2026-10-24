@@ -2,6 +2,7 @@
 
 #include "core/log.h"
 #include "core/bvh.h"
+#include "core/brdf.h"
 #include "core/bvh4.h"
 #include "core/path_math.h"
 #include "core/raster_math.h"
@@ -1771,7 +1772,9 @@ __global__ void rt_finish_kernel(
 // Path tracer ("Rendered" mode). The maths and the ideas (linear light,
 // Monte Carlo, cosine sampling, next-event estimation, Russian roulette)
 // are explained in core/path_math.h; the constants (bounces, sun, sky)
-// are defined there. Lambert (diffuse) surfaces and emission for now.
+// are defined there. Surfaces are a metal/dielectric mix: a Lambert
+// diffuse layer and a GGX specular lobe (the maths and the reasons are in
+// core/brdf.h), plus emission.
 //
 // Colours: the stored colours (material colour times texel, the values
 // the viewport shows) are display (sRGB) values. The path tracer decodes
@@ -1790,8 +1793,14 @@ __global__ void rt_finish_kernel(
 // tracer computes in (linear light).
 struct PathMaterial {
     Vec3 albedo;      // linear, 0..1: the fraction of light reflected
-    float roughness;  // 0..1, carried to the hit but not used yet
-    float metallic;   // 0..1, carried to the hit but not used yet
+    float roughness;  // 0..1: 0 = mirror-like, 1 = fully rough
+    float metallic;   // 0..1: 0 = dielectric (plastic, ...), 1 = metal
+
+    // Reflectance of a dielectric looking straight at it (4% for the
+    // usual materials, kDielectricF0). 0 means "no glossy layer at all":
+    // together with metallic 0 the surface is then plain Lambert paint
+    // (that is what turning the materials off gives)
+    float dielectric_f0;
 
     // Linear radiance the surface gives off by itself, per colour
     // channel, in the same units as the sky and the sun. Radiance is
@@ -1819,8 +1828,9 @@ struct PathMaterial {
 //     roughness of 0.5 stored as 128 must come out as 0.5, not 0.21.
 //
 // With materials off (the M key) the surface is plain grey paint: the
-// grey albedo that closest_surface put in point.base, medium roughness,
-// not metallic and no emission. "No materials" has to mean no lamps too
+// grey albedo that closest_surface put in point.base, no glossy layer
+// (dielectric_f0 0, not metallic) and no emission. "No materials" has to
+// mean no lamps and no shine either
 __device__ __forceinline__ PathMaterial resolve_surface_material(
                 const MaterialTables& tables,
                 const SurfacePoint& point) {
@@ -1831,6 +1841,7 @@ __device__ __forceinline__ PathMaterial resolve_surface_material(
     if (!tables.show_materials) {
         result.roughness = 0.5f;
         result.metallic = 0.0f;
+        result.dielectric_f0 = 0.0f;
         result.emission = Vec3{0.0f, 0.0f, 0.0f};
         return result;
     }
@@ -1852,6 +1863,7 @@ __device__ __forceinline__ PathMaterial resolve_surface_material(
 
     result.roughness = clamp01(material.roughness * packed.y);
     result.metallic = clamp01(material.metallic * packed.z);
+    result.dielectric_f0 = kDielectricF0;
 
     // Most surfaces give off no light: skip the texture read and the
     // sRGB decoding for them (an emission of 0 times anything is 0)
@@ -1876,9 +1888,11 @@ __device__ __forceinline__ PathMaterial resolve_surface_material(
 // For one sample the estimate is
 //     L = sum over the path's vertices of (throughput there) * (light
 //         added there),
-// where the throughput is the product of the albedos met so far and the
-// light added is what the vertex's surface emits, the sun it receives
-// through the shadow ray, or the sky a ray that left the scene sees.
+// where the throughput is the product of the weights of the bounces so
+// far (for a diffuse bounce the diffuse colour, for a glossy one the
+// Fresnel and shadowing factors; see below) and the light added is what
+// the vertex's surface emits, the sun it receives through the shadow ray,
+// or the sky a ray that left the scene sees.
 // Averaging many samples (the accumulation buffer) gives the picture.
 //
 // Random numbers: every sample of every pixel gets its own seed,
@@ -1961,7 +1975,7 @@ __device__ __forceinline__ Vec3 trace_path(
         // that found it travels backwards along the path, so whatever
         // the surface emits towards us is light that reaches the camera
         // after being reflected by all the surfaces between (the
-        // throughput, the product of their albedos, says how much of it
+        // throughput, the product of their weights, says how much of it
         // survives). The camera ray's first hit has throughput 1, so a
         // lamp seen directly shows its full emission.
         //
@@ -1987,13 +2001,53 @@ __device__ __forceinline__ Vec3 trace_path(
         const Vec3 start =
             point.position + point.geometric * shadow_offset(point.position);
 
+        // The surface is a mix of two lobes, a diffuse (Lambert) one and a
+        // glossy (GGX) one; core/brdf.h explains the model. Everything
+        // below is in world space. v points back to where the ray came
+        // from, and its cosine with the normal is kept above a tiny
+        // number, because interpolated normals can face slightly away
+        // from the viewer
+        const Vec3 v = -normalize(dir);
+        const float cos_v = fmaxf(dot(n, v), kMinCosView);
+        const float alpha = ggx_alpha_from_roughness(material.roughness);
+
+        // No glossy layer at all (materials off): the specular lobe is
+        // skipped entirely. A dielectric f0 of 0 is the "no layer" marker
+        // of PathMaterial; Schlick's curve through 0 would still rise to 1
+        // at glancing angles
+        const bool has_specular =
+            material.dielectric_f0 > 0.0f || material.metallic > 0.0f;
+
+        // Reflectance at normal incidence: a dielectric reflects 4% of
+        // every colour, a metal reflects its colour (the base colour)
+        Vec3 f0{0.0f, 0.0f, 0.0f};
+
+        if (has_specular) {
+            const float m = material.metallic;
+            const float d0 = material.dielectric_f0 * (1.0f - m);
+
+            f0 = Vec3{d0 + albedo.x * m, d0 + albedo.y * m,
+                      d0 + albedo.z * m};
+        }
+
+        // The diffuse colour: nothing for a metal (its electrons reflect
+        // or absorb all light at the surface), and for a dielectric the
+        // albedo reduced by what the clear glossy layer on top already
+        // reflected. The more it reflects at this view angle (glancing
+        // views), the less is left to enter the diffuse layer. A cheap
+        // approximation of the energy balance, not a measured model
+        const float fd =
+            fresnel_dielectric_layer(material.dielectric_f0, cos_v);
+        const Vec3 kd = albedo * ((1.0f - material.metallic) * (1.0f - fd));
+
         // Next-event estimation: one shadow ray towards a random point
         // of the sun's disc. The disc has radiance E / solid_angle and a
         // uniformly chosen direction has density 1 / solid_angle, so the
         // solid angle cancels and the surface receives
-        //     albedo / pi * E * cos(angle to the normal).
-        // Directions below the surface (shading normal or the real
-        // triangle) get nothing
+        //     (Kd / pi + f_s(l, v)) * E * cos(angle to the normal),
+        // both lobes at once (the sun is never found by chance, so both
+        // lobes need it explicitly). Directions below the surface
+        // (shading normal or the real triangle) get nothing
         if (pt.sun_enabled) {
             const float u1 = random01(seed);
             const float u2 = random01(seed);
@@ -2008,26 +2062,86 @@ __device__ __forceinline__ Vec3 trace_path(
                 const float scale = pt.sun_irradiance * cos_l / kPi;
 
                 radiance = radiance +
-                    modulate(throughput, albedo) * scale;
+                    modulate(throughput, kd) * scale;
+
+                if (has_specular) {
+                    const Vec3 h = normalize(l + v);
+                    const Vec3 f_s = ggx_specular_brdf(
+                        alpha, f0, cos_l, cos_v, dot(n, h), dot(v, h));
+
+                    radiance = radiance + modulate(throughput, f_s) *
+                        (pt.sun_irradiance * cos_l);
+                }
             }
         }
 
-        // Continue the path with a cosine-distributed direction. The
-        // density cos / pi cancels the Lambert factor albedo / pi * cos,
-        // so only the albedo is left to multiply the throughput by
+        // Continue the path in ONE direction, sampled from ONE of the two
+        // lobes. The two random numbers v1 and v2 are used by whichever
+        // lobe is picked. The lobe is picked with probability p_spec for
+        // the glossy one and 1 - p_spec for the diffuse one (the
+        // probability follows how much light each lobe reflects). The
+        // lobe that was not picked is not evaluated at all: dividing the
+        // weight by the probability of having picked its lobe keeps the
+        // estimate unbiased, because on average the lobe that is picked
+        // with probability p and weighted by 1 / p counts exactly once.
+        // A third random number is only drawn when there is really a
+        // choice (0 < p_spec < 1), so a surface with a single lobe uses
+        // the same random numbers as before the glossy lobe existed
         const float v1 = random01(seed);
         const float v2 = random01(seed);
 
-        const Vec3 d = cosine_hemisphere(n, v1, v2);
+        const float p_spec = specular_lobe_probability(
+            has_specular ? fresnel_schlick(f0, cos_v)
+                         : Vec3{0.0f, 0.0f, 0.0f},
+            kd);
 
-        // A direction that dips below the actual triangle (possible where
-        // smooth normals bend away from it) ends the path, like in the
-        // ambient occlusion rays
-        if (dot(d, point.geometric) <= 0.0f) {
-            break;
+        bool pick_specular = p_spec >= 1.0f;
+
+        if (p_spec > 0.0f && p_spec < 1.0f) {
+            pick_specular = random01(seed) < p_spec;
         }
 
-        throughput = modulate(throughput, albedo);
+        Vec3 d{0.0f, 0.0f, 0.0f};
+        Vec3 weight{0.0f, 0.0f, 0.0f};
+
+        if (pick_specular) {
+            // Glossy bounce: a microfacet normal h among those the viewer
+            // can see, and the mirror direction of v in it. The weight
+            // F(v.h) G2 / G1(v) is what remains of f_s cos / pdf; the
+            // cancellation is explained in core/brdf.h. The reflected
+            // direction can end up below the surface (the microfacet's
+            // mirror points into the surface): that sample carries no
+            // light, the path ends, like for a direction below the real
+            // triangle
+            const Vec3 h = ggx_sample_visible_normal(n, v, alpha, v1, v2);
+
+            d = normalize(reflect_about(v, h));
+
+            const float cos_out = dot(n, d);
+
+            if (cos_out <= 0.0f || dot(d, point.geometric) <= 0.0f) {
+                break;
+            }
+
+            weight = fresnel_schlick(f0, dot(v, h)) *
+                     (smith_g2_over_g1(alpha, cos_out, cos_v) / p_spec);
+        } else {
+            // Diffuse bounce: the cosine-distributed direction has the
+            // density cos / pi, which cancels the Lambert factor
+            // Kd / pi * cos, so only Kd is left (divided by the lobe
+            // probability). A direction that dips below the actual
+            // triangle (possible where smooth normals bend away from it)
+            // ends the path, like in the ambient occlusion rays
+            d = cosine_hemisphere(n, v1, v2);
+
+            if (dot(d, point.geometric) <= 0.0f) {
+                break;
+            }
+
+            weight = kd * (1.0f / (1.0f - p_spec));
+        }
+
+        throughput = modulate(throughput, weight);
 
         // Russian roulette: terminate with probability 1 - q, otherwise
         // divide by q, which keeps the average the same
