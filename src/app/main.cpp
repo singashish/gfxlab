@@ -2,6 +2,7 @@
 #include "core/timer.h"
 #include "core/orbit_camera.h"
 #include "core/path_settings.h"
+#include "core/material_edit.h"
 #include "core/math_util.h"
 #include "core/mesh.h"
 #include "core/model.h"
@@ -270,6 +271,7 @@ int main(int argc, char** argv) {
     bool model_open = true;
     bool path_tracing_open = is_cuda;
     bool pt_settings_open = false;
+    bool materials_open = false;
     bool ray_tracing_open = is_cuda;
     bool controls_open = false;
 
@@ -292,6 +294,15 @@ int main(int argc, char** argv) {
     float pt_samples_per_frame_slider =
         static_cast<float>(pt_settings.samples_per_frame);
     float pt_bounces_slider = static_cast<float>(pt_settings.max_bounces);
+
+    // The material editor (panel: Materials, CUDA only): the model's used
+    // materials, what is edited of each, and which one is selected. The
+    // editor state is the truth: the Material copies in `model` are not
+    // updated. The selection slider is a float the slider owns, rounded
+    // each frame like the whole-number path tracing settings
+    std::vector<gfx::MaterialEntry> material_entries;
+    std::vector<gfx::MaterialEditState> material_states;
+    float material_slider = 0.0f;
 
     // Material colours and textures; off = plain grey shading. M toggles it
     bool show_materials = true;
@@ -392,7 +403,30 @@ int main(int argc, char** argv) {
 
             mesh_ids.push_back(id);
         }
+
+        if (is_cuda) {
+            material_entries = gfx::build_material_entries(model.meshes);
+
+            for (const gfx::MaterialEntry& entry : material_entries) {
+                material_states.push_back(
+                    gfx::edit_state_of(entry.original));
+            }
+        }
     }
+
+    // Sends entry i's edited values to every mesh copy of the material
+    const auto apply_material = [&](std::size_t i) {
+        const gfx::MaterialParams params = gfx::params_of(material_states[i]);
+
+        for (const gfx::MaterialTarget& target : material_entries[i].targets) {
+            if (target.mesh < mesh_ids.size() &&
+                !renderer->update_material(mesh_ids[target.mesh], target.index,
+                                           params)) {
+                LOG_WARN("material %d of mesh %zu could not be updated",
+                         target.index, target.mesh);
+            }
+        }
+    };
 
     // Convert the current camera and viewport into backend-independent
     // data for TransformEditor
@@ -698,6 +732,86 @@ int main(int argc, char** argv) {
                         std::lround(pt_samples_per_frame_slider));
                     pt_settings.max_bounces =
                         static_cast<int>(std::lround(pt_bounces_slider));
+                }
+
+                ui.set_enabled(true);
+            }
+
+            // ---- Materials (CUDA only) ----------------------------
+            // (The label ends in a space: widget ids come from labels and
+            // the View section has a "Materials" checkbox)
+            if (ui.header("Materials ", &materials_open)) {
+                if (!is_cuda) {
+                    ui.set_enabled(false);
+                    ui.text("Needs --backend=cuda");
+                } else if (material_entries.empty()) {
+                    ui.text(has_model ? "No materials in use"
+                                      : "No model loaded");
+                } else {
+                    const int count = static_cast<int>(material_entries.size());
+
+                    if (count > 1) {
+                        ui.slider("Material", &material_slider, 0.0f,
+                                  static_cast<float>(count - 1), "%.0f");
+                    }
+
+                    const int selected = std::clamp(
+                        static_cast<int>(std::lround(material_slider)), 0,
+                        count - 1);
+                    const std::size_t i = static_cast<std::size_t>(selected);
+                    gfx::MaterialEditState& state = material_states[i];
+                    const gfx::MaterialEntry& entry = material_entries[i];
+                    bool changed = false;
+
+                    char line[64];
+                    std::snprintf(line, sizeof(line), "%d: %.40s%s",
+                                  entry.index, entry.name.c_str(),
+                                  entry.has_texture ? " (textured)" : "");
+                    ui.text(line);
+                    ui.text("Textures are not editable");
+
+                    changed |= ui.slider("Base R", &state.base_color.x, 0.0f,
+                                         1.0f, "%.2f");
+                    changed |= ui.slider("Base G", &state.base_color.y, 0.0f,
+                                         1.0f, "%.2f");
+                    changed |= ui.slider("Base B", &state.base_color.z, 0.0f,
+                                         1.0f, "%.2f");
+                    changed |= ui.slider("Roughness", &state.roughness, 0.0f,
+                                         1.0f, "%.2f");
+                    changed |= ui.slider("Metallic", &state.metallic, 0.0f,
+                                         1.0f, "%.2f");
+                    changed |= ui.slider("Emission R",
+                                         &state.emission_color.x, 0.0f, 1.0f,
+                                         "%.2f");
+                    changed |= ui.slider("Emission G",
+                                         &state.emission_color.y, 0.0f, 1.0f,
+                                         "%.2f");
+                    changed |= ui.slider("Emission B",
+                                         &state.emission_color.z, 0.0f, 1.0f,
+                                         "%.2f");
+                    changed |= ui.slider("Emission strength",
+                                         &state.emission_strength, 0.0f,
+                                         50.0f, "%.1f");
+
+                    if (ui.button("Reset material")) {
+                        state = gfx::edit_state_of(entry.original);
+                        changed = true;
+                    }
+
+                    if (changed) {
+                        apply_material(i);
+                    }
+
+                    if (ui.button("Reset all materials")) {
+                        for (std::size_t k = 0; k < material_entries.size();
+                             ++k) {
+                            material_states[k] = gfx::edit_state_of(
+                                material_entries[k].original);
+                            apply_material(k);
+                        }
+                    }
+
+                    ui.text("Live edits, not saved to the file");
                 }
 
                 ui.set_enabled(true);

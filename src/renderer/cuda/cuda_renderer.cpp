@@ -806,6 +806,9 @@ void CudaRenderer::render(const FrameData& frame) {
         signature.push_back(static_cast<float>(m_meshes.count()));
         signature.push_back(static_cast<float>(m_textures.count()));
 
+        // A material edit changes the colours and the lamps
+        signature.push_back(static_cast<float>(m_meshes.revision()));
+
         // The settings that change the collected light restart too; not
         // the exposure (applied when the sums are resolved) and not the
         // sample counts (they only decide when to stop)
@@ -1093,6 +1096,11 @@ TextureId CudaRenderer::create_texture(const Image& image) {
 MeshId CudaRenderer::create_mesh(const Mesh& mesh,
                                  const std::vector<TextureId>& textures) {
     return m_meshes.add(mesh, textures, m_textures);
+}
+
+bool CudaRenderer::update_material(MeshId mesh, int material_index,
+                                   const MaterialParams& params) {
+    return m_meshes.update_material(mesh, material_index, params);
 }
 
 } // namespace gfx

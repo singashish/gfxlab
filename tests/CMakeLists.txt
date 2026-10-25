@@ -86,3 +86,9 @@ add_test(NAME brdf COMMAND test_brdf)
 add_executable(test_light test_light.cpp)
 target_link_libraries(test_light PRIVATE gfx_core)
 add_test(NAME light COMMAND test_light)
+
+# The material editor's clamping rules, emission colour/strength split and
+# the list of editable materials (header-only, core/material_edit.h)
+add_executable(test_material_edit test_material_edit.cpp)
+target_link_libraries(test_material_edit PRIVATE gfx_core)
+add_test(NAME material_edit COMMAND test_material_edit)

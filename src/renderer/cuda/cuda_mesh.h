@@ -2,6 +2,7 @@
 
 #include "core/bvh.h"
 #include "core/bvh4.h"
+#include "core/material_edit.h"
 #include "core/vec2.h"
 #include "core/vec3.h"
 #include "renderer/renderer.h"
@@ -116,6 +117,22 @@ public:
                const CudaTextureStore& store);
     const DeviceMesh* find(MeshId id) const;
 
+    // Changes base colour, roughness, metallic and emission of material
+    // `index` of mesh `id` (an index into Mesh::materials; the fallback
+    // entry and textures cannot be edited). The values are sanitized()
+    // first. Only that entry of the device table is overwritten, in
+    // place, so device_materials() keeps its value. When the lamp
+    // weights change, the mesh's light list is rebuilt and uploaded.
+    // Returns false, and changes nothing, for a bad id or index or when
+    // an upload fails. Counts a revision() on success
+    bool update_material(MeshId id, int index, const MaterialParams& params);
+
+    // Number of successful update_material calls; the path tracer
+    // restarts when it changes
+    std::uint64_t revision() const {
+        return m_revision;
+    }
+
     // Meshes added so far. The renderer compares it between frames to
     // notice an upload
     std::size_t count() const {
@@ -132,7 +149,17 @@ public:
     void shutdown();
 
 private:
+    // What a material edit needs from the mesh, kept on the host (4 + 4
+    // bytes per triangle): see update_material
+    struct MeshHost {
+        std::vector<std::uint32_t> triangle_materials;  // as uploaded
+        std::vector<float> triangle_areas;              // object space
+        std::uint32_t material_count = 0;               // without fallback
+    };
+
     std::vector<DeviceMesh> m_meshes;
+    std::vector<MeshHost> m_host;  // parallel to m_meshes
+    std::uint64_t m_revision = 0;
 
     // Host copy of the material table and the device copy
     std::vector<CudaMaterial> m_materials;

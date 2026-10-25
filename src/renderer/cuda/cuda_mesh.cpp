@@ -36,41 +36,26 @@ int resolve_texture(int image,
     return store.table_index(textures[static_cast<std::size_t>(image)]);
 }
 
-// A factor that must lie in 0..1 (roughness, metallic). A NaN or
-// infinite value from a damaged file falls back to `fallback`
-float unit_factor(float value, float fallback) {
-    if (!std::isfinite(value)) {
-        return fallback;
-    }
-
-    return value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
-}
-
-// One component of an emission colour: finite and not negative. There is
-// no upper limit, a lamp may be far brighter than 1. A bad value gives 0
-// (no light) rather than a lamp of unknown strength
-float emission_component(float value) {
-    return std::isfinite(value) && value > 0.0f ? value : 0.0f;
-}
-
 // The device entry of a Material. `textures` and `store` resolve the
 // material's images as described at resolve_texture
 CudaMaterial make_cuda_material(const Material& material,
                                 const std::vector<TextureId>& textures,
                                 const CudaTextureStore& store) {
+    // The values the editor can change are cleaned by sanitized(), the
+    // same function update_material uses
+    const MaterialParams params = sanitized(params_of(material));
+
     CudaMaterial entry{};
-    entry.base_color = material.base_color;
+    entry.base_color = params.base_color;
     entry.texture =
         resolve_texture(material.base_color_image, textures, store);
 
-    entry.emission = Vec3{emission_component(material.emission.x),
-                          emission_component(material.emission.y),
-                          emission_component(material.emission.z)};
+    entry.emission = params.emission;
     entry.emissive_texture =
         resolve_texture(material.emissive_image, textures, store);
 
-    entry.roughness = unit_factor(material.roughness, 0.5f);
-    entry.metallic = unit_factor(material.metallic, 0.0f);
+    entry.roughness = params.roughness;
+    entry.metallic = params.metallic;
     entry.metallic_roughness_texture =
         resolve_texture(material.metallic_roughness_image, textures, store);
 
@@ -328,8 +313,9 @@ MeshId CudaMeshStore::add(const Mesh& mesh,
             new_materials[triangle_materials[t]].emission);
     }
 
-    const LightList lights = build_light_list(
-        mesh.positions, mesh.indices, triangle_luminance);
+    std::vector<float> areas = triangle_areas(mesh.positions, mesh.indices);
+    const LightList lights =
+        build_light_list_from_areas(areas, triangle_luminance);
 
     // Build the ray-tracing BVH once, on the CPU, then upload it as two
     // flat arrays. The GPU walks the same structure with bvh_trace()
@@ -428,6 +414,12 @@ MeshId CudaMeshStore::add(const Mesh& mesh,
 
     m_meshes.push_back(device);
 
+    MeshHost host;
+    host.triangle_materials = std::move(triangle_materials);
+    host.triangle_areas = std::move(areas);
+    host.material_count = static_cast<std::uint32_t>(material_count);
+    m_host.push_back(std::move(host));
+
     const MeshId id = static_cast<MeshId>(m_meshes.size());
 
     LOG_INFO(
@@ -452,12 +444,123 @@ const DeviceMesh* CudaMeshStore::find(MeshId id) const {
     return &m_meshes[id - 1];
 }
 
+bool CudaMeshStore::update_material(MeshId id, int index,
+                                    const MaterialParams& params) {
+    if (id == 0 || id > m_meshes.size() || m_device_materials == nullptr) {
+        return false;
+    }
+
+    DeviceMesh& mesh = m_meshes[id - 1];
+    const MeshHost& host = m_host[id - 1];
+
+    if (index < 0 || static_cast<std::uint32_t>(index) >= host.material_count) {
+        return false;
+    }
+
+    // The new entry: the four values change, the texture slots stay
+    const MaterialParams clean = sanitized(params);
+    const std::size_t global = mesh.material_base +
+                               static_cast<std::size_t>(index);
+    CudaMaterial entry = m_materials[global];
+
+    entry.base_color = clean.base_color;
+    entry.roughness = clean.roughness;
+    entry.metallic = clean.metallic;
+    entry.emission = clean.emission;
+
+    // The lamp weights depend on the emission's luminance only, so the
+    // light list is rebuilt only when that changed. The new arrays are
+    // uploaded first and the old ones freed after the entry is in, so a
+    // failure leaves everything as it was
+    std::uint32_t* new_tris = nullptr;
+    float* new_cdf = nullptr;
+    std::uint32_t new_count = 0;
+    float new_weight = 0.0f;
+    bool lights_changed = false;
+
+    if (emission_luminance(entry.emission) !=
+        emission_luminance(m_materials[global].emission)) {
+        std::vector<float> luminance(host.triangle_materials.size(), 0.0f);
+
+        for (std::size_t t = 0; t < luminance.size(); ++t) {
+            const std::size_t number =
+                mesh.material_base + host.triangle_materials[t];
+
+            luminance[t] = emission_luminance(
+                number == global ? entry.emission
+                                 : m_materials[number].emission);
+        }
+
+        const LightList lights =
+            build_light_list_from_areas(host.triangle_areas, luminance);
+
+        if (!upload_array(new_tris, lights.triangles,
+                          "CUDA mesh light triangles upload") ||
+            !upload_array(new_cdf, lights.cdf,
+                          "CUDA mesh light cdf upload")) {
+            if (new_tris != nullptr) {
+                (void)cuda_ok(cudaFree(new_tris),
+                              "cudaFree new light triangles");
+            }
+
+            if (new_cdf != nullptr) {
+                (void)cuda_ok(cudaFree(new_cdf), "cudaFree new light cdf");
+            }
+
+            return false;
+        }
+
+        new_count = static_cast<std::uint32_t>(lights.cdf.size());
+        new_weight = lights.cdf.empty() ? 0.0f : lights.cdf.back();
+        lights_changed = true;
+    }
+
+    // One 48-byte entry, in place: the table's address does not change
+    if (!cuda_ok(cudaMemcpy(m_device_materials + global, &entry,
+                            sizeof(CudaMaterial), cudaMemcpyHostToDevice),
+                 "CUDA material update")) {
+        if (new_tris != nullptr) {
+            (void)cuda_ok(cudaFree(new_tris), "cudaFree new light triangles");
+        }
+
+        if (new_cdf != nullptr) {
+            (void)cuda_ok(cudaFree(new_cdf), "cudaFree new light cdf");
+        }
+
+        return false;
+    }
+
+    m_materials[global] = entry;
+
+    if (lights_changed) {
+        if (mesh.light_tris != nullptr) {
+            (void)cuda_ok(cudaFree(mesh.light_tris),
+                          "cudaFree old light triangles");
+        }
+
+        if (mesh.light_cdf != nullptr) {
+            (void)cuda_ok(cudaFree(mesh.light_cdf),
+                          "cudaFree old light cdf");
+        }
+
+        mesh.light_tris = new_tris;
+        mesh.light_cdf = new_cdf;
+        mesh.light_count = new_count;
+        mesh.light_weight = new_weight;
+    }
+
+    ++m_revision;
+    return true;
+}
+
 void CudaMeshStore::shutdown() {
     for (DeviceMesh& mesh : m_meshes) {
         free_device_mesh(mesh);
     }
 
     m_meshes.clear();
+    m_host.clear();
+    m_revision = 0;
 
     if (m_device_materials != nullptr) {
         (void)cuda_ok(cudaFree(m_device_materials),

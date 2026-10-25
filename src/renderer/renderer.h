@@ -3,6 +3,7 @@
 #include "core/camera_math.h"
 #include "core/image.h"
 #include "core/mat4.h"
+#include "core/material_edit.h"
 #include "core/path_settings.h"
 #include "core/vec3.h"
 #include "core/mesh.h"
@@ -181,6 +182,18 @@ public:
     // material's base_color_image indexes this list
     virtual MeshId create_mesh(const Mesh& mesh,
                                const std::vector<TextureId>& textures) = 0;
+
+    // Changes base colour, roughness, metallic and emission of material
+    // `material_index` (an index into Mesh::materials) of a mesh made by
+    // create_mesh, live. Textures stay. Returns false when the backend
+    // cannot (only CUDA can) or the id or index is wrong
+    virtual bool update_material(MeshId mesh, int material_index,
+                                 const MaterialParams& params) {
+        (void)mesh;
+        (void)material_index;
+        (void)params;
+        return false;
+    }
 };
 
 // Returns nullptr and logs an error when the backend is unavailable

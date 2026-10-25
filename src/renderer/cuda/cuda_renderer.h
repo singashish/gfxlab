@@ -37,6 +37,8 @@ public:
     TextureId create_texture(const Image& image) override;
     MeshId create_mesh(const Mesh& mesh,
                        const std::vector<TextureId>& textures) override;
+    bool update_material(MeshId mesh, int material_index,
+                         const MaterialParams& params) override;
 
 private:
     bool resize_targets(int width, int height);
