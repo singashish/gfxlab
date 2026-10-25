@@ -820,6 +820,7 @@ void CudaRenderer::render(const FrameData& frame) {
         pt.sun_enabled = frame.sun_enabled;
         pt.sun_irradiance = kSunIrradiance;
         pt.sun_cos_half_angle = sun_cone_cos(kSunHalfAngle);
+        pt.indirect_clamp = kPtIndirectClamp;
 
         // Camera rays that miss see the same background colour the clear
         // pass painted (one variable, so they cannot drift apart), as the

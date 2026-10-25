@@ -87,6 +87,31 @@ constexpr float kPtExposure = 1.0f;
 // Russian roulette starts at this bounce (counted from 0 = camera hit)
 constexpr int kPtRouletteStart = 3;
 
+// The largest value (in linear light, one colour channel) that a single
+// contribution of an INDIRECT path may add to a pixel sample; see
+// clamp_contribution below. Display white is reached at about 3 after
+// tone mapping (exposure 1), so 10 leaves ordinary lighting alone.
+// A huge value (1e30f) switches the clamp off
+//
+// Why it exists. A "firefly" is an isolated, absurdly bright pixel: one
+// sample out of thousands that carried a huge value, so the pixel's
+// average jumps and then decays only slowly as more samples arrive. The
+// sun is the usual cause here. Take a path camera -> floor (diffuse
+// bounce) -> shiny sphere -> mirror bounce -> sun. The sun's radiance is
+// about 5000 times the sky's, and that path finds it by chance: a shadow
+// ray cannot be aimed at the sun through a mirror, so no smarter
+// sampling can find it (a "caustic" path). It is rare, so most samples
+// get 0 and a few get 5000: the average never settles.
+//
+// The clamp is BIASED on purpose: it cuts the value of such rare bright
+// samples down to the limit, so the light a real caustic would add (the
+// bright spots the sun makes under a shiny sphere) comes out dimmer than
+// a fully converged render. In exchange the dots are gone. Paths that
+// had no diffuse bounce are never clamped: a lamp seen directly, a sun
+// glint on a smooth sphere seen directly, mirror reflections of the sun
+// seen directly. They are bright but smooth and converge
+constexpr float kPtIndirectClamp = 10.0f;
+
 // The sun is a disc of light seen from the surfaces under this half angle
 // (the real sun is about 0.27 degrees; a larger disc gives softer
 // shadows). The disc is never drawn in the picture, only its light is
@@ -378,6 +403,25 @@ GFX_HD inline float russian_roulette_survival(Vec3 throughput) {
 
     return fminf(fmaxf(largest, kRouletteMinSurvival),
                  kRouletteMaxSurvival);
+}
+
+// Limits one contribution (throughput already included) to `limit` in its
+// largest colour channel by scaling all channels with the same factor, so
+// the hue is kept. Values at or below the limit (zero and negative
+// components too) are unchanged, and a non-finite value is passed through
+// untouched, so the caller's finite checks still see it
+GFX_HD inline Vec3 clamp_contribution(Vec3 c, float limit) {
+    if (!finite_vec3(c)) {
+        return c;
+    }
+
+    const float largest = fmaxf(c.x, fmaxf(c.y, c.z));
+
+    if (largest > limit) {
+        return c * (limit / largest);
+    }
+
+    return c;
 }
 
 } // namespace gfx

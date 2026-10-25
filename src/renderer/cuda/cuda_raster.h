@@ -216,6 +216,10 @@ struct PtParams {
     // pipeline (background_radiance), so the pixel shows that colour
     // again after tone mapping. The sky and the sun are never visible
     Vec3 background = {0.0f, 0.0f, 0.0f};
+
+    // Largest value one contribution of a path that already had a diffuse
+    // bounce may add (clamp_contribution, kPtIndirectClamp). 1e30f = off
+    float indirect_clamp = 1.0e30f;
 };
 
 // Both structs travel as kernel arguments, so together they have to

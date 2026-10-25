@@ -2102,6 +2102,21 @@ __device__ __forceinline__ Vec3 surface_brdf(
     return f;
 }
 
+// Adds one contribution (throughput already included) to a sample's
+// radiance. After a diffuse bounce it is first limited to `limit`, which
+// removes the "fireflies" of caustic paths (see kPtIndirectClamp in
+// core/path_math.h); before any diffuse bounce it is added as it is
+__device__ __forceinline__ void add_radiance(
+                Vec3& radiance,
+                Vec3 contribution,
+                bool diffuse_seen,
+                float limit) {
+
+    radiance = radiance + (diffuse_seen
+        ? clamp_contribution(contribution, limit)
+        : contribution);
+}
+
 // The radiance (linear light) arriving at the camera through the point
 // (x + jx, y + jy) of the image, for one sample, found by following one
 // random path of up to max_bounces surfaces.
@@ -2181,6 +2196,13 @@ __device__ __forceinline__ Vec3 trace_path(
         sun_mis ? pt.sun_irradiance / sun_solid_angle : 0.0f;
     float prev_pdf = 0.0f;
 
+    // True once the path has bounced off the DIFFUSE lobe of a surface.
+    // From then on every contribution is clamped (kPtIndirectClamp): such
+    // a path is indirect light, and its rare very bright samples are the
+    // fireflies. A glossy bounce does not set it, so mirror reflections
+    // and glints seen directly are never clamped
+    bool diffuse_seen = false;
+
     // Area lights (emissive triangles) get the same treatment as the sun:
     // a shadow ray aimed at a random point of a lamp, and the bounce rays
     // that hit a lamp by chance, weighed against each other so that the
@@ -2203,7 +2225,8 @@ __device__ __forceinline__ Vec3 trace_path(
                 ? pt.background
                 : sky_radiance(unit_dir);
 
-            radiance = radiance + modulate(throughput, seen);
+            add_radiance(radiance, modulate(throughput, seen),
+                         diffuse_seen, pt.indirect_clamp);
 
             // A bounce ray that escapes through the sun's cone found the
             // sun by chance. It counts, with the weight w_bsdf of the MIS
@@ -2219,9 +2242,10 @@ __device__ __forceinline__ Vec3 trace_path(
                 dot(unit_dir, scene.sun_world) >= pt.sun_cos_half_angle) {
                 const float ratio = 1.0f / (prev_pdf * sun_solid_angle);
 
-                radiance = radiance + modulate(throughput,
+                add_radiance(radiance, modulate(throughput,
                     Vec3{sun_radiance, sun_radiance, sun_radiance}) *
-                    (1.0f / (1.0f + ratio * ratio));
+                    (1.0f / (1.0f + ratio * ratio)),
+                    diffuse_seen, pt.indirect_clamp);
             }
 
             break;
@@ -2278,8 +2302,9 @@ __device__ __forceinline__ Vec3 trace_path(
             }
         }
 
-        radiance = radiance +
-            modulate(throughput, material.emission) * emission_weight;
+        add_radiance(radiance,
+            modulate(throughput, material.emission) * emission_weight,
+            diffuse_seen, pt.indirect_clamp);
 
         if (bounce == pt.max_bounces) {
             break;  // out of bounces: this surface is not shaded
@@ -2381,8 +2406,9 @@ __device__ __forceinline__ Vec3 trace_path(
                     w_sun = 1.0f / (1.0f + ratio * ratio);
                 }
 
-                radiance = radiance + modulate(throughput, f) *
-                    (pt.sun_irradiance * cos_l * w_sun);
+                add_radiance(radiance, modulate(throughput, f) *
+                    (pt.sun_irradiance * cos_l * w_sun),
+                    diffuse_seen, pt.indirect_clamp);
             }
         }
 
@@ -2440,9 +2466,10 @@ __device__ __forceinline__ Vec3 trace_path(
                                 (pdf_light + pdf_bsdf * pdf_bsdf /
                                                  pdf_light);
 
-                            radiance = radiance +
+                            add_radiance(radiance,
                                 modulate(throughput,
-                                         modulate(f, ls.emission)) * scale;
+                                         modulate(f, ls.emission)) * scale,
+                                diffuse_seen, pt.indirect_clamp);
                         }
                     }
                 }
@@ -2516,6 +2543,10 @@ __device__ __forceinline__ Vec3 trace_path(
         }
 
         prev_pdf = pdf;
+
+        if (!bounce_sample.specular) {
+            diffuse_seen = true;  // what is added from here on is indirect
+        }
 
         throughput = modulate(throughput, weight);
 

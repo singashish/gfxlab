@@ -557,6 +557,50 @@ void test_roulette() {
     CHECK(approx(sum / kTrials, static_cast<double>(throughput), 1.0e-3));
 }
 
+// The clamp of indirect contributions
+void test_clamp_contribution() {
+    using gfx::clamp_contribution;
+    using gfx::Vec3;
+
+    // Below the limit (also exactly at it): unchanged
+    const Vec3 a = clamp_contribution({1.0f, 2.0f, 3.0f}, 10.0f);
+    CHECK(a.x == 1.0f && a.y == 2.0f && a.z == 3.0f);
+    const Vec3 b = clamp_contribution({10.0f, 0.5f, 0.0f}, 10.0f);
+    CHECK(b.x == 10.0f && b.y == 0.5f && b.z == 0.0f);
+
+    // Above: the largest channel becomes the limit, the hue is kept
+    const Vec3 c = clamp_contribution({40.0f, 20.0f, 10.0f}, 10.0f);
+    CHECK(approx(static_cast<double>(c.x), 10.0, 1.0e-4));
+    CHECK(approx(static_cast<double>(c.y), 5.0, 1.0e-4));
+    CHECK(approx(static_cast<double>(c.z), 2.5, 1.0e-4));
+
+    // The largest channel may be any of them
+    const Vec3 d = clamp_contribution({1.0f, 5000.0f, 2.0f}, 10.0f);
+    CHECK(approx(static_cast<double>(d.y), 10.0, 1.0e-3));
+    CHECK(approx(static_cast<double>(d.x), 0.002, 1.0e-6));
+
+    // Zero stays zero, negative components are left alone
+    const Vec3 z = clamp_contribution({0.0f, 0.0f, 0.0f}, 10.0f);
+    CHECK(z.x == 0.0f && z.y == 0.0f && z.z == 0.0f);
+    const Vec3 n = clamp_contribution({-5.0f, -1.0f, 0.5f}, 10.0f);
+    CHECK(n.x == -5.0f && n.y == -1.0f && n.z == 0.5f);
+    const Vec3 m = clamp_contribution({-50.0f, 100.0f, 0.0f}, 10.0f);
+    CHECK(approx(static_cast<double>(m.y), 10.0, 1.0e-4));
+    CHECK(approx(static_cast<double>(m.x), -5.0, 1.0e-4));
+
+    // Not a number or infinite: passed through untouched
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const Vec3 e = clamp_contribution({nan, 1.0f, 2.0f}, 10.0f);
+    CHECK(std::isnan(e.x) && e.y == 1.0f && e.z == 2.0f);
+    const Vec3 f = clamp_contribution({inf, 1.0f, 2.0f}, 10.0f);
+    CHECK(std::isinf(f.x) && f.y == 1.0f);
+
+    // A huge limit switches the clamp off
+    const Vec3 off = clamp_contribution({5000.0f, 1.0f, 1.0f}, 1.0e30f);
+    CHECK(off.x == 5000.0f);
+}
+
 } // namespace
 
 int main() {
@@ -569,6 +613,7 @@ int main() {
     test_sun();
     test_background();
     test_roulette();
+    test_clamp_contribution();
 
     if (g_failures == 0) {
         std::printf("All path tests passed\n");
