@@ -96,6 +96,7 @@ private:
     // 16 bytes per pixel: 33 MB at 1080p, 133 MB at 4K
     float4* m_pt_accum = nullptr;
     unsigned int m_pt_samples = 0;
+    unsigned int m_pt_max_samples = 0;  // the limit of the last frame
     std::vector<float> m_pt_signature;
 
     // The last frame was path traced (for stats())

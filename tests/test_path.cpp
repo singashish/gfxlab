@@ -1,4 +1,5 @@
 #include "core/path_math.h"
+#include "core/path_settings.h"
 #include "check.h"
 
 #include <cmath>
@@ -601,6 +602,77 @@ void test_clamp_contribution() {
     CHECK(off.x == 5000.0f);
 }
 
+// The path tracer's settings
+void test_path_settings() {
+    using gfx::PathTraceSettings;
+    using gfx::sanitized;
+
+    // The defaults are the constants the path tracer had before
+    const PathTraceSettings d;
+    CHECK(d.max_samples == static_cast<int>(gfx::kPtMaxSamples));
+    CHECK(d.samples_per_frame == static_cast<int>(gfx::kPtSamplesPerFrame));
+    CHECK(d.max_bounces == gfx::kPtMaxBounces);
+    CHECK(d.exposure_ev == 0.0f);
+    CHECK(d.sun_strength == gfx::kSunIrradiance);
+    CHECK(d.sky_strength == 1.0f);
+    CHECK(d.firefly_limit);
+
+    // In range: unchanged
+    PathTraceSettings in;
+    in.max_samples = 300;
+    in.samples_per_frame = 4;
+    in.max_bounces = 7;
+    in.exposure_ev = -1.5f;
+    in.sun_strength = 12.0f;
+    in.sky_strength = 0.25f;
+    in.firefly_limit = false;
+
+    const PathTraceSettings same = sanitized(in);
+    CHECK(same.max_samples == 300 && same.samples_per_frame == 4);
+    CHECK(same.max_bounces == 7 && same.exposure_ev == -1.5f);
+    CHECK(same.sun_strength == 12.0f && same.sky_strength == 0.25f);
+    CHECK(!same.firefly_limit);
+
+    // Out of range: clamped to the nearest end
+    PathTraceSettings wild;
+    wild.max_samples = 5;
+    wild.samples_per_frame = 100;
+    wild.max_bounces = -3;
+    wild.exposure_ev = 9.0f;
+    wild.sun_strength = -1.0f;
+    wild.sky_strength = 50.0f;
+
+    const PathTraceSettings c = sanitized(wild);
+    CHECK(c.max_samples == gfx::kPtMaxSamplesLow);
+    CHECK(c.samples_per_frame == gfx::kPtSamplesPerFrameHigh);
+    CHECK(c.max_bounces == gfx::kPtBouncesLow);
+    CHECK(c.exposure_ev == gfx::kPtExposureEvHigh);
+    CHECK(c.sun_strength == gfx::kPtSunStrengthLow);
+    CHECK(c.sky_strength == gfx::kPtSkyStrengthHigh);
+
+    // NaN gives the default, infinity is clamped like any large value
+    PathTraceSettings odd;
+    odd.exposure_ev = std::numeric_limits<float>::quiet_NaN();
+    odd.sun_strength = std::numeric_limits<float>::infinity();
+    odd.sky_strength = -std::numeric_limits<float>::infinity();
+
+    const PathTraceSettings o = sanitized(odd);
+    CHECK(o.exposure_ev == 0.0f);
+    CHECK(o.sun_strength == gfx::kPtSunStrengthHigh);
+    CHECK(o.sky_strength == gfx::kPtSkyStrengthLow);
+
+    // The defaults lie inside their own ranges
+    static_assert(gfx::kPtMaxSamplesLow <= static_cast<int>(gfx::kPtMaxSamples) &&
+                  static_cast<int>(gfx::kPtMaxSamples) <= gfx::kPtMaxSamplesHigh,
+                  "the default sample limit must be in range");
+    static_assert(gfx::kPtBouncesLow <= gfx::kPtMaxBounces &&
+                  gfx::kPtMaxBounces <= gfx::kPtBouncesHigh,
+                  "the default bounces must be in range");
+    const PathTraceSettings dd = sanitized(d);
+    CHECK(dd.max_samples == d.max_samples && dd.max_bounces == d.max_bounces);
+    CHECK(dd.sun_strength == d.sun_strength);
+}
+
 } // namespace
 
 int main() {
@@ -614,6 +686,7 @@ int main() {
     test_background();
     test_roulette();
     test_clamp_contribution();
+    test_path_settings();
 
     if (g_failures == 0) {
         std::printf("All path tests passed\n");

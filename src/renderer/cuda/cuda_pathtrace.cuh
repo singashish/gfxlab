@@ -462,7 +462,7 @@ __device__ __forceinline__ Vec3 trace_path(
             const Vec3 unit_dir = normalize(dir);
             const Vec3 seen = bounce == 0
                 ? pt.background
-                : sky_radiance(unit_dir);
+                : sky_radiance(unit_dir) * pt.sky_scale;
 
             add_radiance(radiance, modulate(throughput, seen),
                          indirect, pt.indirect_clamp);

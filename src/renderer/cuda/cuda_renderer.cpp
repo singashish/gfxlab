@@ -6,7 +6,9 @@
 #include "renderer/cuda/cuda_raster.h"
 #include "core/light_sampling.h"
 #include "core/log.h"
+#include "core/path_settings.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -804,6 +806,17 @@ void CudaRenderer::render(const FrameData& frame) {
         signature.push_back(static_cast<float>(m_meshes.count()));
         signature.push_back(static_cast<float>(m_textures.count()));
 
+        // The settings that change the collected light restart too; not
+        // the exposure (applied when the sums are resolved) and not the
+        // sample counts (they only decide when to stop)
+        const PathTraceSettings settings =
+            sanitized(frame.path_settings);
+
+        signature.push_back(static_cast<float>(settings.max_bounces));
+        signature.push_back(settings.sun_strength);
+        signature.push_back(settings.sky_strength);
+        signature.push_back(settings.firefly_limit ? 1.0f : 0.0f);
+
         // Just switched on: the signature was cleared above
         if (signature != m_pt_signature) {
             m_pt_signature = signature;
@@ -813,24 +826,40 @@ void CudaRenderer::render(const FrameData& frame) {
         PtParams pt;
         pt.accum = m_pt_accum;
         pt.samples_before = m_pt_samples;
-        pt.samples_to_add =
-            m_pt_samples < kPtMaxSamples ? kPtSamplesPerFrame : 0u;
-        pt.max_bounces = kPtMaxBounces;
-        pt.exposure = kPtExposure;
+
+        // Samples are added until the limit; a limit below the count
+        // adds nothing (the picture stays), a raised one continues
+        const unsigned int sample_limit =
+            static_cast<unsigned int>(settings.max_samples);
+        const unsigned int per_frame =
+            static_cast<unsigned int>(settings.samples_per_frame);
+
+        m_pt_max_samples = sample_limit;
+        pt.samples_to_add = m_pt_samples < sample_limit
+            ? std::min(per_frame, sample_limit - m_pt_samples)
+            : 0u;
+        pt.max_bounces = settings.max_bounces;
+        pt.exposure = kPtExposure * std::exp2(settings.exposure_ev);
         pt.sun_enabled = frame.sun_enabled;
-        pt.sun_irradiance = kSunIrradiance;
+        pt.sun_irradiance = settings.sun_strength;
+        pt.sky_scale = settings.sky_strength;
         pt.sun_cos_half_angle = sun_cone_cos(kSunHalfAngle);
-        pt.indirect_clamp = kPtIndirectClamp;
+        pt.indirect_clamp =
+            settings.firefly_limit ? kPtIndirectClamp : 1.0e30f;
 
         // Camera rays that miss see the same background colour the clear
         // pass painted (one variable, so they cannot drift apart), as the
         // linear radiance that the display pipeline turns back into it.
-        // The sky and the sun only light the scene, they are not drawn
+        // The sky and the sun only light the scene, they are not drawn.
+        // It is made for the base exposure, not the exposure setting:
+        // the setting is applied when the sums are resolved, so the
+        // background (like everything else) brightens or darkens with it
+        // and the accumulated sums stay valid when only it changes
         pt.background = background_radiance(
             Vec3{static_cast<float>(background.x) / 255.0f,
                  static_cast<float>(background.y) / 255.0f,
                  static_cast<float>(background.z) / 255.0f},
-            pt.exposure);
+            kPtExposure);
 
         // Runs even with nothing to draw: the picture is then the plain
         // background
@@ -1044,7 +1073,7 @@ RendererStats CudaRenderer::stats() const {
 
     if (m_last_frame_path_traced) {
         stats.pt_samples = m_pt_samples;
-        stats.pt_max_samples = kPtMaxSamples;
+        stats.pt_max_samples = m_pt_max_samples;
     }
 
     if (m_last_frame_traced) {

@@ -132,11 +132,11 @@ tracer's settings.
 | **V** | Toggle vsync |
 | **W** | Toggle wireframe (the model's polygon edges, unlit, in every backend) |
 | **T** | Toggle ray tracing (`--backend=cuda` only; wireframe takes priority) |
-| **P** | Toggle the path tracer, the progressive "Rendered" mode, lit by a sun and a sky that are not drawn themselves (`--backend=cuda` only; excludes **T**; wireframe takes priority). Emissive materials glow and light their surroundings, and the roughness and metallic values of the materials show as gloss and metal (GGX highlights and reflections; try `gltf\materials.glb`); **M** turns the materials, and so the emission and the gloss, off (plain matte grey) |
+| **P** | Toggle the path tracer, the progressive "Rendered" mode, lit by a sun and a sky that are not drawn themselves (`--backend=cuda` only; excludes **T**; wireframe takes priority). Emissive materials glow and light their surroundings, and the roughness and metallic values of the materials show as gloss and metal (GGX highlights and reflections; try `gltf\materials.glb`); **M** turns the materials, and so the emission and the gloss, off (plain matte grey). The panel's Path tracing > Settings group (folded by default) sets the sample limit, samples per frame, bounces, exposure, sun and sky strength and the firefly limit |
 | Right mouse drag (ray or path tracing) | Move the sun: left/right around the model, up/down higher or lower |
 | **L** (ray or path tracing) | Sun on/off (ray tracing: the viewport's camera light, no shadows; path tracing: sky light only) |
 | **O** (ray tracing) | Ambient occlusion on/off |
-| **H** | Hide or show the panel |
+| **H** | Hide or show the panel (the panel's **<< Hide** button hides it, the **>>** tab at the left edge shows it again) |
 | Left click / drag on the panel | Use its checkboxes, buttons, sliders and fields; click a section header to fold it |
 | Esc (no edit active) | Quit |
 

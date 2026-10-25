@@ -207,6 +207,10 @@ struct PtParams {
     bool sun_enabled = true;
     float sun_irradiance = kSunIrradiance;
 
+    // Multiplies the sky radiance that surfaces and escaping bounce rays
+    // collect (not the background colour a camera ray sees)
+    float sky_scale = 1.0f;
+
     // cos of the sun's half angle: set it with sun_cone_cos(kSunHalfAngle)
     // (cosf is not a constant expression, so there is no default)
     float sun_cos_half_angle = 1.0f;

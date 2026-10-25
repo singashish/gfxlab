@@ -3,6 +3,7 @@
 #include "core/camera_math.h"
 #include "core/image.h"
 #include "core/mat4.h"
+#include "core/path_settings.h"
 #include "core/vec3.h"
 #include "core/mesh.h"
 #include "ui/ui_draw.h"
@@ -67,6 +68,10 @@ struct FrameData {
     // priority over ray_trace, and wireframe takes priority over both.
     // Uses sun_dir, sun_enabled and show_materials
     bool path_trace = false;
+
+    // The path tracer's settings from the panel (used only by the path
+    // tracer): sample limits, bounces, exposure, sun and sky strength
+    PathTraceSettings path_settings;
 
     // Direction towards the sun in world space (unit length). Used only
     // by the ray tracer, which lights the scene with this sun instead of
@@ -137,7 +142,9 @@ struct RendererStats {
     unsigned int ao_max_samples = 0;
 
     // The path tracer drew the last frame (CUDA only), the samples per
-    // pixel accumulated so far and where it stops
+    // pixel accumulated so far and where it stops (the current limit
+    // from the settings; the count can be above it if the limit was
+    // lowered)
     bool path_traced = false;
     unsigned int pt_samples = 0;
     unsigned int pt_max_samples = 0;

@@ -1,6 +1,7 @@
 #include "core/log.h"
 #include "core/timer.h"
 #include "core/orbit_camera.h"
+#include "core/path_settings.h"
 #include "core/math_util.h"
 #include "core/mesh.h"
 #include "core/model.h"
@@ -268,6 +269,7 @@ int main(int argc, char** argv) {
     bool view_open = true;
     bool model_open = true;
     bool path_tracing_open = is_cuda;
+    bool pt_settings_open = false;
     bool ray_tracing_open = is_cuda;
     bool controls_open = false;
 
@@ -278,6 +280,18 @@ int main(int argc, char** argv) {
     // The path tracer ("Rendered" mode, CUDA only); P toggles it. It and
     // the ray tracer exclude each other
     bool path_trace = false;
+
+    // The path tracer's settings (panel: Path tracing > Settings). The
+    // sliders only edit floats, so the three whole-number settings keep a
+    // float copy that the slider owns: each frame the setting is the
+    // rounded copy. The copy is never rewritten from the rounded value,
+    // so dragging stays smooth and the slider cannot jitter
+    gfx::PathTraceSettings pt_settings;
+    float pt_max_samples_slider =
+        static_cast<float>(pt_settings.max_samples);
+    float pt_samples_per_frame_slider =
+        static_cast<float>(pt_settings.samples_per_frame);
+    float pt_bounces_slider = static_cast<float>(pt_settings.max_bounces);
 
     // Material colours and textures; off = plain grey shading. M toggles it
     bool show_materials = true;
@@ -432,6 +446,7 @@ int main(int argc, char** argv) {
         frame.show_materials = show_materials;
         frame.ray_trace = ray_trace;
         frame.path_trace = path_trace;
+        frame.path_settings = pt_settings;
         frame.sun_enabled = sun_enabled;
         frame.ambient_occlusion = ambient_occlusion;
 
@@ -488,6 +503,13 @@ int main(int argc, char** argv) {
 
         if (show_info_panel) {
             ui.begin_panel("gfxlab", 10.0f, 10.0f, 280.0f);
+
+            // Folds the panel away to the small tab at the left edge
+            // (the H key does the same)
+            if (ui.button("<< Hide")) {
+                show_info_panel = false;
+                LOG_INFO("panel: hidden");
+            }
 
             ui.text(renderer->name());
             ui.text(stats_text);
@@ -620,6 +642,60 @@ int main(int argc, char** argv) {
                     ui.text(line);
                 }
 
+                // The settings, folded away by default. Only usable
+                // while the path tracer is on
+                ui.set_enabled(is_cuda && path_trace);
+
+                if (ui.header("Settings", &pt_settings_open)) {
+                    ui.slider("Max samples", &pt_max_samples_slider,
+                              static_cast<float>(gfx::kPtMaxSamplesLow),
+                              static_cast<float>(gfx::kPtMaxSamplesHigh),
+                              "%.0f");
+                    ui.slider("Samples / frame",
+                              &pt_samples_per_frame_slider,
+                              static_cast<float>(gfx::kPtSamplesPerFrameLow),
+                              static_cast<float>(gfx::kPtSamplesPerFrameHigh),
+                              "%.0f");
+                    ui.slider("Bounces", &pt_bounces_slider,
+                              static_cast<float>(gfx::kPtBouncesLow),
+                              static_cast<float>(gfx::kPtBouncesHigh),
+                              "%.0f");
+                    ui.slider("Exposure", &pt_settings.exposure_ev,
+                              gfx::kPtExposureEvLow, gfx::kPtExposureEvHigh,
+                              "%+.1f EV");
+                    ui.slider("Sun strength", &pt_settings.sun_strength,
+                              gfx::kPtSunStrengthLow,
+                              gfx::kPtSunStrengthHigh, "%.1f");
+                    ui.slider("Sky strength", &pt_settings.sky_strength,
+                              gfx::kPtSkyStrengthLow,
+                              gfx::kPtSkyStrengthHigh, "%.2f");
+
+                    if (ui.checkbox("Firefly limit",
+                                    &pt_settings.firefly_limit)) {
+                        LOG_INFO("path tracing firefly limit: %s",
+                                 pt_settings.firefly_limit ? "on" : "off");
+                    }
+
+                    if (ui.button("Reset settings")) {
+                        pt_settings = gfx::PathTraceSettings();
+                        pt_max_samples_slider =
+                            static_cast<float>(pt_settings.max_samples);
+                        pt_samples_per_frame_slider = static_cast<float>(
+                            pt_settings.samples_per_frame);
+                        pt_bounces_slider =
+                            static_cast<float>(pt_settings.max_bounces);
+                        LOG_INFO("path tracing settings: reset");
+                    }
+
+                    // The whole-number settings are the rounded sliders
+                    pt_settings.max_samples =
+                        static_cast<int>(std::lround(pt_max_samples_slider));
+                    pt_settings.samples_per_frame = static_cast<int>(
+                        std::lround(pt_samples_per_frame_slider));
+                    pt_settings.max_bounces =
+                        static_cast<int>(std::lround(pt_bounces_slider));
+                }
+
                 ui.set_enabled(true);
             }
 
@@ -716,11 +792,25 @@ int main(int argc, char** argv) {
                 ui.text("  X / Y / Z: axis, left click: confirm");
                 ui.text("  Right click / Esc: cancel");
                 ui.text("W wireframe, M materials, V vsync");
-                ui.text("H hide panel");
+                ui.text("H or << hide panel");
                 ui.text("T ray tracing, L sun, O AO (CUDA)");
                 ui.text("P path tracing (CUDA, excludes T)");
                 ui.text("Right drag: move the sun (CUDA)");
                 ui.text("Esc: quit");
+            }
+
+            ui.end_panel();
+        } else {
+            // Hidden: a small tab flush with the left edge brings it
+            // back. It is a panel like any other, so the mouse over it
+            // belongs to the UI (wants_mouse) and does not orbit or
+            // select in the 3D view. Its title differs from the big
+            // panel's: the layout remembers the width per title
+            ui.begin_panel("Menu", 0.0f, 10.0f, 60.0f);
+
+            if (ui.button(">>")) {
+                show_info_panel = true;
+                LOG_INFO("panel: shown");
             }
 
             ui.end_panel();
