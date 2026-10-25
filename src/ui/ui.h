@@ -23,25 +23,35 @@
  * Widgets are identified by a hash of their panel title and label, so
  * labels must be unique within a panel.
  *
+ * A panel taller than the window (input.viewport_height) shrinks to fit
+ * and scrolls: its title stays, the body moves with the mouse wheel or
+ * a scrollbar on the right. Rows that are not fully inside the visible
+ * body are not drawn and ignore the mouse; widgets still return what
+ * they would (header returns *open, the others false). The draw list
+ * has no clipping, so nothing is ever emitted outside the panel.
+ *
  * Sizes passed in are in 96-DPI pixels and are multiplied by the font's
  * DPI scale. Everything here is portable and tested (test_ui).
  */
 
 #include "ui/ui_draw.h"
 
+#include <cstddef>
 #include <cstdint>
-#include <utility>
 #include <vector>
 
 namespace gfx {
 
-// The mouse as the UI sees it: window pixels, left button only
+// The mouse as the UI sees it: window pixels, left button only, plus the
+// wheel and the window height (for panels taller than the window)
 struct UiInput {
     float mouse_x = -1.0e9f;
     float mouse_y = -1.0e9f;
     bool mouse_down = false;      // left button held
     bool mouse_pressed = false;   // went down this frame
     bool mouse_released = false;  // went up this frame
+    float scroll = 0.0f;          // wheel notches this frame, up = positive
+    float viewport_height = 0.0f; // window height in pixels; 0 = unknown
 };
 
 class Ui {
@@ -57,11 +67,18 @@ public:
     // mouse for the 3D view
     bool wants_mouse() const { return m_wants_mouse; }
 
+    // Scroll state of a panel as of its last end_panel (for tests and
+    // the app): how far the body is scrolled and the largest offset it
+    // can have, in pixels. max is 0 when the panel fits (no scrollbar)
+    float panel_scroll(const char* title) const;
+    float panel_max_scroll(const char* title) const;
+
     // A panel: a titled box whose widgets are stacked top to bottom.
     // (x, y) is its top-left corner and width its minimum width. It
     // grows to fit wider text: widgets are laid out with the width the
     // panel ended up with last frame, so after one frame everything
-    // lines up again. Its height fits its contents
+    // lines up again. Its height fits its contents, up to the window
+    // bottom: then it scrolls (the layout needs one frame to notice)
     void begin_panel(const char* title, float x, float y, float width);
     void end_panel();
 
@@ -118,8 +135,16 @@ private:
     bool interact(std::uint32_t id, const Rect& rect, bool& pressed,
                   bool& released);
 
-    // Next row of the given height inside the current panel
+    // Next row of the given height inside the current panel. Sets
+    // m_row_visible: false when scrolling puts the row (even partly)
+    // outside the visible body. Hidden rows must not draw or interact
     Rect next_row(float height);
+
+    // Scroll mode, once the panel's title and separator are in: applies
+    // the wheel and the scrollbar thumb to the panel's offset
+    struct PanelState;
+    void update_scroll(PanelState& state);
+    std::uint32_t thumb_id() const;
 
     float px(float v) const;  // 96-DPI pixels to real pixels
 
@@ -155,8 +180,32 @@ private:
     std::size_t m_border[4] = {};
     bool m_enabled = true;
 
-    // Final width of each panel last frame, by panel id
-    std::vector<std::pair<std::uint32_t, float>> m_panel_widths;
+    // Scroll mode (the panel is taller than the window)
+    bool m_scrolling = false;      // this frame's body scrolls
+    bool m_scroll_rows = false;    // title is in: rows are offset
+    bool m_row_visible = true;     // the row next_row just made
+    bool m_bar_hot = false;        // mouse over the scrollbar track
+    float m_max_height = 0.0f;     // tallest the panel may be; 0 = no limit
+    float m_bar_inset = 0.0f;      // right edge kept free for the bar
+    float m_scroll = 0.0f;         // body offset in pixels
+    float m_body_top = 0.0f;       // visible body band
+    float m_body_bottom = 0.0f;
+    float m_thumb_grab = 0.0f;     // mouse y inside the thumb when grabbed
+
+    // What each panel looked like last frame, by panel id
+    struct PanelState {
+        std::uint32_t id = 0;
+        float width = 0.0f;       // width its content needs (no scrollbar)
+        float height = 0.0f;      // height its content needs
+        float right = 0.0f;       // right edge as drawn
+        float scroll = 0.0f;      // body offset
+        float max_scroll = 0.0f;  // 0 when it fits
+    };
+
+    PanelState* find_panel(std::uint32_t id);
+    const PanelState* find_panel(std::uint32_t id) const;
+
+    std::vector<PanelState> m_panels;
 };
 
 } // namespace gfx

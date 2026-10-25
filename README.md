@@ -124,7 +124,7 @@ tracer's settings.
 |-------|--------|
 | Middle mouse drag | Orbit around the target (not during a G/R/S edit) |
 | Shift + middle mouse drag | Pan |
-| Scroll wheel | Zoom |
+| Scroll wheel | Zoom (over the 3D view); over the panel it scrolls the panel when the panel is taller than the window |
 | **G** / **R** / **S** | Grab (move), rotate or scale the model (only when a model is loaded) |
 | **X** / **Y** / **Z** during an edit | Constrain to that axis; press again to go back to free |
 | Left click during an edit | Confirm |

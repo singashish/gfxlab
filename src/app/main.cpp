@@ -486,6 +486,9 @@ int main(int argc, char** argv) {
         // then every click belongs to the edit (confirm or cancel)
         gfx::UiInput ui_input;
 
+        // Panels taller than the window scroll
+        ui_input.viewport_height = static_cast<float>(window.height());
+
         if (!editor.active()) {
             const gfx::InputState& in = window.input();
 
@@ -497,6 +500,7 @@ int main(int argc, char** argv) {
                 in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_LEFT);
             ui_input.mouse_released =
                 in.mouse_released(gfx::MouseButton::GFX_MOUSE_LEFT);
+            ui_input.scroll = in.scroll();
         }
 
         ui.begin_frame(ui_list, ui_input);

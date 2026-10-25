@@ -14,6 +14,14 @@ constexpr float kSpacing = 4.0f;      // between rows
 constexpr float kRowExtra = 6.0f;     // widget rows: line height + this
 constexpr float kLabelFraction = 0.42f;  // slider: share of the label
 
+// Scrolling panels, in 96-DPI pixels
+constexpr float kBottomMargin = 10.0f;   // kept free below a tall panel
+constexpr float kMinPanelHeight = 80.0f; // never squeezed below this
+constexpr float kBarWidth = 5.0f;        // scrollbar track and thumb
+constexpr float kBarMargin = 3.0f;       // scrollbar to the panel edge
+constexpr float kMinThumb = 16.0f;
+constexpr float kWheelLines = 3.0f;      // text lines per wheel notch
+
 // Colours
 constexpr std::uint32_t kPanelColor = ui_rgba(22, 24, 28, 225);
 constexpr std::uint32_t kBorderColor = ui_rgba(255, 255, 255, 40);
@@ -26,6 +34,9 @@ constexpr std::uint32_t kHeldColor = ui_rgba(84, 90, 102, 255);
 constexpr std::uint32_t kAccentColor = ui_rgba(74, 138, 226, 255);
 constexpr std::uint32_t kValueColor = ui_rgba(240, 242, 245, 255);
 constexpr std::uint32_t kHeaderColor = ui_rgba(38, 42, 49, 255);
+constexpr std::uint32_t kTrackColor = ui_rgba(255, 255, 255, 16);
+constexpr std::uint32_t kThumbColor = ui_rgba(92, 98, 110, 255);
+constexpr std::uint32_t kThumbHotColor = ui_rgba(120, 127, 141, 255);
 
 // Axis colours for x, y, z fields, as on the floor grid
 constexpr std::uint32_t kAxisColors[3] = {
@@ -54,6 +65,21 @@ std::uint32_t hash_string(const char* s, std::uint32_t seed) {
 
 constexpr std::uint32_t kFnvBasis = 2166136261u;
 
+// The scrollbar thumb's top and bottom inside a track that starts at
+// track_y0 and is track_h tall. The thumb is as long as the visible part
+// is of the whole body, and rides the track as scroll goes to max_scroll
+void thumb_span(float track_y0, float track_h, float visible, float content,
+                float scroll, float max_scroll, float min_length,
+                float& y0, float& y1) {
+    const float length = std::clamp(
+        content > 0.0f ? track_h * visible / content : track_h,
+        std::min(min_length, track_h), track_h);
+    const float t = max_scroll > 0.0f ? scroll / max_scroll : 0.0f;
+
+    y0 = track_y0 + t * (track_h - length);
+    y1 = y0 + length;
+}
+
 } // namespace
 
 float Ui::px(float v) const {
@@ -78,6 +104,41 @@ std::uint32_t Ui::widget_color(bool hovered, bool held) const {
 
 void Ui::note_width(float right) {
     m_content_right = std::max(m_content_right, right);
+}
+
+Ui::PanelState* Ui::find_panel(std::uint32_t id) {
+    for (PanelState& panel : m_panels) {
+        if (panel.id == id) {
+            return &panel;
+        }
+    }
+
+    return nullptr;
+}
+
+const Ui::PanelState* Ui::find_panel(std::uint32_t id) const {
+    for (const PanelState& panel : m_panels) {
+        if (panel.id == id) {
+            return &panel;
+        }
+    }
+
+    return nullptr;
+}
+
+float Ui::panel_scroll(const char* title) const {
+    const PanelState* panel = find_panel(hash_string(title, kFnvBasis));
+    return panel != nullptr ? panel->scroll : 0.0f;
+}
+
+float Ui::panel_max_scroll(const char* title) const {
+    const PanelState* panel = find_panel(hash_string(title, kFnvBasis));
+    return panel != nullptr ? panel->max_scroll : 0.0f;
+}
+
+std::uint32_t Ui::thumb_id() const {
+    const std::uint32_t id = m_panel_id ^ 0xB5297A4Du;
+    return id != 0 ? id : 1;
 }
 
 std::uint32_t Ui::widget_id(const char* label) const {
@@ -124,10 +185,33 @@ void Ui::begin_panel(const char* title, float x, float y, float width) {
     m_panel_width = m_min_width;
 
     // Lay out with last frame's width if the panel had grown
-    for (const auto& entry : m_panel_widths) {
-        if (entry.first == m_panel_id) {
-            m_panel_width = std::max(m_panel_width, entry.second);
-        }
+    PanelState* state = find_panel(m_panel_id);
+
+    if (state != nullptr) {
+        m_panel_width = std::max(m_panel_width, state->width);
+    }
+
+    // Taller than the window last frame: scroll mode. The scrollbar gets
+    // its own strip on the right, added to the panel's width. The width
+    // remembered for next frame never includes it, so it cannot make the
+    // width grow from frame to frame
+    m_scrolling = false;
+    m_scroll_rows = false;
+    m_row_visible = true;
+    m_bar_hot = false;
+    m_bar_inset = 0.0f;
+    m_scroll = 0.0f;
+    m_max_height = 0.0f;
+
+    if (m_input.viewport_height > 0.0f) {
+        m_max_height = std::max(
+            m_input.viewport_height - m_panel_y - px(kBottomMargin),
+            px(kMinPanelHeight));
+        m_scrolling = state != nullptr && state->height > m_max_height + 0.5f;
+    }
+
+    if (m_scrolling) {
+        m_panel_width += px(kBarWidth);
     }
 
     // Content that fits the minimum width needs no growth
@@ -152,6 +236,82 @@ void Ui::begin_panel(const char* title, float x, float y, float width) {
     m_cursor_y += m_list->line_height() + px(kSpacing);
 
     separator();
+
+    // From here on the rows are the body: they scroll, the title stays
+    m_body_top = m_cursor_y;
+
+    if (m_scrolling) {
+        update_scroll(*state);
+    } else if (state != nullptr) {
+        state->scroll = 0.0f;
+    }
+}
+
+void Ui::update_scroll(PanelState& state) {
+    const float pad = px(kPadding);
+    const float bar_width = px(kBarWidth);
+
+    m_body_bottom = m_panel_y + m_max_height - pad;
+
+    const float visible = m_body_bottom - m_body_top;
+    const float content = state.height - (m_body_top - m_panel_y) - pad;
+    const float max_scroll = std::max(0.0f, content - visible);
+    float offset = state.scroll;
+
+    // The track, where the bar was drawn last frame
+    const float bar_right = state.right - px(kBarMargin);
+    const Rect track{bar_right - bar_width, m_body_top, bar_right,
+                     m_body_bottom};
+    const std::uint32_t id = thumb_id();
+
+    bool pressed = false;
+    bool released = false;
+    m_bar_hot = interact(id, track, pressed, released);
+
+    float thumb_y0 = 0.0f;
+    float thumb_y1 = 0.0f;
+    thumb_span(track.y0, visible, visible, content, offset, max_scroll,
+               px(kMinThumb), thumb_y0, thumb_y1);
+
+    // Grab the thumb where it is, or jump it to the mouse when the press
+    // is on the track beside it; then it follows the mouse, also outside
+    // the track
+    if (pressed) {
+        const bool on_thumb =
+            m_input.mouse_y >= thumb_y0 && m_input.mouse_y < thumb_y1;
+
+        m_thumb_grab = on_thumb ? m_input.mouse_y - thumb_y0
+                                : (thumb_y1 - thumb_y0) * 0.5f;
+    }
+
+    if (m_active == id) {
+        const float travel = visible - (thumb_y1 - thumb_y0);
+
+        if (travel > 0.0f) {
+            const float t = std::clamp(
+                (m_input.mouse_y - m_thumb_grab - track.y0) / travel,
+                0.0f, 1.0f);
+
+            offset = t * max_scroll;
+        }
+    } else if (m_input.scroll != 0.0f &&
+               (m_active == 0 || m_active == m_panel_id)) {
+        // The wheel scrolls while the mouse is over the panel
+        const Rect panel{m_panel_x, m_panel_y, state.right,
+                         m_panel_y + m_max_height};
+
+        if (panel.contains(m_input.mouse_x, m_input.mouse_y)) {
+            offset -= m_input.scroll * kWheelLines * m_list->line_height();
+        }
+    }
+
+    // Whole pixels keep text sharp
+    offset = std::clamp(std::round(offset), 0.0f, max_scroll);
+
+    state.scroll = offset;
+    m_scroll = offset;
+    m_scroll_rows = true;
+    m_bar_inset = bar_width;
 }
 
 void Ui::end_panel() {
@@ -164,8 +324,16 @@ void Ui::end_panel() {
     const float y0 = m_panel_y;
     // Wide enough for the minimum width, the widest content, and the
     // widgets already laid out this frame
-    const float x1 = std::max(m_panel_x + m_panel_width, m_content_right + pad);
-    const float y1 = m_cursor_y - px(kSpacing) + pad;
+    const float bar_width = m_scrolling ? px(kBarWidth) : 0.0f;
+    const float x1 = std::max(m_panel_x + m_panel_width,
+                              m_content_right + pad + bar_width);
+    const float full_height = m_cursor_y - px(kSpacing) + pad - y0;
+
+    // Too tall for the window: stop at the bottom margin, the body
+    // scrolls. The bar is drawn only if the content really overflows
+    // (it may have shrunk since last frame)
+    const bool overflow = m_scrolling && full_height > m_max_height + 0.5f;
+    const float y1 = y0 + (overflow ? m_max_height : full_height);
     const float border = std::max(1.0f, px(1.0f));
 
     m_list->set_rect(m_background, x0, y0, x1, y1);
@@ -176,21 +344,47 @@ void Ui::end_panel() {
     m_list->set_rect(m_border[3], x1 - border, y0 + border, x1,
                      y1 - border);                                    // right
 
+    // The scrollbar: a faint track with the thumb on it, inside the right
+    // edge, as long as the body is
+    if (overflow) {
+        const float visible = m_body_bottom - m_body_top;
+        const float content = full_height - (m_body_top - y0) - pad;
+        const float max_scroll = std::max(0.0f, content - visible);
+        const float bar_right = x1 - px(kBarMargin);
+        const float bar_left = bar_right - bar_width;
+        float thumb_y0 = 0.0f;
+        float thumb_y1 = 0.0f;
+
+        thumb_span(m_body_top, visible, visible, content, m_scroll,
+                   max_scroll, px(kMinThumb), thumb_y0, thumb_y1);
+
+        const bool hot = m_bar_hot || m_active == thumb_id();
+
+        m_list->add_rect(bar_left, m_body_top, bar_right, m_body_bottom,
+                         kTrackColor);
+        m_list->add_rect(bar_left, thumb_y0, bar_right, thumb_y1,
+                         hot ? kThumbHotColor : kThumbColor);
+    }
+
     // Remember the width the content needs (not the layout width, so a
-    // panel shrinks again once its wide text is gone)
+    // panel shrinks again once its wide text is gone) and the height, so
+    // next frame knows whether to scroll
     const float wanted = std::max(m_min_width, m_content_right + pad - x0);
-    bool found = false;
+    PanelState* state = find_panel(m_panel_id);
 
-    for (auto& entry : m_panel_widths) {
-        if (entry.first == m_panel_id) {
-            entry.second = wanted;
-            found = true;
-        }
+    if (state == nullptr) {
+        m_panels.emplace_back();
+        state = &m_panels.back();
+        state->id = m_panel_id;
     }
 
-    if (!found) {
-        m_panel_widths.emplace_back(m_panel_id, wanted);
-    }
+    state->width = wanted;
+    state->height = full_height;
+    state->right = x1;
+    state->max_scroll =
+        overflow ? std::max(0.0f, full_height - m_max_height) : 0.0f;
+    state->scroll =
+        overflow ? std::min(m_scroll, state->max_scroll) : 0.0f;
 
     const Rect panel{x0, y0, x1, y1};
 
@@ -209,13 +403,22 @@ void Ui::end_panel() {
     }
 
     m_in_panel = false;
+    m_scrolling = false;
+    m_scroll_rows = false;
 }
 
 Ui::Rect Ui::next_row(float height) {
     const float pad = px(kPadding);
 
-    Rect row{m_panel_x + pad, m_cursor_y,
-             m_panel_x + m_panel_width - pad, m_cursor_y + height};
+    // The cursor is the row's place without scrolling; scrolling moves
+    // the body up. A row not entirely inside the body band is hidden
+    const float y0 = m_scroll_rows ? m_cursor_y - m_scroll : m_cursor_y;
+
+    Rect row{m_panel_x + pad, y0,
+             m_panel_x + m_panel_width - pad - m_bar_inset, y0 + height};
+
+    m_row_visible = !m_scroll_rows ||
+        (row.y0 >= m_body_top - 0.5f && row.y1 <= m_body_bottom + 0.5f);
 
     m_cursor_y += height + px(kSpacing);
     return row;
@@ -258,7 +461,12 @@ void Ui::text(const char* text) {
     }
 
     const Rect row = next_row(m_list->line_height());
-    const float width = m_list->add_text(row.x0, row.y0, text, text_color());
+
+    // Hidden text still counts for the panel's width: scrolling must not
+    // change it
+    const float width = m_row_visible
+        ? m_list->add_text(row.x0, row.y0, text, text_color())
+        : m_list->text_width(text);
 
     note_width(row.x0 + width);
 }
@@ -269,6 +477,11 @@ void Ui::separator() {
     }
 
     const Rect row = next_row(px(5.0f));
+
+    if (!m_row_visible) {
+        return;
+    }
+
     const float thickness = std::max(1.0f, px(1.0f));
     const float y = std::round((row.y0 + row.y1 - thickness) * 0.5f);
 
@@ -283,6 +496,13 @@ bool Ui::button(const char* label) {
     const float line = m_list->line_height();
     const Rect row = next_row(line + px(kRowExtra));
     const std::uint32_t id = widget_id(label);
+    const float width = m_list->text_width(label);
+
+    note_width(row.x0 + width + 2.0f * px(kPadding));
+
+    if (!m_row_visible) {
+        return false;
+    }
 
     bool pressed = false;
     bool released = false;
@@ -304,12 +524,9 @@ bool Ui::button(const char* label) {
     m_list->add_rect(row.x0, row.y0, row.x1, row.y1, background);
 
     // Label centred in the button
-    const float width = m_list->text_width(label);
     m_list->add_text((row.x0 + row.x1 - width) * 0.5f,
                      row.y0 + (row.y1 - row.y0 - line) * 0.5f,
                      label, text_color());
-
-    note_width(row.x0 + width + 2.0f * px(kPadding));
 
     // A click is a press and a release both over the button
     return released && hovered;
@@ -324,13 +541,18 @@ bool Ui::checkbox(const char* label, bool* value) {
     const Rect row = next_row(line + px(kRowExtra));
     const std::uint32_t id = widget_id(label);
 
-    bool pressed = false;
-    bool released = false;
-    const bool hovered = interact(id, row, pressed, released);
-
     // The box: a square as tall as the text, centred in the row
     const float box = std::round(line * 0.9f);
     const float bx0 = row.x0;
+
+    if (!m_row_visible) {
+        note_width(bx0 + box + px(6.0f) + m_list->text_width(label));
+        return false;
+    }
+
+    bool pressed = false;
+    bool released = false;
+    const bool hovered = interact(id, row, pressed, released);
     const float by0 = std::round(row.y0 + (row.y1 - row.y0 - box) * 0.5f);
 
     std::uint32_t background = hovered ? kHoverColor : kWidgetColor;
@@ -374,6 +596,10 @@ bool Ui::slider(const char* label, float* value, float min, float max,
     const float line = m_list->line_height();
     const Rect row = next_row(line + px(kRowExtra));
     const std::uint32_t id = widget_id(label);
+
+    if (!m_row_visible) {
+        return false;
+    }
 
     // Label on the left, track on the right
     const float label_width =
@@ -446,6 +672,16 @@ bool Ui::header(const char* label, bool* open) {
     const Rect row = next_row(line + px(kRowExtra));
     const std::uint32_t id = widget_id(label);
 
+    if (!m_row_visible) {
+        // Scrolled out: it keeps its state and the section under it
+        // still follows *open
+        const float hidden_size = std::round(line * 0.4f);
+
+        note_width(row.x0 + px(4.0f) + hidden_size + px(6.0f) +
+                   m_list->text_width(label));
+        return *open;
+    }
+
     // Headers stay usable even after set_enabled(false)
     const bool enabled = m_enabled;
     m_enabled = true;
@@ -494,6 +730,11 @@ bool Ui::drag_float3(const char* label, float values[3], float speed,
 
     const float line = m_list->line_height();
     const Rect row = next_row(line + px(kRowExtra));
+
+    if (!m_row_visible) {
+        return false;
+    }
+
     const float text_y = row.y0 + (row.y1 - row.y0 - line) * 0.5f;
 
     m_list->add_text(row.x0, text_y, label, text_color());

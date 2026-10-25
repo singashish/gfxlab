@@ -4,6 +4,7 @@
 #include "ui/ui_raster.h"
 #include "check.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -758,6 +759,264 @@ void test_widget_drag_float3() {
     CHECK(approx(values[0], -4.0) && approx(values[2], 3.0));
 }
 
+// ---------------------------------------------------------------------
+// Scrolling panel. Panel "T" at (0, 0), width 200, 11 rows of 22 with 4
+// between: row 0 header, row 1 slider, rows 2..10 buttons "B2".."B10".
+//   body top 37, row k at 37 + 26 k, content height 37 + 282 + 8 = 327
+// In a window 200 high the panel may be 190 tall (10 px margin): the
+// body band is 37 .. 182, 145 tall, so at offset 0 rows 0..4 show (row 5
+// would end at 189). Largest offset 327 - 190 = 137, where rows 6..10
+// show. The scrollbar adds 5 px to the width (205); its thumb is
+// 145 * 145 / 282 = 74.5 tall
+// ---------------------------------------------------------------------
+
+struct Tall {
+    bool open = true;
+    float value = 10.0f;
+    bool header_result = false;
+    bool slider_result = false;
+    bool clicked[11] = {};
+};
+
+gfx::UiInput view(gfx::UiInput in, float viewport_height,
+                  float scroll = 0.0f) {
+    in.viewport_height = viewport_height;
+    in.scroll = scroll;
+    return in;
+}
+
+void build_tall(gfx::Ui& ui, gfx::UiDrawList& list,
+                const gfx::FontAtlas& atlas, const gfx::UiInput& in,
+                Tall& t) {
+    list.begin(&atlas);
+    ui.begin_frame(list, in);
+    ui.begin_panel("T", 0.0f, 0.0f, 200.0f);
+    t.header_result = ui.header("Sec", &t.open);
+    t.slider_result = ui.slider("S", &t.value, 0.0f, 100.0f, "%.0f");
+
+    for (int k = 2; k <= 10; ++k) {
+        char label[8];
+        std::snprintf(label, sizeof(label), "B%d", k);
+
+        if (ui.button(label)) {
+            t.clicked[k] = true;
+        }
+    }
+
+    ui.end_panel();
+    ui.end_frame();
+}
+
+// True when every vertex is inside 0 .. right, 0 .. bottom
+bool all_inside(const gfx::UiDrawList& list, float right, float bottom) {
+    for (const gfx::UiVertex& v : list.vertices()) {
+        if (v.x < 0.0f || v.y < 0.0f || v.x > right + 0.01f ||
+            v.y > bottom + 0.01f) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Two frames: the first learns the panel is too tall, the second scrolls
+void settle(gfx::Ui& ui, gfx::UiDrawList& list, const gfx::FontAtlas& atlas,
+            const gfx::UiInput& in, Tall& t) {
+    build_tall(ui, list, atlas, in, t);
+    build_tall(ui, list, atlas, in, t);
+}
+
+void test_scroll_fit() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    Tall t;
+
+    // Too tall for the window: the panel stops at 190 and nothing is
+    // drawn below it or to the right of it
+    settle(ui, list, atlas, view(hover(500, 500), 200.0f), t);
+    CHECK(approx(list.vertices()[2].x, 205));
+    CHECK(approx(list.vertices()[2].y, 190));
+    CHECK(all_inside(list, 205.0f, 190.0f));
+    CHECK(approx(ui.panel_max_scroll("T"), 137));
+    CHECK(approx(ui.panel_scroll("T"), 0));
+
+    // The thumb is the last quad: inside the right edge, as long as the
+    // visible part of the body is of the whole
+    const std::vector<gfx::UiVertex>& v = list.vertices();
+    const std::size_t n = v.size();
+    CHECK(approx(v[n - 4].x, 197) && approx(v[n - 2].x, 202));
+    CHECK(approx(v[n - 4].y, 37) && approx(v[n - 2].y, 111.5, 0.1));
+
+    // A panel that fits has no scrollbar and the same draw list as when
+    // the window size is not given
+    Tall a;
+    Tall b;
+    gfx::Ui ui_a;
+    gfx::Ui ui_b;
+    gfx::UiDrawList list_a;
+    gfx::UiDrawList list_b;
+    settle(ui_a, list_a, atlas, view(hover(500, 500), 600.0f), a);
+    settle(ui_b, list_b, atlas, hover(500, 500), b);
+    CHECK(approx(ui_a.panel_max_scroll("T"), 0));
+    CHECK(list_a.vertices().size() == list_b.vertices().size());
+
+    bool same = true;
+
+    for (std::size_t i = 0; i < list_a.vertices().size(); ++i) {
+        same = same && list_a.vertices()[i].x == list_b.vertices()[i].x &&
+               list_a.vertices()[i].y == list_b.vertices()[i].y;
+    }
+
+    CHECK(same);
+    CHECK(approx(list_a.vertices()[2].x, 200));
+    CHECK(approx(list_a.vertices()[2].y, 327));
+}
+
+void test_scroll_wheel() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    Tall t;
+
+    settle(ui, list, atlas, view(hover(100, 100), 200.0f), t);
+
+    // The wheel off the panel does nothing
+    build_tall(ui, list, atlas, view(hover(500, 100), 200.0f, -1.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 0));
+
+    // One notch over the panel: 3 lines of 16 px. Wheel down (negative)
+    // moves the body up. The UI keeps the mouse, so the app skips its zoom
+    build_tall(ui, list, atlas, view(hover(100, 100), 200.0f, -1.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 48));
+    CHECK(ui.wants_mouse());
+    CHECK(all_inside(list, 205.0f, 190.0f));
+
+    // The offset stops at both ends
+    build_tall(ui, list, atlas, view(hover(100, 100), 200.0f, -50.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 137));
+    CHECK(all_inside(list, 205.0f, 190.0f));
+    build_tall(ui, list, atlas, view(hover(100, 100), 200.0f, 50.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 0));
+
+    // The panel keeps its width however far it scrolls
+    build_tall(ui, list, atlas, view(hover(100, 100), 200.0f, -2.0f), t);
+    CHECK(approx(list.vertices()[2].x, 205));
+
+    // A bigger window pulls the offset back at once; a window that fits
+    // the panel resets it, and the scrollbar goes
+    build_tall(ui, list, atlas, view(hover(100, 100), 200.0f, -50.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 137));
+    build_tall(ui, list, atlas, view(hover(100, 100), 300.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 37));
+    CHECK(approx(ui.panel_max_scroll("T"), 37));
+    build_tall(ui, list, atlas, view(hover(100, 100), 500.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 0));
+    CHECK(approx(ui.panel_max_scroll("T"), 0));
+    CHECK(approx(list.vertices()[2].y, 327));
+    build_tall(ui, list, atlas, view(hover(100, 100), 500.0f), t);
+    CHECK(approx(list.vertices()[2].x, 200));
+}
+
+void test_scroll_hidden_rows() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    Tall t;
+
+    // Offset 0: row 4 (141 .. 163) shows and can be clicked; row 5
+    // (167 .. 189) is not entirely in the body, so it is not drawn and a
+    // click at y 175 does nothing
+    settle(ui, list, atlas, view(hover(100, 100), 200.0f), t);
+    build_tall(ui, list, atlas, view(press(100, 175), 200.0f), t);
+    build_tall(ui, list, atlas, view(release(100, 175), 200.0f), t);
+    CHECK(!t.clicked[5]);
+
+    build_tall(ui, list, atlas, view(press(100, 150), 200.0f), t);
+    build_tall(ui, list, atlas, view(release(100, 150), 200.0f), t);
+    CHECK(t.clicked[4]);
+    CHECK(!t.clicked[5]);
+
+    // Hidden rows add no draw entries: a window showing 5 rows draws
+    // fewer quads than one showing all 11
+    const std::size_t scrolled = list.vertices().size();
+    Tall all;
+    gfx::Ui ui_all;
+    gfx::UiDrawList list_all;
+    settle(ui_all, list_all, atlas, view(hover(500, 500), 600.0f), all);
+    CHECK(scrolled < list_all.vertices().size());
+
+    // Scrolled to the end, rows 0..5 are the hidden ones: the header
+    // still reports its state, the slider reports nothing and keeps its
+    // value even with the mouse pressed where it would be
+    build_tall(ui, list, atlas, view(hover(100, 100), 200.0f, -50.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 137));
+    CHECK(t.header_result);
+    CHECK(!t.slider_result);
+    CHECK(all_inside(list, 205.0f, 190.0f));
+
+    build_tall(ui, list, atlas, view(press(150, 45), 200.0f), t);
+    CHECK(!t.slider_result);
+    CHECK(approx(t.value, 10));
+    build_tall(ui, list, atlas, view(release(150, 45), 200.0f), t);
+    CHECK(t.open);
+
+    // Row 6 now sits at 56 .. 78 and is clickable; row 10 is last
+    build_tall(ui, list, atlas, view(press(100, 170), 200.0f), t);
+    build_tall(ui, list, atlas, view(release(100, 170), 200.0f), t);
+    CHECK(t.clicked[10]);
+
+    // A folded section reports false when hidden too
+    t.open = false;
+    build_tall(ui, list, atlas, view(hover(100, 100), 200.0f), t);
+    CHECK(!t.header_result);
+}
+
+void test_scroll_thumb() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+    Tall t;
+
+    // The thumb is at x 197 .. 202, y 37 .. 111.5. Grab it 23 px down
+    settle(ui, list, atlas, view(hover(500, 500), 200.0f), t);
+    build_tall(ui, list, atlas, view(press(199, 60), 200.0f), t);
+    CHECK(ui.wants_mouse());
+    CHECK(approx(ui.panel_scroll("T"), 0));
+
+    // 50 px down moves it 50 of its 70.4 px of travel: 137 * 50 / 70.4
+    build_tall(ui, list, atlas, view(hold(199, 110), 200.0f), t);
+    CHECK(std::fabs(ui.panel_scroll("T") - 97.2f) < 1.0f);
+    CHECK(all_inside(list, 205.0f, 190.0f));
+
+    // The thumb follows the mouse outside the track, to both ends
+    build_tall(ui, list, atlas, view(hold(500, 400), 200.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 137));
+    build_tall(ui, list, atlas, view(hold(500, -400), 200.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 0));
+    build_tall(ui, list, atlas, view(release(500, -400), 200.0f), t);
+    build_tall(ui, list, atlas, view(hover(500, 500), 200.0f), t);
+    CHECK(!ui.wants_mouse());
+
+    // After the release the offset stays; a press on the track beside
+    // the thumb jumps it there (centred on the mouse)
+    build_tall(ui, list, atlas, view(press(199, 170), 200.0f), t);
+    CHECK(approx(ui.panel_scroll("T"), 137));
+
+    // Nothing was clicked or changed by any of it
+    build_tall(ui, list, atlas, view(release(199, 170), 200.0f), t);
+    CHECK(!t.clicked[10]);
+    CHECK(approx(t.value, 10));
+}
+
 void test_triangle() {
     gfx::FontAtlas atlas;
     CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
@@ -825,6 +1084,10 @@ int main() {
     test_placeholder();
     test_widget_header();
     test_widget_drag_float3();
+    test_scroll_fit();
+    test_scroll_wheel();
+    test_scroll_hidden_rows();
+    test_scroll_thumb();
     test_triangle();
 
     if (g_failures == 0) {
