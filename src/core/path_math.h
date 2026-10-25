@@ -88,7 +88,8 @@ constexpr float kPtExposure = 1.0f;
 constexpr int kPtRouletteStart = 3;
 
 // The largest value (in linear light, one colour channel) that a single
-// contribution of an INDIRECT path may add to a pixel sample; see
+// contribution of an INDIRECT path may add to a pixel sample (indirect =
+// after a diffuse bounce, or after two or more bounces of any kind); see
 // clamp_contribution below. Display white is reached at about 3 after
 // tone mapping (exposure 1), so 10 leaves ordinary lighting alone.
 // A huge value (1e30f) switches the clamp off
@@ -107,9 +108,14 @@ constexpr int kPtRouletteStart = 3;
 // samples down to the limit, so the light a real caustic would add (the
 // bright spots the sun makes under a shiny sphere) comes out dimmer than
 // a fully converged render. In exchange the dots are gone. Paths that
-// had no diffuse bounce are never clamped: a lamp seen directly, a sun
-// glint on a smooth sphere seen directly, mirror reflections of the sun
-// seen directly. They are bright but smooth and converge
+// had no diffuse bounce and at most one bounce are never clamped: a lamp
+// seen directly, a sun glint on a smooth sphere seen directly, a mirror
+// reflection of the sun seen directly. They are bright but smooth and
+// converge. Paths with two or more bounces are clamped even if every
+// bounce was glossy: the sun seen through TWO reflections (a smooth
+// sphere mirrored in another one) is a tiny blurred image of the sun
+// that only rare samples hit, each worth thousands, and a shadow ray
+// cannot be aimed at it either
 constexpr float kPtIndirectClamp = 10.0f;
 
 // The sun is a disc of light seen from the surfaces under this half angle
