@@ -10,24 +10,28 @@ API can be compared side by side:
 
 - **OpenGL 4.6**
 - **Vulkan 1.3+**
-- **CUDA**, as a software rasterizer and a ray tracer written from scratch as
-  compute kernels
+- **CUDA**, as a software rasterizer, a ray tracer and a path tracer written
+  from scratch as compute kernels
 
 The only external dependencies are the graphics APIs themselves. Windowing,
-input, math, logging, the OpenGL function loader, the model parser and the user
-interface are all written in this repository, as they are added.
+input, math, logging, the OpenGL function loader, the model, image and glTF
+parsers and the user interface are all written in this repository, as they are
+added.
 
 ## Status
 
 Early development. **M0 (foundation), M1 (window and input), M2 (OpenGL
 renderer and orbit camera), M3 (models, lighting and object transforms), M4
 (the Vulkan backend), M5 (the CUDA software rasterizer), M6 (wireframe, GPU
-timing and CUDA clipping), M7 (the CUDA ray tracer) and M8 (a basic user
-interface) are complete.** The app opens a window with a
+timing and CUDA clipping), M7 (the CUDA ray tracer), M8 (a basic user
+interface) and M9 (materials, textures and a CUDA path tracer) are complete.**
+The app opens a window with a
 Blender-style viewport: an infinite, anti-aliased floor grid with colored X and
 Y axes that fades with distance, and a mouse-controlled orbit camera. Give it
-an OBJ file on the command line and the model is loaded, lit, placed on the
-floor, and can be moved, rotated and scaled with Blender's G, R and S keys.
+an OBJ file (with its MTL materials and textures) or a glTF/GLB file on the
+command line and the model is loaded, shaded with its materials and textures,
+placed on the floor, and can be moved, rotated and scaled with Blender's G, R
+and S keys.
 Without a file it shows two demo triangles. The scene keeps rendering while the
 window is dragged or resized. It renders with OpenGL by default, with Vulkan
 when started with `--backend=vulkan`, or with a software rasterizer written in
@@ -36,10 +40,14 @@ same picture. **W** switches every backend to a Blender-style wireframe that
 shows the model's original polygon edges, and each backend's measured GPU
 time is shown next to the frame time. With `--backend=cuda`,
 **T** switches to a ray tracer that adds shadows from a sun you can drag around
-the model and ambient occlusion that refines while the view is still. A panel
-in the top-left corner, drawn by every backend, shows the timings and lets the
-mouse change the view, the model's position, rotation and scale, and the ray
-tracer's settings.
+the model and ambient occlusion that refines while the view is still, and
+**P** to a progressive path tracer ("Rendered" mode) with a sun, a sky, glossy
+and metallic materials and emissive surfaces that light their surroundings. A
+panel in the top-left corner, drawn by every backend, shows the timings and
+lets the mouse change the view, the model's position, rotation and scale, the
+ray tracer's and path tracer's settings and, with CUDA, the model's materials
+live. The panel can be hidden to the left edge, and scrolls when the window is
+shorter than it.
 
 | Milestone | Goal | State |
 |-----------|------|-------|
@@ -52,6 +60,7 @@ tracer's settings.
 | M6 | Polish and backend comparison | DONE |
 | M7 | CUDA ray tracer | DONE |
 | M8 | Basic user interface | DONE |
+| M9 | Materials, textures and a CUDA path tracer | DONE |
 
 ### What is in the repository so far
 
@@ -63,12 +72,18 @@ tracer's settings.
   own OBJ parser and normal generation, `Transform`, the `TransformEditor`
   behind G/R/S, ray/box and ray/triangle tests, and a BVH (binary, built with
   the surface area heuristic, and a 4-wide version collapsed from it) whose
-  traversal code runs on both the CPU and the GPU
+  traversal code runs on both the CPU and the GPU. Since M9 it also holds the
+  materials (`Material`, the MTL parser), the image decoders (Deflate, PNG and
+  TGA), a JSON parser and the glTF/GLB loader behind a common `Model` type,
+  software texture sampling with mip maps, the path tracer's maths (sRGB and
+  tone mapping, the sky and sun, the GGX material model in `brdf.h`, sampling
+  of emissive triangles), the path tracer's settings and the material editor's
+  helpers, all header-only and shared with the GPU code where it matters
 - **`gfx_ui`**: an immediate-mode UI: a font atlas packer, the `UiDrawList`
   of UI triangles every backend draws, a software rasterizer for that list
   (used by the CUDA backend, and by the tests), and widgets (panels, text,
   buttons, checkboxes, sliders, drag fields, foldable sections) with mouse
-  capture
+  capture and, since M9, panels that scroll when taller than the window
 - **`gfx_platform`**: a hand-written Win32 window (DPI-aware, resize and
   minimize handling, rendering during the drag/resize loop), a keyboard and
   mouse state tracker with mouse capture and focus-loss handling, and the UI
@@ -76,14 +91,16 @@ tracer's settings.
 - **`gfx_gl`**: an OpenGL 4.6 core context created through WGL, an own function
   loader, shader helpers, the ray-cast grid, lit mesh drawing (`GLMesh`), an
   edge-list wireframe, a non-blocking GPU timer (`GL_TIME_ELAPSED` queries), the
-  UI pass, and `GLRenderer`
+  UI pass, per-material drawing with textures and mip maps
+  (`GLTextureStore`), and `GLRenderer`
 - **`gfx_vk`**: the Vulkan 1.3 backend: instance, validation layer and device
   selection (a discrete GPU is preferred), swapchain with live recreation,
   frames in flight, dynamic rendering, a depth buffer, staging uploads, per-frame
   uniform buffers and push constants, a shared pipeline helper, shaders compiled
   to SPIR-V at build time, a line-list wireframe pipeline, timestamp-query GPU
-  timing, the UI pass (with image uploads and per-frame UI buffers), and
-  `VulkanRenderer`
+  timing, the UI pass (with image uploads and per-frame UI buffers),
+  per-material drawing with textures and mip maps (`VulkanTextureStore`, one
+  descriptor set per texture), and `VulkanRenderer`
 - **`gfx_cuda`**: the CUDA backend: a software rasterizer made of kernels
   (vertex transform; a triangle setup pass that clips against the near plane
   and a guard band and fills a worklist; small and large triangle rasterizers
@@ -92,6 +109,11 @@ tracer's settings.
   clipped line rasterizer for wireframe; and the grid as a per-pixel ray
   kernel), a ray tracer (camera rays through a per-mesh BVH, sun shadows,
   progressive ambient occlusion, run as one kernel or as wavefront passes),
+  a progressive path tracer (sun and sky light, a glossy GGX layer, emission,
+  sampled emissive triangles, a firefly limit; its code is in
+  `cuda_pathtrace.cuh` and `cuda_rt_device.cuh`), per-material drawing with
+  software texture sampling (`CudaTextureStore`, mip chains, LOD from the
+  triangle), a device material table with live edits (`CudaMeshStore`),
   the UI composited by a kernel, a presenter interface (`ICudaPresenter`) with
   the CUDA/OpenGL interop presenter that shows the result, per-frame and
   per-stage GPU timing, ray statistics, and `CudaRenderer`. The `cuda_info` tool reports the CUDA
@@ -100,15 +122,19 @@ tracer's settings.
   `last_gpu_ms` for GPU timing and `stats` for the UI), `FrameData` with its
   draw list, flags and UI draw list, the shared grid ray basis, and the
   `create_renderer()` factory
-- **Tests**: ten unit-test programs (math, input, timer, camera, obj,
-  transform, transform_edit, raster, bvh, ui) registered with CTest
+- **Tests**: eighteen unit-test programs (math, input, timer, camera, obj,
+  transform, transform_edit, raster, bvh, ui, image, texture, json, gltf, path,
+  brdf, light, material_edit) registered with CTest
 - **`gfxlab` app**: opens a 1280x720 window and renders the viewport, loading
-  the OBJ file given on the command line, with the settings panel on top. The
+  the OBJ or glTF/GLB file given on the command line, with the settings panel
+  on top. The
   title bar shows the backend and the FPS, the panel the frame and GPU times,
   and the console logs the frame and GPU times once per second. **Esc** cancels
   an edit, or quits when none is active. `--backend=opengl|vulkan|cuda` selects
   the renderer
-- **`assets/`**: test models (a cube with and without normals, a
+- **`assets/`**: test models (a textured cube, `textured_cube.obj` with its MTL
+  file and `textures/uv_grid.png` and `label.tga`, glTF test files in
+  `assets/gltf/` (`cubes.gltf` and `cubes.glb`), a cube with and without normals, a
   high-resolution Suzanne with flat and smooth shading, and `suzanne_fl.obj`,
   Blender's standard Suzanne exported with its quads, for comparing the
   wireframe with Blender). `assets/gltf/materials.glb` (made by
@@ -131,6 +157,7 @@ tracer's settings.
 | Right click or Esc during an edit | Cancel, restoring the model exactly |
 | **V** | Toggle vsync |
 | **W** | Toggle wireframe (the model's polygon edges, unlit, in every backend) |
+| **M** | Toggle materials: the models' colours and textures, or plain grey shading (in every backend; in the path tracer also gloss, metal and emission) |
 | **T** | Toggle ray tracing (`--backend=cuda` only; wireframe takes priority) |
 | **P** | Toggle the path tracer, the progressive "Rendered" mode, lit by a sun and a sky that are not drawn themselves (`--backend=cuda` only; excludes **T**; wireframe takes priority). Emissive materials glow and light their surroundings, and the roughness and metallic values of the materials show as gloss and metal (GGX highlights and reflections; try `gltf\materials.glb`); **M** turns the materials, and so the emission and the gloss, off (plain matte grey). The panel's Path tracing > Settings group (folded by default) sets the sample limit, samples per frame, bounces, exposure, sun and sky strength and the firefly limit |
 | Panel > Materials | The collapsible Materials section (folded by default; `--backend=cuda` only) picks one of the loaded model's materials and edits its base colour, roughness, metallic and emission colour and strength; the rasterizer, **T** and **P** show it live (**P** restarts its accumulation). Textures are not editable (the colour still multiplies them) and the edits are in memory only, never saved to the file |
@@ -160,6 +187,7 @@ cancel the edit, and the camera stays locked except for zoom.
 | [`docs/m6-design.md`](docs/m6-design.md) | Polygon-edge wireframe in all three backends, non-blocking GPU timing (GL queries, Vulkan timestamps, CUDA events), the backend comparison and how to read it, the CUDA triangle worklist, near-plane and guard-band clipping, the shared grid ray basis, manual checklist |
 | [`docs/m7-design.md`](docs/m7-design.md) | CUDA ray tracer: ray tests, the SAH BVH and its 4-wide version, instancing with the inverse model matrix, sun shadows, ambient occlusion with progressive refinement, ray statistics, megakernel versus wavefront, measurements and what they taught, manual checklist |
 | [`docs/m8-design.md`](docs/m8-design.md) | User interface: the GDI font atlas, the UI draw list, the UI pass in OpenGL and Vulkan, the CUDA presenter interface and the software UI rasterizer, immediate-mode widgets and mouse ownership, the settings panel, the cost of the UI, manual checklist |
+| [`docs/m9-design.md`](docs/m9-design.md) | Materials and textures: the MTL parser, Deflate, PNG and TGA decoders, the JSON parser and glTF/GLB loader, textured drawing in all three backends, the CUDA path tracer (linear light, sun and sky, the GGX material model, emissive triangles and MIS, the firefly limit), the settings panel, hiding and scrolling, the material editor, manual checklist |
 
 ## Requirements
 
@@ -318,8 +346,11 @@ builds\build-debug\src\app\gfxlab.exe --backend=cuda assets\suzanne_s.obj
 
 The second form loads a model. The name is looked up as given, then in `assets\`,
 then in `assets\local\`, so a bare name such as `suzanne_s.obj` works from
-any directory. The OBJ loader reads positions, normals and
-faces, and assumes the file is Y-up (the default of most exporters). The third
+any directory. The loader chooses the format by extension: `.obj` (positions,
+normals, texture coordinates and faces, with the materials of the `.mtl` file
+and its `map_Kd` texture) or `.gltf` / `.glb` (see `assets\gltf\`); PNG and
+TGA textures are supported. Both formats are assumed to be Y-up, as most
+exporters write them, and are converted to the viewer's Z-up. The third
 form renders it with Vulkan instead of OpenGL (`--backend=opengl` is the
 default); it needs the Vulkan SDK at build time and a Vulkan 1.3 GPU at run
 time. In a Debug build it also enables the Khronos validation layer and prints
@@ -373,10 +404,13 @@ See [Controls](#controls) for the mouse and keyboard actions.
 ```
 cmake/               build helper modules (backend detection, shader compilation)
 docs/                design documents
-src/core/            logging, math, cameras, timer, mesh, OBJ parser,
+src/core/            logging, math, cameras, timer, mesh and materials,
+                     OBJ/MTL parser, Deflate/PNG/TGA, JSON, glTF loader,
+                     texture sampling, path tracer maths (sRGB, BRDF,
+                     light sampling, settings), material editor helpers,
                      transform and its editor, ray tests, BVH          -> gfx_core
 src/ui/              font atlas, UI draw list, software UI rasterizer,
-                     immediate-mode widgets                            -> gfx_ui
+                     immediate-mode widgets (scrolling panels)         -> gfx_ui
 src/platform/        window, input and the UI font                     -> gfx_platform
   win32/             Win32 window and GDI font rasterization
 src/renderer/        IRenderer, FrameData, grid ray basis, factory     -> gfx_renderer
@@ -387,15 +421,18 @@ src/renderer/        IRenderer, FrameData, grid ray basis, factory     -> gfx_re
                      UI pass, VulkanRenderer                           -> gfx_vk
     shaders/         GLSL sources, compiled to SPIR-V by glslc at build time
   cuda/              presenter interface and OpenGL interop presenter,
-                     device meshes, clipping, rasterizer, ray tracer
-                     and UI kernels, GPU and stage timers, ray
-                     statistics, CudaRenderer, cuda_info               -> gfx_cuda
+                     device meshes and materials, textures, clipping,
+                     rasterizer, ray tracer, path tracer and UI kernels,
+                     GPU and stage timers, ray statistics, CudaRenderer,
+                     cuda_info                                         -> gfx_cuda
 src/app/             application entry point                           -> gfxlab
-assets/              test models (.obj)
+assets/              test models (.obj, .gltf, .glb), textures
 tests/               unit tests                                        -> test_math, test_input, test_timer,
                                                                           test_camera, test_obj, test_transform,
                                                                           test_transform_edit, test_raster, test_bvh,
-                                                                          test_ui
+                                                                          test_ui, test_image, test_texture, test_json,
+                                                                          test_gltf, test_path, test_brdf, test_light,
+                                                                          test_material_edit
 CMakePresets.json
 build.bat
 ```
