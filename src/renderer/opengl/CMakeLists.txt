@@ -3,6 +3,7 @@ add_library(gfx_gl STATIC
     gl_grid.cpp
     gl_loader_win32.cpp
     gl_mesh.cpp
+    gl_outline.cpp
     gl_presenter.cpp
     gl_renderer.cpp
     gl_timer.cpp

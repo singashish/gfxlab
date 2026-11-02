@@ -1,6 +1,7 @@
 #include "renderer/vulkan/vk_buffer.h"
 #include "renderer/vulkan/vk_context.h"
 #include "renderer/vulkan/vk_mesh.h"
+#include "renderer/vulkan/vk_outline.h"
 #include "renderer/vulkan/vk_pipeline.h"
 #include "renderer/vulkan/vk_shader.h"
 #include "renderer/vulkan/vk_texture.h"
@@ -29,7 +30,9 @@ struct MeshPush {
     Vec4 normal_col0;   // offset 64: normal matrix, column 0 (w unused)
     Vec4 normal_col1;   // offset 80
     Vec4 normal_col2;   // offset 96
-    Vec4 base_color;    // offset 112: material colour (rgb), w unused
+    Vec4 base_color;    // offset 112: material colour (rgb); the wire
+                        // pipeline reads the line colour (rgb), the mask
+                        // pipeline the mask value (x)
 };
 
 static_assert(sizeof(MeshPush) == 128,
@@ -81,6 +84,10 @@ void VulkanMeshRenderer::destroy_pipeline() {
             vkDestroyPipeline(m_device, m_wire_pipeline, nullptr);
         }
 
+        if (m_mask_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(m_device, m_mask_pipeline, nullptr);
+        }
+
         if (m_pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(
                 m_device, m_pipeline_layout, nullptr);
@@ -89,6 +96,7 @@ void VulkanMeshRenderer::destroy_pipeline() {
 
     m_pipeline = VK_NULL_HANDLE;
     m_wire_pipeline = VK_NULL_HANDLE;
+    m_mask_pipeline = VK_NULL_HANDLE;
     m_pipeline_layout = VK_NULL_HANDLE;
 }
 
@@ -267,6 +275,50 @@ bool VulkanMeshRenderer::init(VkDevice device, VkFormat color_format,
         m_device, wire_vertex_shader, nullptr);
 
     if (m_wire_pipeline == VK_NULL_HANDLE) {
+        destroy_pipeline();
+        return false;
+    }
+
+    // The mask pipeline of the selection outline: the triangles again,
+    // flat, into the outline's R8 mask with its own depth image
+    VkShaderModule mask_vertex_shader = load_shader_module(
+        m_device, GFX_SHADER_DIR "/mask.vert.spv");
+
+    if (mask_vertex_shader == VK_NULL_HANDLE) {
+        destroy_pipeline();
+        return false;
+    }
+
+    VkShaderModule mask_fragment_shader = load_shader_module(
+        m_device, GFX_SHADER_DIR "/mask.frag.spv");
+
+    if (mask_fragment_shader == VK_NULL_HANDLE) {
+        vkDestroyShaderModule(m_device, mask_vertex_shader, nullptr);
+        destroy_pipeline();
+        return false;
+    }
+
+    VulkanPipelineDesc mask_desc{};
+    mask_desc.vert = mask_vertex_shader;
+    mask_desc.frag = mask_fragment_shader;
+    mask_desc.layout = m_pipeline_layout;
+    mask_desc.color_format = kOutlineMaskFormat;
+    mask_desc.depth_format = depth_format;
+
+    // Position only, from the same vertex buffers
+    mask_desc.bindings = {wire_binding};
+    mask_desc.attributes = {wire_position};
+
+    mask_desc.depth_test = true;
+    mask_desc.depth_write = true;
+    mask_desc.blend = false;
+
+    m_mask_pipeline = create_graphics_pipeline(m_device, mask_desc);
+
+    vkDestroyShaderModule(m_device, mask_fragment_shader, nullptr);
+    vkDestroyShaderModule(m_device, mask_vertex_shader, nullptr);
+
+    if (m_mask_pipeline == VK_NULL_HANDLE) {
         destroy_pipeline();
         return false;
     }
@@ -601,6 +653,107 @@ void VulkanMeshRenderer::draw(VkCommandBuffer cmd, VkExtent2D extent,
     }
 }
 
+void VulkanMeshRenderer::draw_mask(VkCommandBuffer cmd,
+                            VkExtent2D extent,
+                            VkDescriptorSet descriptor_set,
+                            const std::vector<DrawItem>& items) {
+
+    if (m_mask_pipeline == VK_NULL_HANDLE ||
+        m_pipeline_layout == VK_NULL_HANDLE ||
+        cmd == VK_NULL_HANDLE ||
+        descriptor_set == VK_NULL_HANDLE ||
+        extent.width == 0 ||
+        extent.height == 0) {
+        return;
+    }
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = extent;
+
+    vkCmdBindPipeline(
+        cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_mask_pipeline);
+
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    // Only set 0 is needed: the mask shaders use no texture
+    vkCmdBindDescriptorSets(
+        cmd,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        m_pipeline_layout,
+        0,
+        1,
+        &descriptor_set,
+        0,
+        nullptr);
+
+    const VkDeviceSize offset = 0;
+
+    for (const DrawItem& item : items) {
+        if (item.mesh == 0 ||
+            static_cast<std::size_t>(item.mesh) > m_meshes.size()) {
+            continue;
+        }
+
+        const GpuMesh& mesh =
+            *m_meshes[static_cast<std::size_t>(item.mesh) - 1];
+
+        if (mesh.vertex_buffer == nullptr ||
+            mesh.index_buffer == nullptr ||
+            mesh.ranges.empty()) {
+            continue;
+        }
+
+        float value = 0.0f;
+
+        if (item.highlight == Highlight::HIGHLIGHT_SELECTED) {
+            value = 0.5f;
+        } else if (item.highlight == Highlight::HIGHLIGHT_ACTIVE) {
+            value = 1.0f;
+        }
+
+        // Same push block and stage flags as the other pipelines; the
+        // mask shaders read the model matrix and the value (base_color.x)
+        const MeshPush push = make_push(item, Vec3{value, 0.0f, 0.0f});
+
+        vkCmdPushConstants(
+            cmd,
+            m_pipeline_layout,
+            kPushStages,
+            0,
+            sizeof(MeshPush),
+            &push);
+
+        const VkBuffer vertex_buffer = mesh.vertex_buffer->buffer();
+
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offset);
+
+        vkCmdBindIndexBuffer(
+            cmd,
+            mesh.index_buffer->buffer(),
+            0,
+            VK_INDEX_TYPE_UINT32);
+
+        for (const GpuRange& range : mesh.ranges) {
+            if (range.index_count == 0) {
+                continue;
+            }
+
+            vkCmdDrawIndexed(
+                cmd, range.index_count, 1, range.first_index, 0, 0);
+        }
+    }
+}
+
 void VulkanMeshRenderer::draw_wireframe(VkCommandBuffer cmd,
                             VkExtent2D extent,
                             VkDescriptorSet descriptor_set,
@@ -664,10 +817,11 @@ void VulkanMeshRenderer::draw_wireframe(VkCommandBuffer cmd,
             continue;
         }
 
-        // The push block is shared with the mesh pipeline, but the
-        // wire shader only reads the model matrix. The stage flags must
-        // be the same ones as in the layout's push constant range
-        const MeshPush push = make_push(item, Vec3{0.0f, 0.0f, 0.0f});
+        // The push block is shared with the mesh pipeline. The wire
+        // shaders read the model matrix and the line colour
+        // (base_color.rgb). The stage flags must be the same ones as in
+        // the layout's push constant range
+        const MeshPush push = make_push(item, edge_color(item.highlight));
 
         vkCmdPushConstants(
             cmd,

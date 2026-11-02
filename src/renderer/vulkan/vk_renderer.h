@@ -6,6 +6,7 @@
 #include "renderer/vulkan/vk_frames.h"
 #include "renderer/vulkan/vk_grid.h"
 #include "renderer/vulkan/vk_mesh.h"
+#include "renderer/vulkan/vk_outline.h"
 #include "renderer/vulkan/vk_swapchain.h"
 #include "renderer/vulkan/vk_texture.h"
 #include "renderer/vulkan/vk_timer.h"
@@ -54,6 +55,7 @@ private:
     VulkanTriangleDemo m_triangle;
     VulkanMeshRenderer m_meshes;
     VulkanGridRenderer m_grid;
+    VulkanOutline m_outline;
     VulkanUiRenderer m_ui;
 
     VkFormat m_color_format = VK_FORMAT_UNDEFINED;

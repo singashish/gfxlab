@@ -44,6 +44,30 @@ constexpr bool kUseBvh4 = true;
 // AO rays reach this fraction of the largest model's diagonal
 constexpr float kAoRadiusFraction = 0.2f;
 
+// A colour of the renderer interface (0..1) as the 8-bit pixel of the
+// colour buffer
+uchar4 to_pixel(Vec3 c) {
+    const auto channel = [](float v) {
+        const float clamped = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        return static_cast<unsigned char>(clamped * 255.0f + 0.5f);
+    };
+
+    return make_uchar4(channel(c.x), channel(c.y), channel(c.z), 255);
+}
+
+// The id a wireframe line carries in the visibility buffer
+unsigned int wire_id_of(Highlight h) {
+    switch (h) {
+    case Highlight::HIGHLIGHT_ACTIVE:
+        return kWireIdActive;
+    case Highlight::HIGHLIGHT_SELECTED:
+        return kWireIdSelected;
+    case Highlight::HIGHLIGHT_NONE:
+    default:
+        return kWireIdPlain;
+    }
+}
+
 void append_matrix(std::vector<float>& out, const Mat4& m) {
     for (int c = 0; c < 4; ++c) {
         out.push_back(m.col[c].x);
@@ -141,6 +165,8 @@ CudaRenderer::~CudaRenderer() {
         m_scratch_capacity = 0;
     }
 
+    free_mask_buffers();
+
     if (m_visibility != nullptr) {
         (void)cuda_ok(
             cudaFree(m_visibility),
@@ -233,6 +259,10 @@ bool CudaRenderer::resize_targets(int width, int height) {
         }
         m_color = nullptr;
     }
+
+    // The outline buffers have the old size; they are made again when
+    // something is selected
+    free_mask_buffers();
 
     if (m_visibility != nullptr) {
         if (!cuda_ok(
@@ -478,6 +508,154 @@ bool CudaRenderer::ensure_raster_capacity(
 
     m_raster.capacity = record_count;
     return true;
+}
+
+void CudaRenderer::free_mask_buffers() {
+    if (m_mask_vis != nullptr) {
+        (void)cuda_ok(cudaFree(m_mask_vis),
+                      "cudaFree selection outline buffers");
+        m_mask_vis = nullptr;
+    }
+}
+
+bool CudaRenderer::ensure_mask_buffers() {
+    if (m_mask_vis != nullptr) {
+        return true;
+    }
+
+    const std::size_t pixels =
+        static_cast<std::size_t>(m_width) *
+        static_cast<std::size_t>(m_height);
+
+    // Two visibility buffers in one allocation: selected, then active
+    if (!cuda_ok(
+            cudaMalloc(&m_mask_vis, 2 * pixels * sizeof(std::uint64_t)),
+            "cudaMalloc selection outline buffers")) {
+        m_mask_vis = nullptr;
+        return false;
+    }
+
+    return true;
+}
+
+bool CudaRenderer::draw_selection_outline(
+                const FrameData& frame,
+                const Mat4& view_proj,
+                uchar4* color,
+                const std::uint64_t* visibility) {
+
+    if (!ensure_mask_buffers()) {
+        return false;
+    }
+
+    const std::size_t pixels =
+        static_cast<std::size_t>(m_width) *
+        static_cast<std::size_t>(m_height);
+
+    auto* mask_vis = static_cast<std::uint64_t*>(m_mask_vis);
+
+    // Round 0: the selected objects, round 1: the active one. Each
+    // round rasterizes only its own objects into its own buffer, with the
+    // same transform and rasterizer the picture itself used
+    for (int round = 0; round < 2; ++round) {
+        const Highlight wanted = round == 0
+            ? Highlight::HIGHLIGHT_SELECTED
+            : Highlight::HIGHLIGHT_ACTIVE;
+
+        std::uint64_t* target =
+            mask_vis + static_cast<std::size_t>(round) * pixels;
+
+        // Empty (all ~0) when nothing is marked this way
+        if (!cuda_clear_visibility(target, m_width, m_height)) {
+            return false;
+        }
+
+        std::uint64_t vertices = 0;
+        std::uint64_t triangles = 0;
+
+        for (const DrawItem& item : frame.draw_list) {
+            const DeviceMesh* mesh = m_meshes.find(item.mesh);
+
+            if (item.highlight != wanted || mesh == nullptr ||
+                mesh->vertex_count == 0 || mesh->index_count == 0) {
+                continue;
+            }
+
+            vertices += mesh->vertex_count;
+            triangles += mesh->index_count / 3;
+        }
+
+        if (triangles == 0) {
+            continue;
+        }
+
+        const std::uint64_t record_capacity = triangles * 2ULL + 1024ULL;
+
+        if (vertices > std::numeric_limits<std::uint32_t>::max() ||
+            record_capacity >
+                std::numeric_limits<std::uint32_t>::max() - 1ULL) {
+            LOG_ERROR("CUDA renderer: selection outline is too large");
+            return false;
+        }
+
+        if (!ensure_scratch_capacity(static_cast<std::uint32_t>(vertices)) ||
+            !ensure_raster_capacity(
+                static_cast<std::uint32_t>(record_capacity)) ||
+            !cuda_reset_raster_counts(m_raster.counts)) {
+            return false;
+        }
+
+        std::size_t vertex_offset = 0;
+
+        for (const DrawItem& item : frame.draw_list) {
+            const DeviceMesh* mesh = m_meshes.find(item.mesh);
+
+            if (item.highlight != wanted || mesh == nullptr ||
+                mesh->vertex_count == 0 || mesh->index_count == 0) {
+                continue;
+            }
+
+            ProjectedVertex* item_vertices = m_scratch + vertex_offset;
+
+            if (!cuda_transform_vertices(
+                    *mesh,
+                    view_proj * item.model,
+                    frame.view * item.model,
+                    frame.view * item.normal_matrix,
+                    frame.width,
+                    frame.height,
+                    item_vertices) ||
+                !cuda_setup_triangles(
+                    m_raster,
+                    m_width,
+                    m_height,
+                    *mesh,
+                    item_vertices)) {
+                return false;
+            }
+
+            vertex_offset += mesh->vertex_count;
+        }
+
+        if (!cuda_rasterize_worklist(
+                target, m_width, m_raster, m_sm_count)) {
+            return false;
+        }
+    }
+
+    return cuda_draw_outline(
+        color,
+        visibility,
+        mask_vis,
+        mask_vis + pixels,
+        m_width,
+        m_height,
+        kOutlineRadius,
+        kOutlineDepthTolerance,
+        frame.near_plane,
+        frame.far_plane,
+        to_pixel(edge_color(Highlight::HIGHLIGHT_SELECTED)),
+        to_pixel(edge_color(Highlight::HIGHLIGHT_ACTIVE)));
 }
 
 void CudaRenderer::render(const FrameData& frame) {
@@ -736,7 +914,8 @@ void CudaRenderer::render(const FrameData& frame) {
                         m_width,
                         m_height,
                         *mesh,
-                        item_vertices)) {
+                        item_vertices,
+                        wire_id_of(item.highlight))) {
                     return;
                 }
             } else {
@@ -947,7 +1126,10 @@ void CudaRenderer::render(const FrameData& frame) {
                 color,
                 visibility,
                 m_width,
-                m_height)) {
+                m_height,
+                to_pixel(edge_color(Highlight::HIGHLIGHT_NONE)),
+                to_pixel(edge_color(Highlight::HIGHLIGHT_SELECTED)),
+                to_pixel(edge_color(Highlight::HIGHLIGHT_ACTIVE)))) {
             return;
         }
     } else if constexpr (kDebugTriangleIds) {
@@ -981,6 +1163,14 @@ void CudaRenderer::render(const FrameData& frame) {
     // Profile marker 3: shading or wire resolution has been submitted
     if constexpr (kProfileStages) {
         m_stage_timer.mark(3);
+    }
+
+    // Selection outline around the selected objects, over the finished
+    // picture (solid, ray traced and path traced alike; the wireframe
+    // mode colours its own lines)
+    if (!frame.wireframe && any_highlight(frame.draw_list) &&
+        !draw_selection_outline(frame, view_proj, color, visibility)) {
+        return;
     }
 
     // Pass 4: draw the floor grid over the shaded scene

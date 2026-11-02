@@ -21,7 +21,7 @@ layout(push_constant) uniform Push {
     vec4 normal_col0;  // offset 64
     vec4 normal_col1;  // offset 80
     vec4 normal_col2;  // offset 96
-    vec4 base_color;   // offset 112 (rgb used)
+    vec4 base_color;   // offset 112: rgb = line colour (wire.frag)
 } pc;
 
 void main() {

@@ -17,7 +17,6 @@
 #include "ui/ui_draw.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -613,18 +612,26 @@ int main(int argc, char** argv) {
 
                 ui.text(info);
 
-                // The panel edits the active object. Tab picks the next
-                // one (temporary: clicking comes in the next step)
+                // How many objects are selected, and the active object:
+                // the one the fields below edit
+                {
+                    char selection_text[64];
+                    std::snprintf(selection_text, sizeof(selection_text),
+                                  "Selected: %d of %zu",
+                                  gfx::scene_selected_count(scene),
+                                  scene.objects.size());
+                    ui.text(selection_text);
+                }
+
                 gfx::SceneObject* active = scene.active_object();
 
                 if (active == nullptr) {
-                    ui.text("No active object");
+                    ui.text("No active object (click one)");
                 } else {
-                    char object_text[96];
+                    char object_text[128];
                     std::snprintf(object_text, sizeof(object_text),
-                                  "Object %d of %zu: %s (Tab: next)",
-                                  scene.active + 1, scene.objects.size(),
-                                  active->name.c_str());
+                                  "Active: %s%s", active->name.c_str(),
+                                  active->selected ? "" : " (not selected)");
                     ui.text(object_text);
 
                     // The fields show the live transform, so during a
@@ -940,8 +947,9 @@ int main(int argc, char** argv) {
             if (ui.header("Controls", &controls_open)) {
                 ui.text("Middle drag: orbit, Shift + middle: pan");
                 ui.text("Scroll: zoom");
-                ui.text("Tab: next object");
-                ui.text("G / R / S: grab, rotate, scale object");
+                ui.text("Click: select, Shift + click: add / remove");
+                ui.text("A: select all, Alt + A: deselect all");
+                ui.text("G / R / S: grab, rotate, scale active object");
                 ui.text("  X / Y / Z: axis, left click: confirm");
                 ui.text("  Right click / Esc: cancel");
                 ui.text("W wireframe, M materials, V vsync");
@@ -977,17 +985,30 @@ int main(int argc, char** argv) {
         // the resulting matrices and draws the meshes: one draw item per
         // visible object, placed by the object's own transform
         if (!mesh_ids.empty()) {
-            for (const gfx::SceneObject& object : scene.objects) {
+            for (std::size_t i = 0; i < scene.objects.size(); ++i) {
+                const gfx::SceneObject& object = scene.objects[i];
+
                 if (object.hidden || object.mesh >= mesh_ids.size()) {
                     continue;
                 }
 
                 const gfx::Mat4 world = object.world_matrix();
 
+                // Selected objects get an orange edge outline, the
+                // active one a lighter one (renderer.h: edge_color)
+                gfx::Highlight highlight = gfx::Highlight::HIGHLIGHT_NONE;
+
+                if (object.selected) {
+                    highlight = static_cast<int>(i) == scene.active
+                        ? gfx::Highlight::HIGHLIGHT_ACTIVE
+                        : gfx::Highlight::HIGHLIGHT_SELECTED;
+                }
+
                 frame.draw_list.push_back({
                     mesh_ids[object.mesh],
                     world,
-                    gfx::normal_matrix_of(world)
+                    gfx::normal_matrix_of(world),
+                    highlight
                 });
             }
         }
@@ -1210,60 +1231,65 @@ int main(int argc, char** argv) {
         // Use the camera state after processing camera input
         const gfx::EditView edit_view = make_edit_view();
 
-        // Picking test (temporary, log only; the next step selects): a
-        // left click in the 3D view, outside an edit and not on the panel,
-        // shoots a ray through the cursor and logs the nearest object
+        // Selecting: a left click in the 3D view (outside an edit, whose
+        // click confirms it, and not on the panel) shoots a ray through
+        // the cursor. The nearest object is selected; Shift adds to or
+        // removes from the selection; empty space deselects
         if (has_model &&
             in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_LEFT) &&
             !was_editing_at_frame_start && !editor.active() &&
             !ui_has_mouse) {
             gfx::PickRay pick_ray;
+            int clicked = -1;
 
             if (gfx::make_pick_ray(edit_view, in.mouse_x(), in.mouse_y(),
                                    pick_ray)) {
                 gfx::PickHit pick_hit;
 
-                const auto start = std::chrono::steady_clock::now();
-                const bool picked = gfx::pick_object(
-                    scene, model, pick_index, pick_ray, pick_hit);
-                const double micros = std::chrono::duration<double, std::micro>(
-                    std::chrono::steady_clock::now() - start).count();
-
-                if (picked) {
-                    LOG_INFO("pick: %s (triangle %u, distance %.3f, "
-                             "%.0f us)",
-                             scene.objects[static_cast<std::size_t>(
-                                 pick_hit.object)].name.c_str(),
-                             pick_hit.triangle,
-                             static_cast<double>(pick_hit.t), micros);
-                } else {
-                    LOG_INFO("pick: nothing (%.0f us)", micros);
+                if (gfx::pick_object(scene, model, pick_index, pick_ray,
+                                     pick_hit)) {
+                    clicked = pick_hit.object;
                 }
             }
+
+            gfx::scene_click_select(
+                scene, clicked, in.key_down(gfx::Key::GFX_KEY_SHIFT));
+
+            LOG_INFO("click: %s; %d of %zu selected",
+                     clicked < 0
+                         ? "nothing"
+                         : scene.objects[static_cast<std::size_t>(clicked)]
+                               .name.c_str(),
+                     gfx::scene_selected_count(scene), scene.objects.size());
+        }
+
+        // A selects every visible object, Alt+A deselects everything
+        if (has_model && !editor.active() &&
+            in.key_pressed(gfx::Key::GFX_KEY_A)) {
+            if (in.key_down(gfx::Key::GFX_KEY_ALT)) {
+                gfx::scene_deselect_all(scene);
+            } else {
+                gfx::scene_select_all(scene);
+            }
+
+            LOG_INFO("%d of %zu selected", gfx::scene_selected_count(scene),
+                     scene.objects.size());
         }
 
         // ------------------------------------------------------------
         // Modal G / R / S editing
         // ------------------------------------------------------------
 
-        // Tab makes the next object the active one (not during an edit).
-        // Temporary: the next step selects by clicking
-        if (in.key_pressed(gfx::Key::GFX_KEY_TAB) && !editor.active() &&
-            scene.objects.size() > 1) {
-            const int next =
-                (scene.active + 1) % static_cast<int>(scene.objects.size());
+        // G / R / S act on the active object, when it is selected (with
+        // nothing selected they do nothing, as in Blender). The pointer
+        // stays valid for the whole block: nothing adds or removes
+        // objects, and clicks and A are ignored during an edit
+        gfx::SceneObject* edit_candidate = scene.active_object();
 
-            gfx::scene_select_only(scene, next);
-
-            LOG_INFO("active object: %s",
-                     scene.objects[static_cast<std::size_t>(next)]
-                         .name.c_str());
-        }
-
-        // G / R / S act on the active object. The pointer stays valid for
-        // the whole block: nothing adds or removes objects, and Tab is
-        // ignored during an edit
-        if (gfx::SceneObject* edited = scene.active_object()) {
+        if (gfx::SceneObject* edited =
+                edit_candidate != nullptr && edit_candidate->selected
+                    ? edit_candidate
+                    : nullptr) {
             const auto begin_edit = [&](gfx::EditMode mode) {
                 editor.begin(
                     mode,

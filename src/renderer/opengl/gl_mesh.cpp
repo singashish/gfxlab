@@ -126,6 +126,36 @@ void main() {
 }
 )GLSL";
 
+// The mask pass of the selection outline: the same transform as the other
+// shaders, a flat value instead of shading. It draws every object, so
+// the depth of the whole scene is in the mask's depth buffer; unmarked
+// objects write 0, marked ones 0.5 (selected) or 1 (active)
+constexpr const char* kMaskVertexShader = R"GLSL(
+#version 460 core
+
+layout(location = 0) in vec3 a_position;
+
+uniform mat4 u_model;
+uniform mat4 u_view_proj;
+
+void main() {
+    gl_Position =
+        u_view_proj * u_model * vec4(a_position, 1.0);
+}
+)GLSL";
+
+constexpr const char* kMaskFragmentShader = R"GLSL(
+#version 460 core
+
+uniform float u_value;
+
+out vec4 frag_color;
+
+void main() {
+    frag_color = vec4(u_value, 0.0, 0.0, 1.0);
+}
+)GLSL";
+
 constexpr const char* kWireFragmentShader = R"GLSL(
 #version 460 core
 
@@ -489,6 +519,26 @@ void GLMesh::draw(int base_color_location) const {
     glBindVertexArray(0);
 }
 
+void GLMesh::draw_triangles() const {
+    if (m_vao == 0 || m_ranges.empty()) {
+        return;
+    }
+
+    // Geometry only: no materials, no textures
+    glBindVertexArray(m_vao);
+
+    for (const GLDrawRange& range : m_ranges) {
+        glDrawElements(
+            GL_TRIANGLES,
+            range.index_count,
+            GL_UNSIGNED_INT,
+            reinterpret_cast<const void*>(range.first_index_byte)
+        );
+    }
+
+    glBindVertexArray(0);
+}
+
 void GLMesh::draw_edges() const {
     if (m_edge_vao == 0 || m_edge_index_count <= 0) {
         return;
@@ -612,6 +662,34 @@ bool GLMeshRenderer::init() {
         return false;
     }
 
+    m_mask_program = gl_create_program(
+        kMaskVertexShader,
+        kMaskFragmentShader
+    );
+
+    if (m_mask_program == 0) {
+        LOG_ERROR("failed to create mask shader program");
+        shutdown();
+        return false;
+    }
+
+    m_mask_view_proj_location =
+        gl_uniform_location(m_mask_program, "u_view_proj");
+
+    m_mask_model_location =
+        gl_uniform_location(m_mask_program, "u_model");
+
+    m_mask_value_location =
+        gl_uniform_location(m_mask_program, "u_value");
+
+    if (m_mask_view_proj_location < 0 ||
+        m_mask_model_location < 0 ||
+        m_mask_value_location < 0) {
+        LOG_ERROR("mask shader uniforms are missing");
+        shutdown();
+        return false;
+    }
+
     return true;
 }
 
@@ -691,6 +769,50 @@ void GLMeshRenderer::draw(const std::vector<DrawItem>& items,
     }
 }
 
+void GLMeshRenderer::draw_mask(const std::vector<DrawItem>& items,
+                               const Mat4& view_proj) const {
+    if (m_mask_program == 0 || items.empty()) {
+        return;
+    }
+
+    glUseProgram(m_mask_program);
+
+    glUniformMatrix4fv(
+        m_mask_view_proj_location,
+        1,
+        GL_FALSE,
+        &view_proj.col[0].x
+    );
+
+    for (const DrawItem& item : items) {
+        if (item.mesh == 0 ||
+            static_cast<std::size_t>(item.mesh) > m_meshes.size()) {
+            continue;
+        }
+
+        float value = 0.0f;
+
+        if (item.highlight == Highlight::HIGHLIGHT_SELECTED) {
+            value = 0.5f;
+        } else if (item.highlight == Highlight::HIGHLIGHT_ACTIVE) {
+            value = 1.0f;
+        }
+
+        glUniform1f(m_mask_value_location, value);
+
+        glUniformMatrix4fv(
+            m_mask_model_location,
+            1,
+            GL_FALSE,
+            &item.model.col[0].x
+        );
+
+        m_meshes[
+            static_cast<std::size_t>(item.mesh) - 1
+        ]->draw_triangles();
+    }
+}
+
 void GLMeshRenderer::draw_wireframe(const std::vector<DrawItem>& items,
                                     const Mat4& view_proj) const {
     if (m_wire_program == 0 || items.empty()) {
@@ -707,19 +829,17 @@ void GLMeshRenderer::draw_wireframe(const std::vector<DrawItem>& items,
         &view_proj.col[0].x
     );
 
-    // Uniform, unlit wire color
-    glUniform3f(
-        m_wire_color_location,
-        0.85f,
-        0.85f,
-        0.85f
-    );
-
     for (const DrawItem& item : items) {
         if (item.mesh == 0 ||
             static_cast<std::size_t>(item.mesh) > m_meshes.size()) {
             continue;
         }
+
+        // Uniform, unlit colour per object: light grey, or the object's
+        // highlight colour
+        const Vec3 color = edge_color(item.highlight);
+
+        glUniform3f(m_wire_color_location, color.x, color.y, color.z);
 
         glUniformMatrix4fv(
             m_wire_model_location,
@@ -748,6 +868,11 @@ void GLMeshRenderer::shutdown() {
         m_wire_program = 0;
     }
 
+    if (m_mask_program != 0) {
+        glDeleteProgram(m_mask_program);
+        m_mask_program = 0;
+    }
+
     m_view_location = -1;
     m_view_proj_location = -1;
     m_model_location = -1;
@@ -759,6 +884,10 @@ void GLMeshRenderer::shutdown() {
     m_wire_view_proj_location = -1;
     m_wire_model_location = -1;
     m_wire_color_location = -1;
+
+    m_mask_view_proj_location = -1;
+    m_mask_model_location = -1;
+    m_mask_value_location = -1;
 }
 
 } // namespace gfx

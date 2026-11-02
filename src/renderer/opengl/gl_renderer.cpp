@@ -29,6 +29,10 @@ bool GLRenderer::init(void* native_window) {
         return false;
     }
 
+    if (!m_outline.init()) {
+        return false;
+    }
+
     if (!m_ui.init()) {
         return false;
     }
@@ -95,6 +99,16 @@ void GLRenderer::render(const FrameData& frame) {
 
     // Draw the grid after the opaque objects, as before
     m_grid.draw(gp);
+
+    // The outline of the selected objects (solid view only: the wireframe
+    // view colours the edges instead)
+    if (!frame.draw_list.empty() && !frame.wireframe &&
+        any_highlight(frame.draw_list) &&
+        m_outline.begin(frame.width, frame.height)) {
+        m_meshes.draw_mask(frame.draw_list, view_proj);
+        m_outline.finish(frame.near_plane, frame.far_plane,
+                         frame.width, frame.height);
+    }
 
     // The UI goes on top of everything
     if (frame.ui != nullptr) {

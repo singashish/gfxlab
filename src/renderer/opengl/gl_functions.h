@@ -67,4 +67,10 @@
     X(void, Uniform1i, (GLint location, GLint v0)) \
     X(void, GenerateMipmap, (GLenum target)) \
     X(void, TexParameterf, (GLenum target, GLenum pname, GLfloat param)) \
-    X(void, GetFloatv, (GLenum pname, GLfloat* data))
+    X(void, GetFloatv, (GLenum pname, GLfloat* data)) \
+    /* Framebuffer objects (the selection outline) */ \
+    X(void, GenFramebuffers, (GLsizei n, GLuint* framebuffers)) \
+    X(void, DeleteFramebuffers, (GLsizei n, const GLuint* framebuffers)) \
+    X(void, BindFramebuffer, (GLenum target, GLuint framebuffer)) \
+    X(void, FramebufferTexture2D, (GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level)) \
+    X(GLenum, CheckFramebufferStatus, (GLenum target))

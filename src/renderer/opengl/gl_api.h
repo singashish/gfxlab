@@ -87,6 +87,7 @@ constexpr GLenum GL_INFO_LOG_LENGTH = 0x8B84;
 // Textures
 constexpr GLenum GL_TEXTURE_2D = 0x0DE1;
 constexpr GLenum GL_TEXTURE0 = 0x84C0;
+constexpr GLenum GL_TEXTURE1 = 0x84C1;
 constexpr GLenum GL_RGBA = 0x1908;
 constexpr GLenum GL_RGBA8 = 0x8058;
 constexpr GLenum GL_UNSIGNED_BYTE = 0x1401;
@@ -101,6 +102,14 @@ constexpr GLenum GL_CLAMP_TO_EDGE = 0x812F;
 constexpr GLenum GL_LINEAR = 0x2601;
 constexpr GLenum GL_LINEAR_MIPMAP_LINEAR = 0x2703;
 constexpr GLenum GL_REPEAT = 0x2901;
+
+// Framebuffer objects and depth textures (the selection outline)
+constexpr GLenum GL_FRAMEBUFFER = 0x8D40;
+constexpr GLenum GL_COLOR_ATTACHMENT0 = 0x8CE0;
+constexpr GLenum GL_DEPTH_ATTACHMENT = 0x8D00;
+constexpr GLenum GL_FRAMEBUFFER_COMPLETE = 0x8CD5;
+constexpr GLenum GL_DEPTH_COMPONENT = 0x1902;
+constexpr GLenum GL_DEPTH_COMPONENT32F = 0x8CAC;
 
 // Anisotropic filtering (core since OpenGL 4.6)
 constexpr GLenum GL_TEXTURE_MAX_ANISOTROPY = 0x84FE;

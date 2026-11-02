@@ -64,7 +64,10 @@ struct Scene {
     std::vector<SceneCollection> collections;
     std::vector<SceneObject> objects;
 
-    // The object the panel edits and G/R/S act on; -1 = none
+    // The active object: the one the panel shows, and the one G/R/S work
+    // on while it is selected. Like in Blender it is the last object that
+    // was clicked, and it stays active (but unselected) after it is
+    // deselected, until another object is clicked. -1 = none
     int active = -1;
 
     SceneObject* active_object() {
@@ -88,9 +91,9 @@ bool decompose_trs(const Mat4& m, Transform& out);
 // right (+x) of everything already in the scene, with a gap. Objects
 // are named after the glTF node, or after the file; equal names within a
 // collection get ".001", ".002" ... like Blender.
-// If the scene had no active object, the first new object becomes active
-// and selected. Returns the index of the first new object (equal to the
-// number of objects before the call, also when src has no instances)
+// New objects start unselected, and the active object does not change.
+// Returns the index of the first new object (equal to the number of
+// objects before the call, also when src has no instances)
 std::size_t scene_add_model(Scene& scene, Model& model, Model&& src,
                             const std::string& file_name);
 
@@ -103,5 +106,34 @@ Aabb scene_bounds(const Scene& scene, const Model& model);
 // active. An index outside the list only deselects and clears the
 // active object
 void scene_select_only(Scene& scene, int index);
+
+// ---- Selection, the way Blender does it ----------------------------------
+
+// A mouse click on `object` (an index into Scene::objects), or on empty
+// space when the index is -1 or outside the list.
+//
+// Plain click (extend = false):
+//   - on an object: only that object is selected, and it becomes active
+//     (also when it was one of several selected objects);
+//   - on empty space: everything is deselected; `active` is kept.
+// Shift click (extend = true):
+//   - on an unselected object: it is added to the selection and becomes
+//     active;
+//   - on a selected object that is not active: it stays selected and
+//     becomes active;
+//   - on the active selected object: it is deselected (it stays the
+//     active object, now unselected);
+//   - on empty space: nothing changes.
+void scene_click_select(Scene& scene, int object, bool extend);
+
+// Selects every visible object (A). Hidden objects are left alone, and
+// `active` is kept
+void scene_select_all(Scene& scene);
+
+// Deselects everything (Alt+A). `active` is kept
+void scene_deselect_all(Scene& scene);
+
+// How many objects are selected
+int scene_selected_count(const Scene& scene);
 
 } // namespace gfx

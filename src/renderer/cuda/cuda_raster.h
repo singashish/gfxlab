@@ -275,18 +275,51 @@ bool cuda_rasterize_worklist(
                 const RasterWork& work,
                 int sm_count);
 
+// What a wireframe pixel of the visibility buffer says about its line.
+// The id sits in the low 32 bits, next to the depth (high 32 bits)
+constexpr unsigned int kWireIdPlain = 1;
+constexpr unsigned int kWireIdSelected = 2;
+constexpr unsigned int kWireIdActive = 3;
+
+// Wireframe: draws the edges of one mesh into the visibility buffer
+// (depth + wire_id). cuda_resolve_wire turns the winners into colours
 bool cuda_draw_edges(
                 std::uint64_t* visibility,
                 int width,
                 int height,
                 const DeviceMesh& mesh,
-                const ProjectedVertex* vertices);
+                const ProjectedVertex* vertices,
+                unsigned int wire_id);
 
 bool cuda_resolve_wire(
                 uchar4* color,
                 const std::uint64_t* visibility,
                 int width,
-                int height);
+                int height,
+                uchar4 plain_color,
+                uchar4 selected_color,
+                uchar4 active_color);
+
+// Selection outline: colours the pixels within `radius` pixels outside the
+// marked objects. `visibility` is the main visibility buffer (the whole
+// scene); selected_visibility / active_visibility hold only the selected
+// (not active) and the active objects, rasterized alone into buffers
+// cleared to ~0. A pixel clearly nearer than the marked object it touches
+// (by more than depth_tolerance, a fraction of the distance) gets no
+// outline. near_plane / far_plane are the projection's clip distances
+bool cuda_draw_outline(
+                uchar4* color,
+                const std::uint64_t* visibility,
+                const std::uint64_t* selected_visibility,
+                const std::uint64_t* active_visibility,
+                int width,
+                int height,
+                int radius,
+                float depth_tolerance,
+                float near_plane,
+                float far_plane,
+                uchar4 selected_color,
+                uchar4 active_color);
 
 // One pass over all pixels, shading the record that won each pixel
 bool cuda_shade(

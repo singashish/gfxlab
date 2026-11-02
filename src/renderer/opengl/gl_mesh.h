@@ -36,6 +36,10 @@ public:
     // u_base_color uniform; the range's texture is bound to unit 0
     void draw(int base_color_location) const;
     void draw_edges() const;
+
+    // Only the triangles, with whatever program is current (the outline's
+    // mask pass)
+    void draw_triangles() const;
     void shutdown();
 
 private:
@@ -69,11 +73,21 @@ public:
     void draw(const std::vector<DrawItem>& items,
               const Mat4& view_proj, const Mat4& view,
               bool show_materials) const;
+    // Wireframe view: every object's edges, light grey, or in the
+    // highlight colour for marked objects
     void draw_wireframe(const std::vector<DrawItem>& items,
                         const Mat4& view_proj) const;
+
+    // The mask of the selection outline: every object's triangles, flat
+    // (0 = unmarked, 0.5 = selected, 1 = active), so the bound target gets
+    // the depth of the whole scene and the value of the marked objects
+    // that are not hidden. The caller binds and clears the target
+    void draw_mask(const std::vector<DrawItem>& items,
+                   const Mat4& view_proj) const;
     void shutdown();
 
 private:
+
     unsigned int m_program = 0;
     int m_view_location = -1;
     int m_view_proj_location = -1;
@@ -87,6 +101,11 @@ private:
     int m_wire_view_proj_location = -1;
     int m_wire_model_location = -1;
     int m_wire_color_location = -1;
+
+    unsigned int m_mask_program = 0;
+    int m_mask_view_proj_location = -1;
+    int m_mask_model_location = -1;
+    int m_mask_value_location = -1;
 
     std::vector<std::unique_ptr<GLMesh>> m_meshes;
 };

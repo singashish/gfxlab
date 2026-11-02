@@ -90,6 +90,11 @@ bool VulkanRenderer::init_pipelines(VkFormat color_format,
         return false;
     }
 
+    if (!m_outline.create_pipeline(color_format, depth_format)) {
+        LOG_ERROR("failed to initialize Vulkan outline pipeline");
+        return false;
+    }
+
     if (!m_ui.create_pipeline(color_format, depth_format)) {
         LOG_ERROR("failed to initialize Vulkan UI pipeline");
         return false;
@@ -139,6 +144,15 @@ bool VulkanRenderer::init(void* native_window) {
 
     m_color_format = m_swapchain.format();
     m_depth_format = m_depth.format();
+
+    // The selection outline's mask and depth images (the pipeline comes
+    // with the others, in init_pipelines)
+    if (!m_outline.init(m_context.device()) ||
+        !m_outline.create_targets(m_context, m_swapchain.extent(),
+                                  m_depth_format)) {
+        LOG_ERROR("failed to create the Vulkan outline targets");
+        return false;
+    }
 
     if (!m_frames.create(m_context.device(),
                          m_context.queue_family(),
@@ -228,6 +242,7 @@ bool VulkanRenderer::recreate_swapchain() {
     // Destroy resources associated with the old swapchain
     m_frames.destroy();
     m_depth.destroy();
+    m_outline.destroy_targets();
 
     m_width = width;
     m_height = height;
@@ -243,6 +258,15 @@ bool VulkanRenderer::recreate_swapchain() {
     // Recreate the depth buffer using the new swapchain extent
     if (!m_depth.create(m_context, m_swapchain.extent())) {
         LOG_ERROR("failed to recreate Vulkan depth buffer");
+        m_swapchain.destroy();
+        return false;
+    }
+
+    // The outline's images have the window's size too
+    if (!m_outline.create_targets(m_context, m_swapchain.extent(),
+                                  m_depth.format())) {
+        LOG_ERROR("failed to recreate the Vulkan outline targets");
+        m_depth.destroy();
         m_swapchain.destroy();
         return false;
     }
@@ -467,6 +491,108 @@ void VulkanRenderer::render(const FrameData& frame) {
         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
+    // 5b. The mask of the selection outline (solid view only). Every
+    // object is rendered flat into the mask with its own depth image, in
+    // a rendering of its own; the main rendering reads the result after
+    // the grid
+    const bool outline =
+        !frame.draw_list.empty() &&
+        !frame.wireframe &&
+        any_highlight(frame.draw_list) &&
+        m_outline.ready();
+
+    if (outline) {
+        // Both images were read by the previous frame's outline pass (or
+        // never used): the old contents are not needed, but the earlier
+        // reads must be finished before they are written
+        transition_image(
+            slot.cmd,
+            m_outline.mask_image(),
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+
+        transition_image(
+            slot.cmd,
+            m_outline.depth_image(),
+            VK_IMAGE_ASPECT_DEPTH_BIT,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+
+        VkRenderingAttachmentInfo mask_color{};
+        mask_color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        mask_color.imageView = m_outline.mask_view();
+        mask_color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        mask_color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        mask_color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        mask_color.clearValue.color.float32[0] = 0.0f;
+        mask_color.clearValue.color.float32[1] = 0.0f;
+        mask_color.clearValue.color.float32[2] = 0.0f;
+        mask_color.clearValue.color.float32[3] = 0.0f;
+
+        // The depth image is read later, so it must be stored
+        VkRenderingAttachmentInfo mask_depth{};
+        mask_depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        mask_depth.imageView = m_outline.depth_view();
+        mask_depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        mask_depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        mask_depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        mask_depth.clearValue.depthStencil = {1.0f, 0};
+
+        VkRenderingInfo mask_rendering{};
+        mask_rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        mask_rendering.renderArea.offset = {0, 0};
+        mask_rendering.renderArea.extent = extent;
+        mask_rendering.layerCount = 1;
+        mask_rendering.colorAttachmentCount = 1;
+        mask_rendering.pColorAttachments = &mask_color;
+        mask_rendering.pDepthAttachment = &mask_depth;
+
+        vkCmdBeginRendering(slot.cmd, &mask_rendering);
+
+        m_meshes.draw_mask(
+            slot.cmd,
+            extent,
+            m_uniforms.set(frame_index),
+            frame.draw_list);
+
+        vkCmdEndRendering(slot.cmd);
+
+        // Now both are read by the outline pass (fragment shader)
+        transition_image(
+            slot.cmd,
+            m_outline.mask_image(),
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+        transition_image(
+            slot.cmd,
+            m_outline.depth_image(),
+            VK_IMAGE_ASPECT_DEPTH_BIT,
+            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+
     // 6. Configure the color attachment
     VkRenderingAttachmentInfo color_attachment{};
     color_attachment.sType =
@@ -536,6 +662,12 @@ void VulkanRenderer::render(const FrameData& frame) {
     // Draw after opaque geometry so the depth test hides the grid
     // behind the model. The grid does not write depth
     m_grid.draw(slot.cmd, extent, frame_set);
+
+    // The outline of the selected objects, over the finished picture
+    if (outline) {
+        m_outline.draw(slot.cmd, extent,
+                       frame.near_plane, frame.far_plane);
+    }
 
     // The UI goes on top of everything
     if (draw_ui) {

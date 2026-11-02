@@ -359,13 +359,18 @@ __global__ void transform_vertices_kernel(
     out[i].screen = clip_to_screen(clip, width, height);
 }
 
+// Rasterizes the edges of one mesh as one-pixel lines (wireframe view).
+// Each line pixel competes for the visibility buffer with its depth, and
+// carries wire_id (see cuda_raster.h) so cuda_resolve_wire can colour the
+// winners by object highlight
 __global__ void draw_edges_kernel(
                 unsigned long long* visibility,
                 int width,
                 int height,
                 DeviceMesh mesh,
                 const ProjectedVertex* vertices,
-                float guard) {
+                float guard,
+                unsigned int wire_id) {
 
     const unsigned int edge =
         blockIdx.x * blockDim.x + threadIdx.x;
@@ -493,11 +498,9 @@ __global__ void draw_edges_kernel(
 
         const unsigned int depth_bits = __float_as_uint(z);
 
-        constexpr unsigned int kWireId = 1;
-
         const unsigned long long packed =
             (static_cast<unsigned long long>(depth_bits) << 32) |
-            static_cast<unsigned long long>(kWireId);
+            static_cast<unsigned long long>(wire_id);
 
         atomicMin(
             &visibility[pixel_index(px, py, width)],
@@ -505,11 +508,156 @@ __global__ void draw_edges_kernel(
     }
 }
 
+// Window depth (0..1, the high 32 bits of a visibility entry) -> distance
+// from the camera. Same formula as the OpenGL and Vulkan outline shaders
+__device__ __forceinline__ float entry_distance(
+                unsigned long long entry,
+                float near_plane,
+                float far_plane) {
+
+    const float d =
+        __uint_as_float(static_cast<unsigned int>(entry >> 32));
+
+    return near_plane * far_plane /
+           (far_plane - d * (far_plane - near_plane));
+}
+
+// Is a marked object visible at this pixel, and which one (2 = active,
+// 1 = selected, 0 = none)? The selected / active visibility buffers hold
+// only the marked objects, rasterized alone, so a marked object is
+// visible where its depth is not behind what the main buffer shows (the
+// main buffer contains the marked objects as well, so they match; a
+// nearer object makes the marked one fail the test). `tolerance` is the
+// relative slack: the ray and path traced views compute their depth
+// another way (a hit point, for the path tracer the nearest of the
+// jittered samples of a pixel), so on a slanted surface it differs a
+// little from the rasterized depth of the pixel centre
+__device__ __forceinline__ int marked_level(
+                const unsigned long long* main_vis,
+                const unsigned long long* selected_vis,
+                const unsigned long long* active_vis,
+                std::size_t pixel,
+                float near_plane,
+                float far_plane,
+                float tolerance,
+                float& distance) {
+
+    const unsigned long long main_entry = main_vis[pixel];
+
+    const float main_distance = main_entry == ~0ULL
+        ? 1.0e30f
+        : entry_distance(main_entry, near_plane, far_plane);
+
+    const unsigned long long active_entry = active_vis[pixel];
+
+    if (active_entry != ~0ULL) {
+        const float d = entry_distance(active_entry, near_plane, far_plane);
+
+        if (d <= main_distance * (1.0f + tolerance)) {
+            distance = d;
+            return 2;
+        }
+    }
+
+    const unsigned long long selected_entry = selected_vis[pixel];
+
+    if (selected_entry != ~0ULL) {
+        const float d =
+            entry_distance(selected_entry, near_plane, far_plane);
+
+        if (d <= main_distance * (1.0f + tolerance)) {
+            distance = d;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+// The selection outline: every pixel that is not part of a marked object
+// and has one within `radius` pixels (a rounded neighbourhood) gets the
+// outline colour, unless it is clearly nearer than that object. Reads only
+// the visibility buffers, so it can write the colour buffer in place
+__global__ void outline_kernel(
+                uchar4* color,
+                const unsigned long long* main_vis,
+                const unsigned long long* selected_vis,
+                const unsigned long long* active_vis,
+                int width,
+                int height,
+                int radius,
+                float tolerance,
+                float near_plane,
+                float far_plane,
+                uchar4 selected_color,
+                uchar4 active_color) {
+
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height) {
+        return;
+    }
+
+    const std::size_t pixel = pixel_index(x, y, width);
+
+    float own_distance = 0.0f;
+
+    // Inside a marked object: no outline here
+    if (marked_level(main_vis, selected_vis, active_vis, pixel,
+                     near_plane, far_plane, tolerance,
+                     own_distance) != 0) {
+        return;
+    }
+
+    const unsigned long long here = main_vis[pixel];
+
+    const float here_distance = here == ~0ULL
+        ? 1.0e30f
+        : entry_distance(here, near_plane, far_plane);
+
+    int best = 0;
+
+    for (int dy = -radius; dy <= radius; ++dy) {
+        for (int dx = -radius; dx <= radius; ++dx) {
+            if (dx * dx + dy * dy > radius * radius + 1) {
+                continue;
+            }
+
+            const int nx = x + dx;
+            const int ny = y + dy;
+
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+                continue;
+            }
+
+            float there_distance = 0.0f;
+
+            const int level = marked_level(
+                main_vis, selected_vis, active_vis,
+                pixel_index(nx, ny, width),
+                near_plane, far_plane, tolerance, there_distance);
+
+            if (level > best &&
+                here_distance >= there_distance * (1.0f - tolerance)) {
+                best = level;
+            }
+        }
+    }
+
+    if (best != 0) {
+        color[pixel] = best == 2 ? active_color : selected_color;
+    }
+}
+
 __global__ void resolve_wire_kernel(
                 uchar4* color,
                 const unsigned long long* visibility,
                 int width,
-                int height) {
+                int height,
+                uchar4 plain_color,
+                uchar4 selected_color,
+                uchar4 active_color) {
 
     const int x =
         blockIdx.x * blockDim.x + threadIdx.x;
@@ -526,8 +674,13 @@ __global__ void resolve_wire_kernel(
         return;
     }
 
-    color[pixel] = make_uchar4(
-        217, 217, 217, 255);
+    // The low 32 bits say which kind of line won the pixel
+    const unsigned int id =
+        static_cast<unsigned int>(visibility[pixel] & 0xFFFFFFFFULL);
+
+    color[pixel] = id == kWireIdActive
+        ? active_color
+        : (id == kWireIdSelected ? selected_color : plain_color);
 }
 
 // Appends one screen-space triangle to the worklist.
@@ -1790,7 +1943,8 @@ bool cuda_draw_edges(
                 int width,
                 int height,
                 const DeviceMesh& mesh,
-                const ProjectedVertex* vertices) {
+                const ProjectedVertex* vertices,
+                unsigned int wire_id) {
 
     if (!visibility || width <= 0 || height <= 0) {
         LOG_ERROR("CUDA edge rasterizer: invalid arguments");
@@ -1819,7 +1973,8 @@ bool cuda_draw_edges(
         height,
         mesh,
         vertices,
-        guard_band(width, height));
+        guard_band(width, height),
+        wire_id);
 
     return check_launch("CUDA edge rasterizer launch");
 }
@@ -1828,7 +1983,10 @@ bool cuda_resolve_wire(
                 uchar4* color,
                 const std::uint64_t* visibility,
                 int width,
-                int height) {
+                int height,
+                uchar4 plain_color,
+                uchar4 selected_color,
+                uchar4 active_color) {
 
     if (!color || !visibility ||
         width <= 0 || height <= 0) {
@@ -1845,9 +2003,55 @@ bool cuda_resolve_wire(
         color,
         reinterpret_cast<const unsigned long long*>(visibility),
         width,
-        height);
+        height,
+        plain_color,
+        selected_color,
+        active_color);
 
     return check_launch("CUDA wire resolve kernel launch");
+}
+
+bool cuda_draw_outline(
+                uchar4* color,
+                const std::uint64_t* visibility,
+                const std::uint64_t* selected_visibility,
+                const std::uint64_t* active_visibility,
+                int width,
+                int height,
+                int radius,
+                float depth_tolerance,
+                float near_plane,
+                float far_plane,
+                uchar4 selected_color,
+                uchar4 active_color) {
+
+    if (!color || !visibility || !selected_visibility ||
+        !active_visibility || width <= 0 || height <= 0 ||
+        radius < 1 || near_plane <= 0.0f || far_plane <= near_plane) {
+        LOG_ERROR("CUDA outline: invalid arguments");
+        return false;
+    }
+
+    const dim3 threads(kTile, kTile);
+    const dim3 blocks(
+        (width + kTile - 1) / kTile,
+        (height + kTile - 1) / kTile);
+
+    outline_kernel<<<blocks, threads>>>(
+        color,
+        reinterpret_cast<const unsigned long long*>(visibility),
+        reinterpret_cast<const unsigned long long*>(selected_visibility),
+        reinterpret_cast<const unsigned long long*>(active_visibility),
+        width,
+        height,
+        radius,
+        depth_tolerance,
+        near_plane,
+        far_plane,
+        selected_color,
+        active_color);
+
+    return check_launch("CUDA outline kernel launch");
 }
 
 bool cuda_shade(

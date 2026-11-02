@@ -152,14 +152,15 @@ shorter than it.
 | Middle mouse drag | Orbit around the target (not during a G/R/S edit) |
 | Shift + middle mouse drag | Pan |
 | Scroll wheel | Zoom (over the 3D view); over the panel it scrolls the panel when the panel is taller than the window |
-| Left click in the 3D view | Picking test (temporary): logs the object under the cursor and how long the pick took; selecting comes in the next step |
-| **Tab** | Make the next object the active one (temporary; clicking to select comes next) |
-| **G** / **R** / **S** | Grab (move), rotate or scale the active object around its own origin (only when a model is loaded) |
+| Left click in the 3D view | Select the object under the cursor (only that one); a click on empty space deselects everything. The object is found with a ray through the cursor (`core/pick.h`) and hidden objects cannot be clicked. Nothing is selected after loading. Selected objects get an orange outline around their silhouette, the active one a lighter orange, like Blender (all three backends, also in the ray traced and path traced views; hidden where another object is in front; in the wireframe view the selected objects' edges are orange instead); the panel's Model section also shows `Selected: N of M` and the active object |
+| **Shift** + left click | Add the object to the selection and make it active; on a selected object that is not active it only becomes active; on the active selected object it is deselected; on empty space nothing changes |
+| **A** / **Alt** + **A** | Select all visible objects / deselect everything |
+| **G** / **R** / **S** | Grab (move), rotate or scale the active object around its own origin; they work only while the active object is selected (the whole selection comes in a later step) |
 | **X** / **Y** / **Z** during an edit | Constrain to that axis; press again to go back to free |
 | Left click during an edit | Confirm |
 | Right click or Esc during an edit | Cancel, restoring the object exactly |
 | **V** | Toggle vsync |
-| **W** | Toggle wireframe (the model's polygon edges, unlit, in every backend) |
+| **W** | Toggle wireframe (the model's polygon edges, unlit, in every backend; selected objects keep their orange lines) |
 | **M** | Toggle materials: the models' colours and textures, or plain grey shading (in every backend; in the path tracer also gloss, metal and emission) |
 | **T** | Toggle ray tracing (`--backend=cuda` only; wireframe takes priority) |
 | **P** | Toggle the path tracer, the progressive "Rendered" mode, lit by a sun and a sky that are not drawn themselves (`--backend=cuda` only; excludes **T**; wireframe takes priority). Emissive materials glow and light their surroundings, and the roughness and metallic values of the materials show as gloss and metal (GGX highlights and reflections; try `gltf\materials.glb`); **M** turns the materials, and so the emission and the gloss, off (plain matte grey). The panel's Path tracing > Settings group (folded by default) sets the sample limit, samples per frame, bounces, exposure, sun and sky strength and the firefly limit |

@@ -9,6 +9,10 @@ gfx_compile_shaders(
     shaders/grid.frag
     shaders/wire.vert
     shaders/wire.frag
+    shaders/mask.vert
+    shaders/mask.frag
+    shaders/outline.vert
+    shaders/outline.frag
     shaders/ui.vert
     shaders/ui.frag
 )
@@ -21,6 +25,7 @@ add_library(gfx_vk STATIC
     vk_grid.cpp
     vk_memory.cpp
     vk_mesh.cpp
+    vk_outline.cpp
     vk_pipeline.cpp
     vk_renderer.cpp
     vk_shader.cpp

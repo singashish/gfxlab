@@ -19,11 +19,60 @@ namespace gfx {
 using MeshId = std::uint32_t; // 0 means no mesh
 using TextureId = std::uint32_t; // 0 means no texture
 
+// How an object is marked. In the solid views every backend draws a
+// screen-space outline around the marked objects (see kOutlineRadius); in
+// the wireframe view their edges get the colour from edge_color()
+enum class Highlight : std::uint8_t {
+    HIGHLIGHT_NONE = 0,
+    HIGHLIGHT_SELECTED,  // part of the selection
+    HIGHLIGHT_ACTIVE     // the active object (also selected)
+};
+
 struct DrawItem {
     MeshId mesh = 0;
     Mat4 model = mat4_identity();
     Mat4 normal_matrix = mat4_identity();
+    Highlight highlight = Highlight::HIGHLIGHT_NONE;
 };
+
+// The colour of an object's outline and of its wireframe edges: the
+// wireframe view's light grey for an unmarked object, orange for a selected
+// one and a lighter orange for the active one. One place, so all backends
+// show the same colours
+inline Vec3 edge_color(Highlight highlight) {
+    switch (highlight) {
+    case Highlight::HIGHLIGHT_SELECTED:
+        return {0.93f, 0.34f, 0.00f};
+
+    case Highlight::HIGHLIGHT_ACTIVE:
+        return {1.00f, 0.67f, 0.25f};
+
+    case Highlight::HIGHLIGHT_NONE:
+    default:
+        return {0.85f, 0.85f, 0.85f};
+    }
+}
+
+// The selection outline, like Blender's. Each backend renders the marked
+// objects into a mask (depth-tested against the whole scene, so a nearer
+// object hides them), then a fullscreen pass colours every pixel that is
+// not part of a marked object but lies within kOutlineRadius pixels of one.
+// A pixel is skipped when it belongs to something clearly nearer than the
+// marked object it touches (the nearer object's own border is drawn
+// instead); kOutlineDepthTolerance is how much nearer, as a fraction of the
+// distance from the camera, still counts as "the same surface"
+constexpr int kOutlineRadius = 2;
+constexpr float kOutlineDepthTolerance = 0.02f;
+
+// True when at least one item is marked (so the outline passes are needed)
+inline bool any_highlight(const std::vector<DrawItem>& items) {
+    for (const DrawItem& item : items) {
+        if (item.highlight != Highlight::HIGHLIGHT_NONE) {
+            return true;
+        }
+    }
+    return false;
+}
 
 enum class RendererBackend {
     GFX_BACKEND_OPENGL,

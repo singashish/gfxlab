@@ -211,10 +211,11 @@ void test_single_file_layout() {
                      gfx::mat4_translate({0.0f, 0.0f, 3.0f})));
     CHECK(approx_mat(object.local, gfx::mat4_identity()));
 
-    // The first object is active and selected (until Step 2 adds clicking)
-    CHECK(scene.active == 0);
-    CHECK(object.selected);
-    CHECK(scene.active_object() == &scene.objects[0]);
+    // Nothing is selected or active after loading: the user clicks
+    CHECK(scene.active == -1);
+    CHECK(!object.selected);
+    CHECK(scene.active_object() == nullptr);
+    CHECK(gfx::scene_selected_count(scene) == 0);
 
     // initial is the loaded placement
     CHECK(approx_vec(object.initial.position, object.transform.position));
@@ -271,10 +272,9 @@ void test_two_files_side_by_side() {
     CHECK(approx(second.min.z, 0.0));
     CHECK(approx(0.5 * (second.min.y + second.max.y), 0.0));
 
-    // Loading a second file does not take the active object away
-    CHECK(scene.active == 0);
-    CHECK(scene.objects[0].selected);
-    CHECK(!scene.objects[1].selected);
+    // Loading a file selects nothing, and keeps the active object
+    CHECK(scene.active == -1);
+    CHECK(gfx::scene_selected_count(scene) == 0);
 
     // The camera framing box covers both
     const gfx::Aabb all = gfx::scene_bounds(scene, model);
@@ -395,6 +395,142 @@ void test_select_only() {
     CHECK(scene.active == -1);
 }
 
+// A scene with `count` objects (one cube each), nothing selected
+gfx::Scene make_selection_scene(std::size_t count) {
+    gfx::Model model;
+    gfx::Scene scene;
+    std::vector<gfx::Mat4> placements(count, gfx::mat4_identity());
+
+    gfx::scene_add_model(scene, model,
+                         make_model({0, 0, 0}, {1, 1, 1}, placements),
+                         "s.obj");
+    return scene;
+}
+
+// The selected objects as a string like "0,2", and the active one
+std::string selection_text(const gfx::Scene& scene) {
+    std::string text;
+
+    for (std::size_t i = 0; i < scene.objects.size(); ++i) {
+        if (scene.objects[i].selected) {
+            if (!text.empty()) {
+                text += ",";
+            }
+
+            text += std::to_string(i);
+        }
+    }
+
+    return text + " active " + std::to_string(scene.active);
+}
+
+void test_click_select() {
+    gfx::Scene scene = make_selection_scene(4);
+
+    CHECK(selection_text(scene) == " active -1");
+
+    // Plain clicks select one object and make it active
+    gfx::scene_click_select(scene, 1, false);
+    CHECK(selection_text(scene) == "1 active 1");
+
+    gfx::scene_click_select(scene, 2, false);
+    CHECK(selection_text(scene) == "2 active 2");
+
+    // Shift click adds, and the added object becomes active
+    gfx::scene_click_select(scene, 0, true);
+    CHECK(selection_text(scene) == "0,2 active 0");
+
+    gfx::scene_click_select(scene, 1, true);
+    CHECK(selection_text(scene) == "0,1,2 active 1");
+
+    // Shift click on a selected object that is not active only makes it
+    // active
+    gfx::scene_click_select(scene, 2, true);
+    CHECK(selection_text(scene) == "0,1,2 active 2");
+
+    // Shift click on the active selected object deselects it; it stays the
+    // active object (unselected)
+    gfx::scene_click_select(scene, 2, true);
+    CHECK(selection_text(scene) == "0,1 active 2");
+    CHECK(scene.active_object() != nullptr);
+    CHECK(!scene.active_object()->selected);
+
+    // Shift click on empty space changes nothing
+    gfx::scene_click_select(scene, -1, true);
+    CHECK(selection_text(scene) == "0,1 active 2");
+    gfx::scene_click_select(scene, 99, true);
+    CHECK(selection_text(scene) == "0,1 active 2");
+
+    // A plain click on an object that is one of several selected objects
+    // selects only that one
+    gfx::scene_click_select(scene, 1, false);
+    CHECK(selection_text(scene) == "1 active 1");
+
+    // A plain click on empty space deselects everything and keeps the
+    // active object
+    gfx::scene_click_select(scene, -1, false);
+    CHECK(selection_text(scene) == " active 1");
+    gfx::scene_click_select(scene, 99, false);
+    CHECK(selection_text(scene) == " active 1");
+    gfx::scene_click_select(scene, -7, false);
+    CHECK(selection_text(scene) == " active 1");
+}
+
+// Loading another file later (the Load models button) leaves the selection
+// and the active object as they are; the new objects start unselected
+void test_loading_keeps_the_selection() {
+    gfx::Model model;
+    gfx::Scene scene;
+
+    gfx::scene_add_model(
+        scene, model,
+        make_model({0, 0, 0}, {1, 1, 1},
+                   {gfx::mat4_identity(), gfx::mat4_identity()}),
+        "a.obj");
+    gfx::scene_click_select(scene, 1, false);
+    gfx::scene_click_select(scene, 0, true);
+
+    gfx::scene_add_model(
+        scene, model,
+        make_model({0, 0, 0}, {1, 1, 1}, {gfx::mat4_identity()}), "b.obj");
+
+    CHECK(selection_text(scene) == "0,1 active 0");
+    CHECK(scene.objects.size() == 3);
+    CHECK(!scene.objects[2].selected);
+}
+
+void test_select_all_and_deselect_all() {
+    gfx::Scene scene = make_selection_scene(4);
+
+    // Select all keeps "no active object" ...
+    gfx::scene_select_all(scene);
+    CHECK(selection_text(scene) == "0,1,2,3 active -1");
+    CHECK(gfx::scene_selected_count(scene) == 4);
+
+    // ... and Alt+A keeps the active object
+    gfx::scene_click_select(scene, 2, false);
+    gfx::scene_select_all(scene);
+    CHECK(selection_text(scene) == "0,1,2,3 active 2");
+
+    gfx::scene_deselect_all(scene);
+    CHECK(selection_text(scene) == " active 2");
+    CHECK(gfx::scene_selected_count(scene) == 0);
+
+    // Hidden objects are not selected by "select all"
+    scene.objects[1].hidden = true;
+    gfx::scene_select_all(scene);
+    CHECK(selection_text(scene) == "0,2,3 active 2");
+    CHECK(gfx::scene_selected_count(scene) == 3);
+
+    // Nothing to do on an empty scene
+    gfx::Scene empty;
+    gfx::scene_select_all(empty);
+    gfx::scene_deselect_all(empty);
+    gfx::scene_click_select(empty, 0, false);
+    gfx::scene_click_select(empty, 0, true);
+    CHECK(empty.active == -1);
+}
+
 // The real files: one file must place its instances exactly as the old
 // single model transform did, and a second file must keep its textures
 void test_real_files() {
@@ -493,6 +629,9 @@ int main() {
     test_rotated_instance_keeps_its_own_origin();
     test_sheared_instance_is_kept_whole();
     test_select_only();
+    test_click_select();
+    test_loading_keeps_the_selection();
+    test_select_all_and_deselect_all();
     test_real_files();
 
     if (g_failures == 0) {

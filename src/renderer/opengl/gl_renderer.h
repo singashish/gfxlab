@@ -4,6 +4,7 @@
 #include "renderer/opengl/gl_context.h"
 #include "renderer/opengl/gl_grid.h"
 #include "renderer/opengl/gl_mesh.h"
+#include "renderer/opengl/gl_outline.h"
 #include "renderer/opengl/gl_texture.h"
 #include "renderer/opengl/gl_timer.h"
 #include "renderer/opengl/gl_triangle_demo.h"
@@ -38,6 +39,7 @@ private:
     GLGpuTimer m_gpu_timer;
     GLTextureStore m_textures;
     GLMeshRenderer m_meshes;
+    GLOutline m_outline;
     TriangleDemo m_triangle;
     GridRenderer m_grid;
     GLUiRenderer m_ui;

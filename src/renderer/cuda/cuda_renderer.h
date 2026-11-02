@@ -44,6 +44,17 @@ private:
     bool resize_targets(int width, int height);
     bool ensure_scratch_capacity(std::uint32_t vertex_count);
     bool ensure_raster_capacity(std::uint32_t record_count);
+
+    // The selection outline (see kOutlineRadius in renderer.h): rasterizes
+    // the selected and the active objects alone into two extra visibility
+    // buffers and draws the outline into the finished picture
+    bool draw_selection_outline(
+                const FrameData& frame,
+                const Mat4& view_proj,
+                uchar4* color,
+                const std::uint64_t* visibility);
+    bool ensure_mask_buffers();
+    void free_mask_buffers();
     void free_raster_work();
 
     // Declaration order is intentional: the presenter owns the display
@@ -60,6 +71,11 @@ private:
 
     void* m_color = nullptr;
     void* m_visibility = nullptr;
+
+    // Two more visibility buffers for the selection outline (selected
+    // objects, active object), one after the other; allocated when the
+    // first object is selected
+    void* m_mask_vis = nullptr;
 
     ProjectedVertex* m_scratch = nullptr;
     std::uint32_t m_scratch_capacity = 0;

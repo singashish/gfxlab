@@ -203,11 +203,6 @@ std::size_t scene_add_model(Scene& scene, Model& model, Model&& src,
         scene.objects.push_back(std::move(object));
     }
 
-    if (scene.active < 0 && !scene.objects.empty()) {
-        scene.active = 0;
-        scene.objects[0].selected = true;
-    }
-
     return first_object;
 }
 
@@ -221,6 +216,62 @@ void scene_select_only(Scene& scene, int index) {
     if (index >= 0 && static_cast<std::size_t>(index) < scene.objects.size()) {
         scene.objects[static_cast<std::size_t>(index)].selected = true;
         scene.active = index;
+    }
+}
+
+void scene_deselect_all(Scene& scene) {
+    for (SceneObject& object : scene.objects) {
+        object.selected = false;
+    }
+}
+
+void scene_select_all(Scene& scene) {
+    for (SceneObject& object : scene.objects) {
+        if (!object.hidden) {
+            object.selected = true;
+        }
+    }
+}
+
+int scene_selected_count(const Scene& scene) {
+    int count = 0;
+
+    for (const SceneObject& object : scene.objects) {
+        if (object.selected) {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+void scene_click_select(Scene& scene, int object, bool extend) {
+    const bool on_object =
+        object >= 0 && static_cast<std::size_t>(object) < scene.objects.size();
+
+    if (!extend) {
+        if (on_object) {
+            scene_select_only(scene, object);
+        } else {
+            scene_deselect_all(scene);
+        }
+
+        return;
+    }
+
+    if (!on_object) {
+        return;
+    }
+
+    SceneObject& clicked = scene.objects[static_cast<std::size_t>(object)];
+
+    if (!clicked.selected) {
+        clicked.selected = true;
+        scene.active = object;
+    } else if (scene.active != object) {
+        scene.active = object;
+    } else {
+        clicked.selected = false;
     }
 }
 

@@ -43,12 +43,25 @@ public:
               VkDescriptorSet descriptor_set,
               const std::vector<DrawItem>& items);
 
+    // Wireframe view: every object's edges, light grey, or in the
+    // highlight colour for marked objects
     void draw_wireframe(VkCommandBuffer cmd,
                         VkExtent2D extent,
                         VkDescriptorSet descriptor_set,
                         const std::vector<DrawItem>& items);
 
+    // The mask of the selection outline (see VulkanOutline): every
+    // object's triangles, flat (0 = unmarked, 0.5 = selected, 1 = active).
+    // Call it inside a rendering whose attachments are the outline's mask
+    // (kOutlineMaskFormat) and a depth image of this renderer's depth
+    // format
+    void draw_mask(VkCommandBuffer cmd,
+                   VkExtent2D extent,
+                   VkDescriptorSet descriptor_set,
+                   const std::vector<DrawItem>& items);
+
 private:
+
     // One draw call: a run of triangles that share a material
     struct GpuRange {
         std::uint32_t first_index = 0;
@@ -75,8 +88,9 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     VkPipeline m_pipeline = VK_NULL_HANDLE;
     VkPipeline m_wire_pipeline = VK_NULL_HANDLE;
+    VkPipeline m_mask_pipeline = VK_NULL_HANDLE;
 
-    // Both pipelines use this same layout
+    // All three pipelines use this same layout
     VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
 
     std::vector<std::unique_ptr<GpuMesh>> m_meshes;
