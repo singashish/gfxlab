@@ -2,6 +2,7 @@
 #include "core/timer.h"
 #include "core/orbit_camera.h"
 #include "core/path_settings.h"
+#include "core/pick.h"
 #include "core/material_edit.h"
 #include "core/math_util.h"
 #include "core/mesh.h"
@@ -16,6 +17,7 @@
 #include "ui/ui_draw.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -105,6 +107,9 @@ int main(int argc, char** argv) {
     // file's collection
     gfx::Model model;
     gfx::Scene scene;
+
+    // One BVH per mesh for picking, built when a mesh is first clicked
+    gfx::PickIndex pick_index;
     const bool has_model = !model_paths.empty();
     gfx::Aabb bounds{};
     gfx::TransformEditor editor;
@@ -1204,6 +1209,38 @@ int main(int argc, char** argv) {
 
         // Use the camera state after processing camera input
         const gfx::EditView edit_view = make_edit_view();
+
+        // Picking test (temporary, log only; the next step selects): a
+        // left click in the 3D view, outside an edit and not on the panel,
+        // shoots a ray through the cursor and logs the nearest object
+        if (has_model &&
+            in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_LEFT) &&
+            !was_editing_at_frame_start && !editor.active() &&
+            !ui_has_mouse) {
+            gfx::PickRay pick_ray;
+
+            if (gfx::make_pick_ray(edit_view, in.mouse_x(), in.mouse_y(),
+                                   pick_ray)) {
+                gfx::PickHit pick_hit;
+
+                const auto start = std::chrono::steady_clock::now();
+                const bool picked = gfx::pick_object(
+                    scene, model, pick_index, pick_ray, pick_hit);
+                const double micros = std::chrono::duration<double, std::micro>(
+                    std::chrono::steady_clock::now() - start).count();
+
+                if (picked) {
+                    LOG_INFO("pick: %s (triangle %u, distance %.3f, "
+                             "%.0f us)",
+                             scene.objects[static_cast<std::size_t>(
+                                 pick_hit.object)].name.c_str(),
+                             pick_hit.triangle,
+                             static_cast<double>(pick_hit.t), micros);
+                } else {
+                    LOG_INFO("pick: nothing (%.0f us)", micros);
+                }
+            }
+        }
 
         // ------------------------------------------------------------
         // Modal G / R / S editing

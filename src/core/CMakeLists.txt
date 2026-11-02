@@ -10,6 +10,7 @@ add_library(gfx_core STATIC
     mesh.cpp
     model.cpp
     obj_loader.cpp
+    pick.cpp
     scene.cpp
     transform_edit.cpp
 )

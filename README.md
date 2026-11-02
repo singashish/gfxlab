@@ -122,9 +122,9 @@ shorter than it.
   `last_gpu_ms` for GPU timing and `stats` for the UI), `FrameData` with its
   draw list, flags and UI draw list, the shared grid ray basis, and the
   `create_renderer()` factory
-- **Tests**: nineteen unit-test programs (math, input, timer, camera, obj,
+- **Tests**: twenty unit-test programs (math, input, timer, camera, obj,
   transform, transform_edit, raster, bvh, ui, image, texture, json, gltf, path,
-  brdf, light, material_edit, scene) registered with CTest
+  brdf, light, material_edit, scene, pick) registered with CTest
 - **`gfxlab` app**: opens a 1280x720 window and renders the viewport, loading
   the OBJ or glTF/GLB files given on the command line (several files stand side
   by side, each as its own collection of objects), with the settings panel
@@ -152,6 +152,7 @@ shorter than it.
 | Middle mouse drag | Orbit around the target (not during a G/R/S edit) |
 | Shift + middle mouse drag | Pan |
 | Scroll wheel | Zoom (over the 3D view); over the panel it scrolls the panel when the panel is taller than the window |
+| Left click in the 3D view | Picking test (temporary): logs the object under the cursor and how long the pick took; selecting comes in the next step |
 | **Tab** | Make the next object the active one (temporary; clicking to select comes next) |
 | **G** / **R** / **S** | Grab (move), rotate or scale the active object around its own origin (only when a model is loaded) |
 | **X** / **Y** / **Z** during an edit | Constrain to that axis; press again to go back to free |

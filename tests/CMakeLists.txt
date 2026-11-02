@@ -102,3 +102,13 @@ target_compile_definitions(test_scene PRIVATE
     GFX_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets"
 )
 add_test(NAME scene COMMAND test_scene)
+
+# Picking (core/pick.h): the ray through a pixel (inverse of
+# project_to_screen), and the nearest object along a ray, checked against a
+# brute-force test of every triangle in world space
+add_executable(test_pick test_pick.cpp)
+target_link_libraries(test_pick PRIVATE gfx_core)
+target_compile_definitions(test_pick PRIVATE
+    GFX_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets"
+)
+add_test(NAME pick COMMAND test_pick)
