@@ -1734,6 +1734,11 @@ private:
                 ModelInstance instance;
                 instance.mesh = static_cast<std::uint32_t>(mesh);
                 instance.transform = world;
+
+                if (node["name"].is_string()) {
+                    instance.name = node["name"].as_string();
+                }
+
                 m_model.instances.push_back(instance);
             }
         }

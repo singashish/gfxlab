@@ -6,6 +6,7 @@
 #include "core/math_util.h"
 #include "core/mesh.h"
 #include "core/model.h"
+#include "core/scene.h"
 #include "core/transform.h"
 #include "core/transform_edit.h"
 #include "platform/ui_font.h"
@@ -78,7 +79,8 @@ int main(int argc, char** argv) {
     gfx::RendererBackend backend =
         gfx::RendererBackend::GFX_BACKEND_OPENGL;
 
-    const char* model_path = nullptr;
+    // Any number of model files; each becomes a collection of objects
+    std::vector<const char*> model_paths;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--backend=vulkan") == 0) {
@@ -90,28 +92,28 @@ int main(int argc, char** argv) {
         } else if (std::strncmp(argv[i], "--", 2) == 0) {
             LOG_ERROR("unknown command-line option: %s", argv[i]);
             return 1;
-        } else if (model_path == nullptr) {
-            model_path = argv[i];
         } else {
-            LOG_ERROR("unexpected extra argument: %s", argv[i]);
-            return 1;
+            model_paths.push_back(argv[i]);
         }
     }
 
-    // Load and convert the optional model before creating the window.
-    // A Model is one or more meshes, the images their materials use, and
-    // the instances placing the meshes (OBJ: one mesh, one instance;
-    // glTF: one per node that has a mesh)
+    // Load and convert the optional models before creating the window.
+    // Each file is a Model: one or more meshes, the images their materials
+    // use, and the instances placing the meshes (OBJ: one mesh, one
+    // instance; glTF: one per node that has a mesh). All files are appended
+    // to `model`, and the scene makes every instance an object of the
+    // file's collection
     gfx::Model model;
-    const bool has_model = model_path != nullptr;
+    gfx::Scene scene;
+    const bool has_model = !model_paths.empty();
     gfx::Aabb bounds{};
-    gfx::Transform model_transform;
     gfx::TransformEditor editor;
 
-    // File name shown in the panel
+    // Shown in the panel: the file name, or the number of files
     std::string model_name;
 
-    if (has_model) {
+    for (const char* model_path : model_paths) {
+        gfx::Model loaded;
         std::string error;
         std::vector<std::string> tried;
         const std::string resolved = resolve_model_path(model_path, tried);
@@ -126,11 +128,12 @@ int main(int argc, char** argv) {
 
         LOG_INFO("model: %s", resolved.c_str());
 
-        model_name = std::filesystem::path(resolved).filename().string();
+        const std::string file_name =
+            std::filesystem::path(resolved).filename().string();
 
         // Loads, converts to Z-up, generates missing normals and edges,
         // decodes the textures and centres the model on the origin
-        if (!gfx::load_model(resolved, model, error)) {
+        if (!gfx::load_model(resolved, loaded, error)) {
             LOG_ERROR("failed to load model: %s", error.c_str());
             return 1;
         }
@@ -138,7 +141,7 @@ int main(int argc, char** argv) {
         std::size_t vertex_count = 0;
         std::size_t texcoord_meshes = 0;
 
-        for (const gfx::Mesh& mesh : model.meshes) {
+        for (const gfx::Mesh& mesh : loaded.meshes) {
             vertex_count += mesh.positions.size();
 
             if (mesh.has_texcoords()) {
@@ -149,24 +152,24 @@ int main(int argc, char** argv) {
         LOG_INFO(
             "loaded model: %zu mesh%s, %zu instance%s, %zu vertices, "
             "%zu triangles",
-            model.meshes.size(), model.meshes.size() == 1 ? "" : "es",
-            model.instances.size(), model.instances.size() == 1 ? "" : "s",
-            vertex_count, gfx::model_triangle_count(model)
+            loaded.meshes.size(), loaded.meshes.size() == 1 ? "" : "es",
+            loaded.instances.size(), loaded.instances.size() == 1 ? "" : "s",
+            vertex_count, gfx::model_triangle_count(loaded)
         );
 
-        if (model.meshes.size() == 1) {
+        if (loaded.meshes.size() == 1) {
             LOG_INFO("texture coordinates: %s",
                      texcoord_meshes == 1 ? "yes" : "no");
         } else {
             LOG_INFO("texture coordinates: %zu of %zu meshes",
-                     texcoord_meshes, model.meshes.size());
+                     texcoord_meshes, loaded.meshes.size());
         }
 
         // One line per distinct material name (glTF gives every mesh a
         // copy of the whole list)
         std::vector<std::string> logged_materials;
 
-        for (const gfx::Mesh& mesh : model.meshes) {
+        for (const gfx::Mesh& mesh : loaded.meshes) {
             for (const gfx::Material& material : mesh.materials) {
                 if (std::find(logged_materials.begin(),
                               logged_materials.end(),
@@ -192,14 +195,14 @@ int main(int argc, char** argv) {
 
         // The decoded images (the renderers will use them from Step 3).
         // The material that uses an image knows its name
-        std::vector<bool> image_logged(model.images.size(), false);
+        std::vector<bool> image_logged(loaded.images.size(), false);
 
-        for (const gfx::Mesh& mesh : model.meshes) {
+        for (const gfx::Mesh& mesh : loaded.meshes) {
             for (const gfx::Material& material : mesh.materials) {
                 const int image = material.base_color_image;
 
                 if (image < 0 ||
-                    static_cast<std::size_t>(image) >= model.images.size() ||
+                    static_cast<std::size_t>(image) >= loaded.images.size() ||
                     image_logged[static_cast<std::size_t>(image)]) {
                     continue;
                 }
@@ -207,7 +210,7 @@ int main(int argc, char** argv) {
                 image_logged[static_cast<std::size_t>(image)] = true;
 
                 const gfx::Image& decoded =
-                    model.images[static_cast<std::size_t>(image)];
+                    loaded.images[static_cast<std::size_t>(image)];
 
                 LOG_INFO("texture %s: %dx%d",
                          material.base_color_texture.c_str(),
@@ -215,12 +218,22 @@ int main(int argc, char** argv) {
             }
         }
 
-        bounds = gfx::model_bounds(model);
+        gfx::scene_add_model(scene, model, std::move(loaded), file_name);
+    }
 
-        // Stand on the floor: the model is centred on the origin, so
-        // half its height lifts the lowest point to z = 0
-        model_transform.position.z =
-            (bounds.max.z - bounds.min.z) * 0.5f;
+    if (has_model) {
+        model_name = scene.collections.size() == 1
+            ? scene.collections[0].name
+            : std::to_string(scene.collections.size()) + " files";
+
+        LOG_INFO("scene: %zu object%s in %zu collection%s",
+                 scene.objects.size(), scene.objects.size() == 1 ? "" : "s",
+                 scene.collections.size(),
+                 scene.collections.size() == 1 ? "" : "s");
+
+        // Every collection stands on the floor; with several files they
+        // are placed side by side. The box frames the camera
+        bounds = gfx::scene_bounds(scene, model);
     }
 
     gfx::Window window;
@@ -350,20 +363,18 @@ int main(int argc, char** argv) {
     // index
     std::vector<gfx::MeshId> mesh_ids;
 
-    // Half the model's diagonal: frames the camera, and scales how far a
-    // drag in the panel's Position fields moves the model
+    // Half the scene's diagonal: frames the camera, and scales how far a
+    // drag in the panel's Position fields moves an object
     const float model_radius =
         has_model ? 0.5f * gfx::length(bounds.max - bounds.min) : 1.0f;
-
-    // Starting transform, for the panel's Reset transform button
-    const gfx::Transform initial_transform = model_transform;
 
     // The start-up view: default angles, framed on the model
     const auto reset_camera = [&]() {
         camera = gfx::OrbitCamera{};
 
         if (has_model) {
-            camera.frame(model_transform.position, model_radius, kFovY);
+            camera.frame((bounds.min + bounds.max) * 0.5f, model_radius,
+                         kFovY);
         }
     };
 
@@ -597,47 +608,65 @@ int main(int argc, char** argv) {
 
                 ui.text(info);
 
-                // The fields show the live transform, so during a
-                // G/R/S edit they follow it (the UI ignores the mouse
-                // then). Rotation is stored in radians, shown in degrees
-                float position[3] = {
-                    model_transform.position.x,
-                    model_transform.position.y,
-                    model_transform.position.z
-                };
+                // The panel edits the active object. Tab picks the next
+                // one (temporary: clicking comes in the next step)
+                gfx::SceneObject* active = scene.active_object();
 
-                if (ui.drag_float3("Position", position,
-                                   model_radius * 0.005f, "%.2f")) {
-                    model_transform.position = {
-                        position[0], position[1], position[2]};
-                }
+                if (active == nullptr) {
+                    ui.text("No active object");
+                } else {
+                    char object_text[96];
+                    std::snprintf(object_text, sizeof(object_text),
+                                  "Object %d of %zu: %s (Tab: next)",
+                                  scene.active + 1, scene.objects.size(),
+                                  active->name.c_str());
+                    ui.text(object_text);
 
-                float rotation[3] = {
-                    gfx::to_degrees(model_transform.rotation.x),
-                    gfx::to_degrees(model_transform.rotation.y),
-                    gfx::to_degrees(model_transform.rotation.z)
-                };
+                    // The fields show the live transform, so during a
+                    // G/R/S edit they follow it (the UI ignores the mouse
+                    // then). Rotation is stored in radians, shown in
+                    // degrees
+                    gfx::Transform& transform = active->transform;
 
-                if (ui.drag_float3("Rotation", rotation, 0.5f, "%.1f")) {
-                    model_transform.rotation = {
-                        gfx::to_radians(rotation[0]),
-                        gfx::to_radians(rotation[1]),
-                        gfx::to_radians(rotation[2])};
-                }
+                    float position[3] = {
+                        transform.position.x,
+                        transform.position.y,
+                        transform.position.z
+                    };
 
-                float scale[3] = {
-                    model_transform.scale.x,
-                    model_transform.scale.y,
-                    model_transform.scale.z
-                };
+                    if (ui.drag_float3("Position", position,
+                                       model_radius * 0.005f, "%.2f")) {
+                        transform.position = {
+                            position[0], position[1], position[2]};
+                    }
 
-                if (ui.drag_float3("Scale", scale, 0.005f, "%.3f")) {
-                    model_transform.scale = {scale[0], scale[1], scale[2]};
-                }
+                    float rotation[3] = {
+                        gfx::to_degrees(transform.rotation.x),
+                        gfx::to_degrees(transform.rotation.y),
+                        gfx::to_degrees(transform.rotation.z)
+                    };
 
-                if (ui.button("Reset transform")) {
-                    model_transform = initial_transform;
-                    LOG_INFO("transform reset");
+                    if (ui.drag_float3("Rotation", rotation, 0.5f, "%.1f")) {
+                        transform.rotation = {
+                            gfx::to_radians(rotation[0]),
+                            gfx::to_radians(rotation[1]),
+                            gfx::to_radians(rotation[2])};
+                    }
+
+                    float scale[3] = {
+                        transform.scale.x,
+                        transform.scale.y,
+                        transform.scale.z
+                    };
+
+                    if (ui.drag_float3("Scale", scale, 0.005f, "%.3f")) {
+                        transform.scale = {scale[0], scale[1], scale[2]};
+                    }
+
+                    if (ui.button("Reset transform")) {
+                        transform = active->initial;
+                        LOG_INFO("transform reset: %s", active->name.c_str());
+                    }
                 }
 
                 if (editor.active()) {
@@ -906,7 +935,8 @@ int main(int argc, char** argv) {
             if (ui.header("Controls", &controls_open)) {
                 ui.text("Middle drag: orbit, Shift + middle: pan");
                 ui.text("Scroll: zoom");
-                ui.text("G / R / S: grab, rotate, scale");
+                ui.text("Tab: next object");
+                ui.text("G / R / S: grab, rotate, scale object");
                 ui.text("  X / Y / Z: axis, left click: confirm");
                 ui.text("  Right click / Esc: cancel");
                 ui.text("W wireframe, M materials, V vsync");
@@ -938,22 +968,19 @@ int main(int argc, char** argv) {
 
         frame.ui = &ui_list;
 
-        // The application owns the transform. The renderer receives
-        // the resulting matrices and draws the meshes: each instance
-        // is placed by the model transform (G/R/S edit the whole model)
-        // times its own transform inside the model
+        // The application owns the transforms. The renderer receives
+        // the resulting matrices and draws the meshes: one draw item per
+        // visible object, placed by the object's own transform
         if (!mesh_ids.empty()) {
-            const gfx::Mat4 model_matrix = model_transform.model_matrix();
-
-            for (const gfx::ModelInstance& instance : model.instances) {
-                if (instance.mesh >= mesh_ids.size()) {
+            for (const gfx::SceneObject& object : scene.objects) {
+                if (object.hidden || object.mesh >= mesh_ids.size()) {
                     continue;
                 }
 
-                const gfx::Mat4 world = model_matrix * instance.transform;
+                const gfx::Mat4 world = object.world_matrix();
 
                 frame.draw_list.push_back({
-                    mesh_ids[instance.mesh],
+                    mesh_ids[object.mesh],
                     world,
                     gfx::normal_matrix_of(world)
                 });
@@ -1182,11 +1209,28 @@ int main(int argc, char** argv) {
         // Modal G / R / S editing
         // ------------------------------------------------------------
 
-        if (has_model) {
+        // Tab makes the next object the active one (not during an edit).
+        // Temporary: the next step selects by clicking
+        if (in.key_pressed(gfx::Key::GFX_KEY_TAB) && !editor.active() &&
+            scene.objects.size() > 1) {
+            const int next =
+                (scene.active + 1) % static_cast<int>(scene.objects.size());
+
+            gfx::scene_select_only(scene, next);
+
+            LOG_INFO("active object: %s",
+                     scene.objects[static_cast<std::size_t>(next)]
+                         .name.c_str());
+        }
+
+        // G / R / S act on the active object. The pointer stays valid for
+        // the whole block: nothing adds or removes objects, and Tab is
+        // ignored during an edit
+        if (gfx::SceneObject* edited = scene.active_object()) {
             const auto begin_edit = [&](gfx::EditMode mode) {
                 editor.begin(
                     mode,
-                    model_transform,
+                    edited->transform,
                     in.mouse_x(),
                     in.mouse_y(),
                     edit_view
@@ -1212,7 +1256,7 @@ int main(int argc, char** argv) {
             } else if (requested_mode != gfx::EditMode::EDIT_NONE) {
                 // Switching G / R / S cancels the previous operation
                 // and starts the next one from the restored transform
-                model_transform = editor.cancel();
+                edited->transform = editor.cancel();
                 LOG_INFO("cancelled; switching edit mode");
 
                 begin_edit(requested_mode);
@@ -1238,7 +1282,7 @@ int main(int argc, char** argv) {
                     in.mouse_x(),
                     in.mouse_y(),
                     edit_view,
-                    model_transform
+                    edited->transform
                 );
 
                 // Confirm takes precedence if both mouse buttons are
@@ -1252,7 +1296,7 @@ int main(int argc, char** argv) {
                         gfx::MouseButton::GFX_MOUSE_RIGHT) ||
                     in.key_pressed(gfx::Key::GFX_KEY_ESCAPE)
                 ) {
-                    model_transform = editor.cancel();
+                    edited->transform = editor.cancel();
                     LOG_INFO("cancelled");
                 }
             }

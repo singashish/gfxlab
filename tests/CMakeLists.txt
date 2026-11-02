@@ -92,3 +92,13 @@ add_test(NAME light COMMAND test_light)
 add_executable(test_material_edit test_material_edit.cpp)
 target_link_libraries(test_material_edit PRIVATE gfx_core)
 add_test(NAME material_edit COMMAND test_material_edit)
+
+# Objects and collections (core/scene.h): decomposing placements into
+# position/rotation/scale, merging several models, layout of the files,
+# names, selection
+add_executable(test_scene test_scene.cpp)
+target_link_libraries(test_scene PRIVATE gfx_core)
+target_compile_definitions(test_scene PRIVATE
+    GFX_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets"
+)
+add_test(NAME scene COMMAND test_scene)

@@ -134,6 +134,44 @@ bool load_model(const std::string& path, Model& out, std::string& error) {
     return true;
 }
 
+std::size_t append_model(Model& dst, Model&& src) {
+    const std::size_t first_instance = dst.instances.size();
+    const std::uint32_t mesh_offset =
+        static_cast<std::uint32_t>(dst.meshes.size());
+    const int image_offset = static_cast<int>(dst.images.size());
+
+    // -1 means "no image" and must stay -1
+    const auto shift = [image_offset](int& image) {
+        if (image >= 0) {
+            image += image_offset;
+        }
+    };
+
+    for (Mesh& mesh : src.meshes) {
+        for (Material& material : mesh.materials) {
+            shift(material.base_color_image);
+            shift(material.metallic_roughness_image);
+            shift(material.normal_image);
+            shift(material.emissive_image);
+        }
+
+        dst.meshes.push_back(std::move(mesh));
+    }
+
+    for (Image& image : src.images) {
+        dst.images.push_back(std::move(image));
+    }
+
+    for (ModelInstance& instance : src.instances) {
+        instance.mesh += mesh_offset;
+        dst.instances.push_back(std::move(instance));
+    }
+
+    src = Model{};
+
+    return first_instance;
+}
+
 Aabb model_bounds(const Model& model) {
     // A mesh's own box is the same for all its instances: compute it
     // once per mesh, not once per instance

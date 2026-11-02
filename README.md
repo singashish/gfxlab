@@ -122,11 +122,12 @@ shorter than it.
   `last_gpu_ms` for GPU timing and `stats` for the UI), `FrameData` with its
   draw list, flags and UI draw list, the shared grid ray basis, and the
   `create_renderer()` factory
-- **Tests**: eighteen unit-test programs (math, input, timer, camera, obj,
+- **Tests**: nineteen unit-test programs (math, input, timer, camera, obj,
   transform, transform_edit, raster, bvh, ui, image, texture, json, gltf, path,
-  brdf, light, material_edit) registered with CTest
+  brdf, light, material_edit, scene) registered with CTest
 - **`gfxlab` app**: opens a 1280x720 window and renders the viewport, loading
-  the OBJ or glTF/GLB file given on the command line, with the settings panel
+  the OBJ or glTF/GLB files given on the command line (several files stand side
+  by side, each as its own collection of objects), with the settings panel
   on top. The
   title bar shows the backend and the FPS, the panel the frame and GPU times,
   and the console logs the frame and GPU times once per second. **Esc** cancels
@@ -151,10 +152,11 @@ shorter than it.
 | Middle mouse drag | Orbit around the target (not during a G/R/S edit) |
 | Shift + middle mouse drag | Pan |
 | Scroll wheel | Zoom (over the 3D view); over the panel it scrolls the panel when the panel is taller than the window |
-| **G** / **R** / **S** | Grab (move), rotate or scale the model (only when a model is loaded) |
+| **Tab** | Make the next object the active one (temporary; clicking to select comes next) |
+| **G** / **R** / **S** | Grab (move), rotate or scale the active object around its own origin (only when a model is loaded) |
 | **X** / **Y** / **Z** during an edit | Constrain to that axis; press again to go back to free |
 | Left click during an edit | Confirm |
-| Right click or Esc during an edit | Cancel, restoring the model exactly |
+| Right click or Esc during an edit | Cancel, restoring the object exactly |
 | **V** | Toggle vsync |
 | **W** | Toggle wireframe (the model's polygon edges, unlit, in every backend) |
 | **M** | Toggle materials: the models' colours and textures, or plain grey shading (in every backend; in the path tracer also gloss, metal and emission) |
@@ -342,9 +344,12 @@ builds\build-debug\src\app\gfxlab.exe
 builds\build-debug\src\app\gfxlab.exe assets\suzanne_s.obj
 builds\build-debug\src\app\gfxlab.exe --backend=vulkan assets\suzanne_s.obj
 builds\build-debug\src\app\gfxlab.exe --backend=cuda assets\suzanne_s.obj
+builds\build-debug\src\app\gfxlab.exe assets\gltf\materials.glb suzanne_s.obj
 ```
 
-The second form loads a model. The name is looked up as given, then in `assets\`,
+The second form loads a model, and the last one two models at once (any
+number of files can be given; each file is a collection, placed to the right of
+the previous ones). The name is looked up as given, then in `assets\`,
 then in `assets\local\`, so a bare name such as `suzanne_s.obj` works from
 any directory. The loader chooses the format by extension: `.obj` (positions,
 normals, texture coordinates and faces, with the materials of the `.mtl` file

@@ -30,6 +30,10 @@ namespace gfx {
 struct ModelInstance {
     std::uint32_t mesh = 0;           // index into Model::meshes
     Mat4 transform = mat4_identity(); // mesh space -> model space (Z-up)
+
+    // Name shown for the object (glTF: the node's name). Empty when the
+    // file gives none; the scene then names the object after the file
+    std::string name;
 };
 
 // What any model file loads into
@@ -49,6 +53,14 @@ struct Model {
 // with instancing, the vertices belong to all instances at once.
 // On failure returns false, sets error and leaves out empty
 bool load_model(const std::string& path, Model& out, std::string& error);
+
+// Appends everything in src to dst: the meshes and images, and the
+// instances. The indices inside src are shifted so they stay valid in
+// dst: ModelInstance::mesh, and the image indices of every material.
+// Returns the index in dst.instances of the first appended instance.
+// This is how several files become one Model (and so one set of renderer
+// meshes and textures)
+std::size_t append_model(Model& dst, Model&& src);
 
 // Bounding box of all instances in model space: the 8 corners of each
 // mesh's box, transformed. A rotated instance therefore gets a box that
