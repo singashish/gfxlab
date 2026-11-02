@@ -275,4 +275,24 @@ void scene_click_select(Scene& scene, int object, bool extend) {
     }
 }
 
+void scene_box_select(Scene& scene, const std::vector<int>& objects,
+                      bool extend) {
+    if (!extend) {
+        scene_deselect_all(scene);
+    }
+
+    for (const int index : objects) {
+        if (index < 0 ||
+            static_cast<std::size_t>(index) >= scene.objects.size()) {
+            continue;
+        }
+
+        SceneObject& object = scene.objects[static_cast<std::size_t>(index)];
+
+        if (!object.hidden) {
+            object.selected = true;
+        }
+    }
+}
+
 } // namespace gfx

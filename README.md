@@ -122,9 +122,9 @@ shorter than it.
   `last_gpu_ms` for GPU timing and `stats` for the UI), `FrameData` with its
   draw list, flags and UI draw list, the shared grid ray basis, and the
   `create_renderer()` factory
-- **Tests**: twenty unit-test programs (math, input, timer, camera, obj,
+- **Tests**: twenty-one unit-test programs (math, input, timer, camera, obj,
   transform, transform_edit, raster, bvh, ui, image, texture, json, gltf, path,
-  brdf, light, material_edit, scene, pick) registered with CTest
+  brdf, light, material_edit, scene, pick, box_select) registered with CTest
 - **`gfxlab` app**: opens a 1280x720 window and renders the viewport, loading
   the OBJ or glTF/GLB files given on the command line (several files stand side
   by side, each as its own collection of objects), with the settings panel
@@ -152,8 +152,9 @@ shorter than it.
 | Middle mouse drag | Orbit around the target (not during a G/R/S edit) |
 | Shift + middle mouse drag | Pan |
 | Scroll wheel | Zoom (over the 3D view); over the panel it scrolls the panel when the panel is taller than the window |
-| Left click in the 3D view | Select the object under the cursor (only that one); a click on empty space deselects everything. The object is found with a ray through the cursor (`core/pick.h`) and hidden objects cannot be clicked. Nothing is selected after loading. Selected objects get an orange outline around their silhouette, the active one a lighter orange, like Blender (all three backends, also in the ray traced and path traced views; hidden where another object is in front; in the wireframe view the selected objects' edges are orange instead); the panel's Model section also shows `Selected: N of M` and the active object |
+| Left click in the 3D view | Select the object under the cursor (only that one); a click on empty space deselects everything. The selection happens when the button is released, so a click can turn into a box (next row). The object is found with a ray through the cursor (`core/pick.h`) and hidden objects cannot be clicked. Nothing is selected after loading. Selected objects get an orange outline around their silhouette, the active one a lighter orange, like Blender (all three backends, also in the ray traced and path traced views; hidden where another object is in front; in the wireframe view the selected objects' edges are orange instead); the panel's Model section also shows `Selected: N of M` and the active object |
 | **Shift** + left click | Add the object to the selection and make it active; on a selected object that is not active it only becomes active; on the active selected object it is deselected; on empty space nothing changes |
+| Left drag in the 3D view | Box select: a rectangle is drawn from where you pressed to the mouse (once it moved more than 4 pixels), and on release the objects seen through it become the selection. A grid of pick rays, one every 4 pixels (at most 16384 rays), decides what is seen, so objects completely hidden behind others are not selected, and objects smaller than the grid spacing can be missed (`core/box_select.h`). **Shift** + drag adds to the selection instead of replacing it. Like in Blender a box select does not change the active object. Esc or a right click while dragging cancels the box |
 | **A** / **Alt** + **A** | Select all visible objects / deselect everything |
 | **G** / **R** / **S** | Grab (move), rotate or scale the active object around its own origin; they work only while the active object is selected (the whole selection comes in a later step) |
 | **X** / **Y** / **Z** during an edit | Constrain to that axis; press again to go back to free |
@@ -439,7 +440,8 @@ tests/               unit tests                                        -> test_m
                                                                           test_transform_edit, test_raster, test_bvh,
                                                                           test_ui, test_image, test_texture, test_json,
                                                                           test_gltf, test_path, test_brdf, test_light,
-                                                                          test_material_edit
+                                                                          test_material_edit, test_scene, test_pick,
+                                                                          test_box_select
 CMakePresets.json
 build.bat
 ```

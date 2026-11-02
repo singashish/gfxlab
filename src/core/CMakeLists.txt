@@ -1,5 +1,6 @@
 add_library(gfx_core STATIC
     base64.cpp
+    box_select.cpp
     bvh.cpp
     bvh4.cpp
     gltf_loader.cpp

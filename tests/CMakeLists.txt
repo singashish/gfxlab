@@ -112,3 +112,10 @@ target_compile_definitions(test_pick PRIVATE
     GFX_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets"
 )
 add_test(NAME pick COMMAND test_pick)
+
+# Box select (core/box_select.h): the grid of pick rays over a rectangle,
+# the objects found through it (hidden and occluded ones are not), and
+# scene_box_select (replace / extend, `active` unchanged)
+add_executable(test_box_select test_box_select.cpp)
+target_link_libraries(test_box_select PRIVATE gfx_core)
+add_test(NAME box_select COMMAND test_box_select)

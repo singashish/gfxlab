@@ -2,6 +2,7 @@
 #include "core/timer.h"
 #include "core/orbit_camera.h"
 #include "core/path_settings.h"
+#include "core/box_select.h"
 #include "core/pick.h"
 #include "core/material_edit.h"
 #include "core/math_util.h"
@@ -277,6 +278,16 @@ int main(int argc, char** argv) {
     // the camera
     bool camera_dragging = false;
 
+    // Selecting with the left button in the 3D view. A press starts it
+    // (select_pending). If the mouse then moves more than a few pixels
+    // it is a box (select_box_active) that is drawn from the press
+    // position to the mouse; the selection happens when the button goes
+    // up. Without that movement it is a click
+    bool select_pending = false;
+    bool select_box_active = false;
+    float select_start_x = 0.0f;
+    float select_start_y = 0.0f;
+
     // Panel line with the timings, refreshed with the title
     char stats_text[96] = "-- FPS";
 
@@ -550,6 +561,26 @@ int main(int argc, char** argv) {
             ui_input.mouse_released =
                 in.mouse_released(gfx::MouseButton::GFX_MOUSE_LEFT);
             ui_input.scroll = in.scroll();
+        }
+
+        // The selection box goes in first, so panels are drawn over it
+        if (select_box_active) {
+            const gfx::InputState& box_in = window.input();
+            const float view_w = static_cast<float>(window.width());
+            const float view_h = static_cast<float>(window.height());
+            const float bx0 = std::clamp(
+                std::min(select_start_x, box_in.mouse_x()), 0.0f, view_w);
+            const float bx1 = std::clamp(
+                std::max(select_start_x, box_in.mouse_x()), 0.0f, view_w);
+            const float by0 = std::clamp(
+                std::min(select_start_y, box_in.mouse_y()), 0.0f, view_h);
+            const float by1 = std::clamp(
+                std::max(select_start_y, box_in.mouse_y()), 0.0f, view_h);
+
+            ui_list.add_rect(bx0, by0, bx1, by1,
+                             gfx::ui_rgba(255, 255, 255, 28));
+            ui_list.add_rect_outline(bx0, by0, bx1, by1, 1.0f,
+                                     gfx::ui_rgba(255, 255, 255, 210));
         }
 
         ui.begin_frame(ui_list, ui_input);
@@ -948,6 +979,7 @@ int main(int argc, char** argv) {
                 ui.text("Middle drag: orbit, Shift + middle: pan");
                 ui.text("Scroll: zoom");
                 ui.text("Click: select, Shift + click: add / remove");
+                ui.text("Drag: box select, Shift + drag: add");
                 ui.text("A: select all, Alt + A: deselect all");
                 ui.text("G / R / S: grab, rotate, scale active object");
                 ui.text("  X / Y / Z: axis, left click: confirm");
@@ -1231,36 +1263,97 @@ int main(int argc, char** argv) {
         // Use the camera state after processing camera input
         const gfx::EditView edit_view = make_edit_view();
 
-        // Selecting: a left click in the 3D view (outside an edit, whose
-        // click confirms it, and not on the panel) shoots a ray through
-        // the cursor. The nearest object is selected; Shift adds to or
-        // removes from the selection; empty space deselects
+        // Selecting with the left button in the 3D view (not during an
+        // edit, whose click confirms it, and not on the panel). Pressing
+        // starts it, releasing finishes it:
+        //   - the mouse stayed within a few pixels: a click. A ray
+        //     through the cursor finds the nearest object, which is
+        //     selected; Shift adds to or removes from the selection;
+        //     empty space deselects;
+        //   - the mouse moved further: a box (core/box_select.h). The
+        //     objects seen through it are selected, Shift adds them to
+        //     the selection, and `active` does not change.
+        // Esc or a right click while the box is drawn cancels it
+        constexpr float kBoxDragThreshold = 4.0f;
+
+        const bool left_down =
+            in.mouse_down(gfx::MouseButton::GFX_MOUSE_LEFT);
+        bool box_cancelled = false;
+
         if (has_model &&
             in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_LEFT) &&
             !was_editing_at_frame_start && !editor.active() &&
             !ui_has_mouse) {
-            gfx::PickRay pick_ray;
-            int clicked = -1;
+            select_pending = true;
+            select_box_active = false;
+            select_start_x = in.mouse_x();
+            select_start_y = in.mouse_y();
+        }
 
-            if (gfx::make_pick_ray(edit_view, in.mouse_x(), in.mouse_y(),
-                                   pick_ray)) {
-                gfx::PickHit pick_hit;
+        // An edit that starts (G, R or S) takes the mouse over
+        if (select_pending && editor.active()) {
+            select_pending = false;
+            select_box_active = false;
+        }
 
-                if (gfx::pick_object(scene, model, pick_index, pick_ray,
-                                     pick_hit)) {
-                    clicked = pick_hit.object;
+        if (select_pending && select_box_active &&
+            (in.key_pressed(gfx::Key::GFX_KEY_ESCAPE) ||
+             in.mouse_pressed(gfx::MouseButton::GFX_MOUSE_RIGHT))) {
+            select_pending = false;
+            select_box_active = false;
+            box_cancelled = true;
+            LOG_INFO("box select: cancelled");
+        }
+
+        if (select_pending && left_down && !select_box_active &&
+            std::hypot(in.mouse_x() - select_start_x,
+                       in.mouse_y() - select_start_y) >
+                kBoxDragThreshold) {
+            select_box_active = true;
+        }
+
+        // The button is up again: do the selection
+        if (select_pending && !left_down) {
+            const bool extend = in.key_down(gfx::Key::GFX_KEY_SHIFT);
+
+            if (select_box_active) {
+                const std::vector<int> found = gfx::box_select_objects(
+                    scene, model, pick_index, edit_view, select_start_x,
+                    select_start_y, in.mouse_x(), in.mouse_y());
+
+                gfx::scene_box_select(scene, found, extend);
+
+                LOG_INFO("box select: %zu object(s) in the box; "
+                         "%d of %zu selected",
+                         found.size(), gfx::scene_selected_count(scene),
+                         scene.objects.size());
+            } else {
+                gfx::PickRay pick_ray;
+                int clicked = -1;
+
+                if (gfx::make_pick_ray(edit_view, select_start_x,
+                                       select_start_y, pick_ray)) {
+                    gfx::PickHit pick_hit;
+
+                    if (gfx::pick_object(scene, model, pick_index,
+                                         pick_ray, pick_hit)) {
+                        clicked = pick_hit.object;
+                    }
                 }
+
+                gfx::scene_click_select(scene, clicked, extend);
+
+                LOG_INFO(
+                    "click: %s; %d of %zu selected",
+                    clicked < 0
+                        ? "nothing"
+                        : scene.objects[static_cast<std::size_t>(clicked)]
+                              .name.c_str(),
+                    gfx::scene_selected_count(scene), scene.objects.size());
             }
 
-            gfx::scene_click_select(
-                scene, clicked, in.key_down(gfx::Key::GFX_KEY_SHIFT));
-
-            LOG_INFO("click: %s; %d of %zu selected",
-                     clicked < 0
-                         ? "nothing"
-                         : scene.objects[static_cast<std::size_t>(clicked)]
-                               .name.c_str(),
-                     gfx::scene_selected_count(scene), scene.objects.size());
+            select_pending = false;
+            select_box_active = false;
         }
 
         // A selects every visible object, Alt+A deselects everything
@@ -1370,7 +1463,7 @@ int main(int argc, char** argv) {
         // cancels an edit and the next Escape quits
         if (in.key_pressed(gfx::Key::GFX_KEY_ESCAPE) &&
             !was_editing_at_frame_start &&
-            !editor.active()) {
+            !editor.active() && !box_cancelled) {
             window.request_close();
         }
 

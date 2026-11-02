@@ -126,6 +126,16 @@ void scene_select_only(Scene& scene, int index);
 //   - on empty space: nothing changes.
 void scene_click_select(Scene& scene, int object, bool extend);
 
+// A box select finished: `objects` are the objects found inside the box
+// (indices into Scene::objects; ones outside the list or hidden are
+// ignored).
+//   - plain (extend = false): the selection becomes exactly these objects;
+//     an empty box deselects everything;
+//   - Shift (extend = true): these objects are added to the selection.
+// Unlike a click, a box select never changes `active`
+void scene_box_select(Scene& scene, const std::vector<int>& objects,
+                      bool extend);
+
 // Selects every visible object (A). Hidden objects are left alone, and
 // `active` is kept
 void scene_select_all(Scene& scene);
