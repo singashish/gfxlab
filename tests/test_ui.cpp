@@ -709,6 +709,188 @@ void test_widget_header() {
     CHECK(open);
 }
 
+// Tree rows (the Outliner): items, folders, the eye, keys and marks.
+// With the synthetic font the first row is at y 37 .. 59 (x 8 .. 192) and
+// the eye at its right end (x 170 .. 192); the second row is y 63 .. 85
+void test_widget_tree_row() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+
+    bool open = true;
+    bool eye_a = true;
+    bool eye_b = true;
+    int clicked_a = 0;
+    int clicked_b = 0;
+    int eye_clicks = 0;
+    gfx::UiRowMark mark_a = gfx::UiRowMark::UI_ROW_PLAIN;
+
+    // Two item rows with the SAME label and different keys, then a folder
+    const auto build_rows = [&](const gfx::UiInput& in) {
+        list.begin(&atlas);
+        ui.begin_frame(list, in);
+        ui.begin_panel("P", 0.0f, 0.0f, 200.0f);
+
+        const gfx::UiRowEvent a =
+            ui.tree_row("a", "Cube", 1, mark_a, nullptr, &eye_a);
+        const gfx::UiRowEvent b =
+            ui.tree_row("b", "Cube", 1, gfx::UiRowMark::UI_ROW_PLAIN,
+                        nullptr, &eye_b);
+        ui.tree_row("f", "Folder", 0, gfx::UiRowMark::UI_ROW_PLAIN, &open,
+                    nullptr);
+
+        clicked_a += a.clicked ? 1 : 0;
+        clicked_b += b.clicked ? 1 : 0;
+        eye_clicks += (a.eye_clicked ? 1 : 0) + (b.eye_clicked ? 1 : 0);
+
+        ui.end_panel();
+        ui.end_frame();
+    };
+
+    const auto click = [&](float x, float y) {
+        build_rows(press(x, y));
+        build_rows(release(x, y));
+    };
+
+    // A click on the first row's label, then on the second's: the same
+    // label does not mix them up
+    click(60, 48);
+    CHECK(clicked_a == 1 && clicked_b == 0);
+    CHECK(eye_a && eye_b);
+
+    click(60, 74);
+    CHECK(clicked_a == 1 && clicked_b == 1);
+
+    // The eye flips its own flag only, and is not a click on the label
+    click(180, 48);
+    CHECK(!eye_a && eye_b);
+    CHECK(eye_clicks == 1);
+    CHECK(clicked_a == 1);
+
+    click(180, 74);
+    CHECK(!eye_a && !eye_b);
+    CHECK(eye_clicks == 2);
+
+    click(180, 48);
+    CHECK(eye_a);
+
+    // A folder: a click flips *open and is not reported as a click
+    const int clicks_before = clicked_a + clicked_b;
+
+    CHECK(open);
+    click(60, 100);
+    CHECK(!open);
+    click(60, 100);
+    CHECK(open);
+    CHECK(clicked_a + clicked_b == clicks_before);
+
+    // Released away from the row: nothing
+    build_rows(press(60, 48));
+    build_rows(release(60, 300));
+    CHECK(clicked_a == 1);
+
+    // A marked row draws a background that a plain, unhovered row does not
+    build_rows(hover(500, 500));
+    const std::size_t plain_vertices = list.vertices().size();
+
+    mark_a = gfx::UiRowMark::UI_ROW_SELECTED;
+    build_rows(hover(500, 500));
+    CHECK(list.vertices().size() > plain_vertices);
+
+    mark_a = gfx::UiRowMark::UI_ROW_ACTIVE;
+    build_rows(hover(500, 500));
+    CHECK(list.vertices().size() > plain_vertices);
+}
+
+// A hidden item (the eye closed) still reacts to clicks, and tree rows
+// outside the visible part of a scrolling panel do not
+void test_widget_tree_row_scrolling() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+
+    int clicked = 0;
+
+    const auto build_rows = [&](const gfx::UiInput& in) {
+        gfx::UiInput with_viewport = in;
+        with_viewport.viewport_height = 150.0f; // only a few rows fit
+
+        list.begin(&atlas);
+        ui.begin_frame(list, with_viewport);
+        ui.begin_panel("P", 0.0f, 0.0f, 200.0f);
+
+        for (int i = 0; i < 20; ++i) {
+            const std::string key = "row" + std::to_string(i);
+
+            if (ui.tree_row(key.c_str(), "Item", 0,
+                            gfx::UiRowMark::UI_ROW_PLAIN, nullptr, nullptr)
+                    .clicked) {
+                ++clicked;
+            }
+        }
+
+        ui.end_panel();
+        ui.end_frame();
+    };
+
+    build_rows(hover(500, 500));
+    build_rows(hover(500, 500));
+
+    CHECK(ui.panel_max_scroll("P") > 0.0f);
+
+    // A row inside the visible part works
+    build_rows(press(60, 48));
+    build_rows(release(60, 48));
+    CHECK(clicked == 1);
+}
+
+void test_right_aligned_panel() {
+    gfx::FontAtlas atlas;
+    CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
+
+    gfx::Ui ui;
+    gfx::UiDrawList list;
+
+    std::string label = "short";
+
+    const auto build_panel = [&]() {
+        list.begin(&atlas);
+        ui.begin_frame(list, hover(500, 500));
+
+        const float x = ui.right_aligned_x("R", 200.0f, 1000.0f, 10.0f);
+
+        ui.begin_panel("R", x, 0.0f, 200.0f);
+        ui.tree_row("k", label.c_str(), 0, gfx::UiRowMark::UI_ROW_PLAIN,
+                    nullptr, nullptr);
+        ui.end_panel();
+        ui.end_frame();
+
+        return x;
+    };
+
+    // The first time the minimum width is used
+    CHECK(approx(build_panel(), 790.0));
+
+    // The panel's right edge (the background rectangle's third vertex) is
+    // 10 px from the window's edge
+    CHECK(approx(list.vertices()[2].x, 990.0, 0.5));
+
+    // A long label widens the panel; one frame later the panel is moved
+    // left so that it still ends 10 px from the edge
+    label = std::string(60, 'W');
+    (void)build_panel();
+    const float x = build_panel();
+
+    CHECK(x < 790.0f);
+
+    (void)build_panel();
+    CHECK(approx(list.vertices()[2].x, 990.0, 0.5));
+}
+
 void test_widget_drag_float3() {
     gfx::FontAtlas atlas;
     CHECK(gfx::pack_font_atlas(make_glyphs(), 16, 12, 1.0f, atlas));
@@ -1084,6 +1266,9 @@ int main() {
     test_placeholder();
     test_widget_header();
     test_widget_drag_float3();
+    test_widget_tree_row();
+    test_widget_tree_row_scrolling();
+    test_right_aligned_panel();
     test_scroll_fit();
     test_scroll_wheel();
     test_scroll_hidden_rows();

@@ -119,3 +119,16 @@ add_test(NAME pick COMMAND test_pick)
 add_executable(test_box_select test_box_select.cpp)
 target_link_libraries(test_box_select PRIVATE gfx_core)
 add_test(NAME box_select COMMAND test_box_select)
+
+# G / R / S on the whole selection (core/group_edit.h): the median pivot,
+# grab / rotate / scale of a group, and that a single object gives what
+# the TransformEditor gives for it alone
+add_executable(test_group_edit test_group_edit.cpp)
+target_link_libraries(test_group_edit PRIVATE gfx_core)
+add_test(NAME group_edit COMMAND test_group_edit)
+
+# The text of a multi-select open-file dialog (core/dialog_result.h); the
+# dialog itself is Windows-only code in gfx_platform
+add_executable(test_dialog_result test_dialog_result.cpp)
+target_link_libraries(test_dialog_result PRIVATE gfx_core)
+add_test(NAME dialog_result COMMAND test_dialog_result)

@@ -295,4 +295,45 @@ void scene_box_select(Scene& scene, const std::vector<int>& objects,
     }
 }
 
+void scene_set_hidden(Scene& scene, int index, bool hidden) {
+    if (index < 0 || static_cast<std::size_t>(index) >= scene.objects.size()) {
+        return;
+    }
+
+    SceneObject& object = scene.objects[static_cast<std::size_t>(index)];
+
+    object.hidden = hidden;
+
+    if (hidden) {
+        object.selected = false;
+    }
+}
+
+void scene_set_collection_hidden(Scene& scene, std::uint32_t collection,
+                                 bool hidden) {
+    for (std::size_t i = 0; i < scene.objects.size(); ++i) {
+        if (scene.objects[i].collection == collection) {
+            scene_set_hidden(scene, static_cast<int>(i), hidden);
+        }
+    }
+}
+
+void scene_collection_counts(const Scene& scene, std::uint32_t collection,
+                             int& total, int& visible) {
+    total = 0;
+    visible = 0;
+
+    for (const SceneObject& object : scene.objects) {
+        if (object.collection != collection) {
+            continue;
+        }
+
+        ++total;
+
+        if (!object.hidden) {
+            ++visible;
+        }
+    }
+}
+
 } // namespace gfx

@@ -122,13 +122,15 @@ shorter than it.
   `last_gpu_ms` for GPU timing and `stats` for the UI), `FrameData` with its
   draw list, flags and UI draw list, the shared grid ray basis, and the
   `create_renderer()` factory
-- **Tests**: twenty-one unit-test programs (math, input, timer, camera, obj,
+- **Tests**: twenty-three unit-test programs (math, input, timer, camera, obj,
   transform, transform_edit, raster, bvh, ui, image, texture, json, gltf, path,
-  brdf, light, material_edit, scene, pick, box_select) registered with CTest
+  brdf, light, material_edit, scene, pick, box_select, group_edit, dialog_result)
+  registered with CTest
 - **`gfxlab` app**: opens a 1280x720 window and renders the viewport, loading
-  the OBJ or glTF/GLB files given on the command line (several files stand side
-  by side, each as its own collection of objects), with the settings panel
-  on top. The
+  the OBJ or glTF/GLB files given on the command line, or added later with the
+  Outliner's **Load models...** button (several files stand side by side, each
+  as its own collection of objects), with the settings panel on the left and
+  the Outliner on the right. The
   title bar shows the backend and the FPS, the panel the frame and GPU times,
   and the console logs the frame and GPU times once per second. **Esc** cancels
   an edit, or quits when none is active. `--backend=opengl|vulkan|cuda` selects
@@ -156,7 +158,7 @@ shorter than it.
 | **Shift** + left click | Add the object to the selection and make it active; on a selected object that is not active it only becomes active; on the active selected object it is deselected; on empty space nothing changes |
 | Left drag in the 3D view | Box select: a rectangle is drawn from where you pressed to the mouse (once it moved more than 4 pixels), and on release the objects seen through it become the selection. A grid of pick rays, one every 4 pixels (at most 16384 rays), decides what is seen, so objects completely hidden behind others are not selected, and objects smaller than the grid spacing can be missed (`core/box_select.h`). **Shift** + drag adds to the selection instead of replacing it. Like in Blender a box select does not change the active object. Esc or a right click while dragging cancels the box |
 | **A** / **Alt** + **A** | Select all visible objects / deselect everything |
-| **G** / **R** / **S** | Grab (move), rotate or scale the active object around its own origin; they work only while the active object is selected (the whole selection comes in a later step) |
+| **G** / **R** / **S** | Grab (move), rotate or scale **all selected objects** together, around the middle of the selection (the average of their origins; with one object that is its own origin). Rotating turns the objects around the middle, scaling moves them towards or away from it and multiplies their own scale. With nothing selected they do nothing. The Position / Rotation / Scale fields in the panel still edit the active object only (`core/group_edit.h`) |
 | **X** / **Y** / **Z** during an edit | Constrain to that axis; press again to go back to free |
 | Left click during an edit | Confirm |
 | Right click or Esc during an edit | Cancel, restoring the object exactly |
@@ -169,13 +171,15 @@ shorter than it.
 | Right mouse drag (ray or path tracing) | Move the sun: left/right around the model, up/down higher or lower |
 | **L** (ray or path tracing) | Sun on/off (ray tracing: the viewport's camera light, no shadows; path tracing: sky light only) |
 | **O** (ray tracing) | Ambient occlusion on/off |
-| **H** | Hide or show the panel (the panel's **<< Hide** button hides it, the **>>** tab at the left edge shows it again) |
+| Outliner (right edge) | A list like Blender's: the **Scene Collection** with one collection per loaded file and its objects. Click a collection row to fold or unfold it. Click an object to select it (the same rules as a click in the 3D view), **Shift** + click to add or remove; the selected rows are blue, the active one brighter. The eye icon hides an object (or, on a collection row, all its objects): hidden objects are not drawn, cannot be picked or box selected, and hiding also deselects them. The list scrolls when it is taller than the window |
+| Outliner > **Load models...** | Opens the Windows file dialog (several files can be chosen). Every file becomes a new collection to the right of the existing ones, its meshes and textures are uploaded to the running renderer (all three backends), and the camera frames the whole scene. The selection is not changed. A line under the button says what was loaded or why a file failed. In the CUDA ray tracer only the first 8 objects are traced (`kMaxRtInstances`) |
+| **H** | Hide or show the panels (the left panel's **<< Hide** button hides both it and the Outliner, the **>>** tab at the left edge shows them again) |
 | Left click / drag on the panel | Use its checkboxes, buttons, sliders and fields; click a section header to fold it |
 | Esc (no edit active) | Quit |
 
-The 3D view ignores the mouse while it is over the panel (no zoom, orbit or
+The 3D view ignores the mouse while it is over a panel (no zoom, orbit or
 sun drag starts there); a middle drag started in the view continues over it.
-During a G/R/S edit the panel ignores the mouse, so clicks always confirm or
+During a G/R/S edit the panels ignore the mouse, so clicks always confirm or
 cancel the edit, and the camera stays locked except for zoom.
 
 ## Documentation
@@ -441,7 +445,8 @@ tests/               unit tests                                        -> test_m
                                                                           test_ui, test_image, test_texture, test_json,
                                                                           test_gltf, test_path, test_brdf, test_light,
                                                                           test_material_edit, test_scene, test_pick,
-                                                                          test_box_select
+                                                                          test_box_select, test_group_edit,
+                                                                          test_dialog_result
 CMakePresets.json
 build.bat
 ```

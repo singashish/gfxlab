@@ -44,6 +44,19 @@ namespace gfx {
 
 // The mouse as the UI sees it: window pixels, left button only, plus the
 // wheel and the window height (for panels taller than the window)
+// How a tree row is marked (see Ui::tree_row)
+enum class UiRowMark : std::uint8_t {
+    UI_ROW_PLAIN = 0,
+    UI_ROW_SELECTED,  // part of the selection
+    UI_ROW_ACTIVE     // the active item (stronger than selected)
+};
+
+// What the user did with a tree row this frame
+struct UiRowEvent {
+    bool clicked = false;      // the label of a row that cannot fold
+    bool eye_clicked = false;  // the eye icon; *visible was flipped
+};
+
 struct UiInput {
     float mouse_x = -1.0e9f;
     float mouse_y = -1.0e9f;
@@ -66,6 +79,14 @@ public:
     // it describes the previous one. The app checks it before using the
     // mouse for the 3D view
     bool wants_mouse() const { return m_wants_mouse; }
+
+    // Where to put the panel `title` (the x for begin_panel, in 96-DPI
+    // pixels) so that it touches the right edge of a window that is
+    // window_width pixels wide, `margin` apart. It uses the width the
+    // panel had last frame (min_width the first time), so a panel that
+    // grows stays inside the window. Call it after begin_frame
+    float right_aligned_x(const char* title, float min_width,
+                          float window_width, float margin) const;
 
     // Scroll state of a panel as of its last end_panel (for tests and
     // the app): how far the body is scrolled and the largest offset it
@@ -109,6 +130,21 @@ public:
     // as "%.0f deg". Returns true on frames where *value changed
     bool slider(const char* label, float* value, float min, float max,
                 const char* format);
+
+    // One row of a tree list, like the Outliner's: indented by `indent`
+    // levels, with the text `label`.
+    //   - `key` identifies the row (like a label does for the other
+    //     widgets) and must be unique within the panel; the label itself
+    //     may repeat
+    //   - open != nullptr makes it a folder: it shows an arrow, and a
+    //     click anywhere on the row flips *open (clicked stays false).
+    //     nullptr makes it an item: a click is reported as clicked
+    //   - visible != nullptr adds an eye icon at the right end; a click
+    //     on it flips *visible and reports eye_clicked. A row whose
+    //     *visible is false is drawn dimmed
+    //   - mark colours the row's background (selected, active)
+    UiRowEvent tree_row(const char* key, const char* label, int indent,
+                        UiRowMark mark, bool* open, bool* visible);
 
     // Three values side by side (x, y, z), each changed by dragging
     // left/right on it: every pixel of mouse movement adds speed. No

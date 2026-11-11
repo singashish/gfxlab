@@ -78,7 +78,9 @@ void GLRenderer::render(const FrameData& frame) {
     // Draw opaque geometry first
     // The demo triangles remain solid; wireframe applies to loaded meshes
     if (frame.draw_list.empty()) {
-        m_triangle.draw(view_proj, frame.demo_spin_angle);
+        if (frame.show_demo) {
+            m_triangle.draw(view_proj, frame.demo_spin_angle);
+        }
     } else if (frame.wireframe) {
         m_meshes.draw_wireframe(frame.draw_list, view_proj);
     } else {

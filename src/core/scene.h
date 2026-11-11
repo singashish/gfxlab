@@ -146,4 +146,22 @@ void scene_deselect_all(Scene& scene);
 // How many objects are selected
 int scene_selected_count(const Scene& scene);
 
+// ---- Hiding (the eye icons of the Outliner) --------------------------------
+
+// Hides or shows one object. A hidden object is not drawn and not
+// pickable, and hiding it also deselects it (so G/R/S, which work on the
+// selected objects, can never move something you cannot see). It keeps
+// being the active object if it was. An index outside the list does
+// nothing
+void scene_set_hidden(Scene& scene, int index, bool hidden);
+
+// Hides or shows every object of a collection (an index outside the
+// list does nothing); hiding deselects them like above
+void scene_set_collection_hidden(Scene& scene, std::uint32_t collection,
+                                 bool hidden);
+
+// How many objects a collection has, and how many of them are visible
+void scene_collection_counts(const Scene& scene, std::uint32_t collection,
+                             int& total, int& visible);
+
 } // namespace gfx

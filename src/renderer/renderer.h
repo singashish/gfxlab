@@ -138,6 +138,12 @@ struct FrameData {
     // Temporary demo animation state, replaced by a draw list in M3
     float demo_spin_angle = 0.0f;
 
+    // The OpenGL and Vulkan backends draw their demo triangles when the
+    // draw list is empty. The app turns this off once a model is loaded,
+    // so that hiding every object (the Outliner's eye) shows an empty
+    // scene and not the demo
+    bool show_demo = true;
+
     // Object instances to render
     std::vector<DrawItem> draw_list;
 

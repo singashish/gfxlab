@@ -531,6 +531,55 @@ void test_select_all_and_deselect_all() {
     CHECK(empty.active == -1);
 }
 
+// The eye icons: hiding an object deselects it, keeps it active, and a
+// collection can be hidden as a whole
+void test_hiding() {
+    gfx::Scene scene = make_selection_scene(4);
+
+    gfx::scene_select_all(scene);
+    scene.active = 2;
+
+    gfx::scene_set_hidden(scene, 2, true);
+    CHECK(scene.objects[2].hidden);
+    CHECK(!scene.objects[2].selected);
+    CHECK(scene.active == 2); // still the active object, now unselected
+    CHECK(selection_text(scene) == "0,1,3 active 2");
+
+    // Showing it again does not select it
+    gfx::scene_set_hidden(scene, 2, false);
+    CHECK(!scene.objects[2].hidden);
+    CHECK(!scene.objects[2].selected);
+
+    // Bad indices do nothing
+    gfx::scene_set_hidden(scene, -1, true);
+    gfx::scene_set_hidden(scene, 99, true);
+    CHECK(selection_text(scene) == "0,1,3 active 2");
+
+    // The scene has one collection (all four objects are in it)
+    int total = 0;
+    int visible = 0;
+
+    gfx::scene_collection_counts(scene, 0, total, visible);
+    CHECK(total == 4 && visible == 4);
+
+    gfx::scene_set_collection_hidden(scene, 0, true);
+    gfx::scene_collection_counts(scene, 0, total, visible);
+    CHECK(total == 4 && visible == 0);
+    CHECK(gfx::scene_selected_count(scene) == 0);
+
+    gfx::scene_set_hidden(scene, 1, false);
+    gfx::scene_collection_counts(scene, 0, total, visible);
+    CHECK(total == 4 && visible == 1);
+
+    gfx::scene_set_collection_hidden(scene, 0, false);
+    gfx::scene_collection_counts(scene, 0, total, visible);
+    CHECK(total == 4 && visible == 4);
+
+    // A collection that does not exist has no objects
+    gfx::scene_collection_counts(scene, 5, total, visible);
+    CHECK(total == 0 && visible == 0);
+}
+
 // The real files: one file must place its instances exactly as the old
 // single model transform did, and a second file must keep its textures
 void test_real_files() {
@@ -632,6 +681,7 @@ int main() {
     test_click_select();
     test_loading_keeps_the_selection();
     test_select_all_and_deselect_all();
+    test_hiding();
     test_real_files();
 
     if (g_failures == 0) {

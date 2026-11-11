@@ -3,7 +3,9 @@ add_library(gfx_core STATIC
     box_select.cpp
     bvh.cpp
     bvh4.cpp
+    dialog_result.cpp
     gltf_loader.cpp
+    group_edit.cpp
     image.cpp
     inflate.cpp
     json.cpp

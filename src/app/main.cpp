@@ -3,6 +3,7 @@
 #include "core/orbit_camera.h"
 #include "core/path_settings.h"
 #include "core/box_select.h"
+#include "core/group_edit.h"
 #include "core/pick.h"
 #include "core/material_edit.h"
 #include "core/math_util.h"
@@ -11,6 +12,7 @@
 #include "core/scene.h"
 #include "core/transform.h"
 #include "core/transform_edit.h"
+#include "platform/file_dialog.h"
 #include "platform/ui_font.h"
 #include "platform/window.h"
 #include "renderer/renderer.h"
@@ -58,6 +60,127 @@ std::string resolve_model_path(const std::string& name,
     }
 
     return {};
+}
+
+// Loads one model file and adds it to the scene as a new collection (the
+// start-up loop and the Load models button both use it). `requested` is
+// looked up like a command-line argument. Returns false with a short
+// reason in `error` when the file is missing or cannot be loaded; `model`
+// and `scene` are unchanged then. The caller refreshes what depends on
+// the scene (bounds, camera) and uploads the new meshes to the renderer
+bool add_model_file(const std::string& requested, gfx::Model& model,
+                    gfx::Scene& scene, std::string& error) {
+    gfx::Model loaded;
+    std::vector<std::string> tried;
+    const std::string resolved = resolve_model_path(requested, tried);
+
+    if (resolved.empty()) {
+        LOG_ERROR("model not found: %s", requested.c_str());
+        for (const std::string& t : tried) {
+            LOG_ERROR("  tried: %s", t.c_str());
+        }
+        error = "Not found: " + requested;
+        return false;
+    }
+
+    LOG_INFO("model: %s", resolved.c_str());
+
+    const std::string file_name =
+        std::filesystem::path(resolved).filename().string();
+
+    // Loads, converts to Z-up, generates missing normals and edges,
+    // decodes the textures and centres the model on the origin
+    std::string load_error;
+
+    if (!gfx::load_model(resolved, loaded, load_error)) {
+        LOG_ERROR("failed to load model: %s", load_error.c_str());
+        error = file_name + ": " + load_error;
+        return false;
+    }
+
+    std::size_t vertex_count = 0;
+    std::size_t texcoord_meshes = 0;
+
+    for (const gfx::Mesh& mesh : loaded.meshes) {
+        vertex_count += mesh.positions.size();
+
+        if (mesh.has_texcoords()) {
+            ++texcoord_meshes;
+        }
+    }
+
+    LOG_INFO(
+        "loaded model: %zu mesh%s, %zu instance%s, %zu vertices, "
+        "%zu triangles",
+        loaded.meshes.size(), loaded.meshes.size() == 1 ? "" : "es",
+        loaded.instances.size(), loaded.instances.size() == 1 ? "" : "s",
+        vertex_count, gfx::model_triangle_count(loaded)
+    );
+
+    if (loaded.meshes.size() == 1) {
+        LOG_INFO("texture coordinates: %s",
+                 texcoord_meshes == 1 ? "yes" : "no");
+    } else {
+        LOG_INFO("texture coordinates: %zu of %zu meshes",
+                 texcoord_meshes, loaded.meshes.size());
+    }
+
+    // One line per distinct material name (glTF gives every mesh a
+    // copy of the whole list)
+    std::vector<std::string> logged_materials;
+
+    for (const gfx::Mesh& mesh : loaded.meshes) {
+        for (const gfx::Material& material : mesh.materials) {
+            if (std::find(logged_materials.begin(),
+                          logged_materials.end(),
+                          material.name) != logged_materials.end()) {
+                continue;
+            }
+
+            logged_materials.push_back(material.name);
+
+            LOG_INFO(
+                "material '%s': base colour %.2f %.2f %.2f, roughness "
+                "%.2f, metallic %.2f%s%s",
+                material.name.c_str(),
+                material.base_color.x,
+                material.base_color.y,
+                material.base_color.z,
+                material.roughness,
+                material.metallic,
+                material.base_color_texture.empty() ? "" : ", texture ",
+                material.base_color_texture.c_str());
+        }
+    }
+
+    // The decoded images (the renderers will use them from Step 3).
+    // The material that uses an image knows its name
+    std::vector<bool> image_logged(loaded.images.size(), false);
+
+    for (const gfx::Mesh& mesh : loaded.meshes) {
+        for (const gfx::Material& material : mesh.materials) {
+            const int image = material.base_color_image;
+
+            if (image < 0 ||
+                static_cast<std::size_t>(image) >= loaded.images.size() ||
+                image_logged[static_cast<std::size_t>(image)]) {
+                continue;
+            }
+
+            image_logged[static_cast<std::size_t>(image)] = true;
+
+            const gfx::Image& decoded =
+                loaded.images[static_cast<std::size_t>(image)];
+
+            LOG_INFO("texture %s: %dx%d",
+                     material.base_color_texture.c_str(),
+                     decoded.width, decoded.height);
+        }
+    }
+
+    gfx::scene_add_model(scene, model, std::move(loaded), file_name);
+
+    return true;
 }
 
 } // namespace
@@ -110,123 +233,35 @@ int main(int argc, char** argv) {
 
     // One BVH per mesh for picking, built when a mesh is first clicked
     gfx::PickIndex pick_index;
-    const bool has_model = !model_paths.empty();
+    bool has_model = false;
     gfx::Aabb bounds{};
     gfx::TransformEditor editor;
 
     // Shown in the panel: the file name, or the number of files
     std::string model_name;
 
+    // Half the scene's diagonal: frames the camera, and scales how far a
+    // drag in the panel's Position fields moves an object
+    float model_radius = 1.0f;
+
     for (const char* model_path : model_paths) {
-        gfx::Model loaded;
         std::string error;
-        std::vector<std::string> tried;
-        const std::string resolved = resolve_model_path(model_path, tried);
 
-        if (resolved.empty()) {
-            LOG_ERROR("model not found: %s", model_path);
-            for (const std::string& t : tried) {
-                LOG_ERROR("  tried: %s", t.c_str());
-            }
+        if (!add_model_file(model_path, model, scene, error)) {
+            // The details are in the log
             return 1;
         }
-
-        LOG_INFO("model: %s", resolved.c_str());
-
-        const std::string file_name =
-            std::filesystem::path(resolved).filename().string();
-
-        // Loads, converts to Z-up, generates missing normals and edges,
-        // decodes the textures and centres the model on the origin
-        if (!gfx::load_model(resolved, loaded, error)) {
-            LOG_ERROR("failed to load model: %s", error.c_str());
-            return 1;
-        }
-
-        std::size_t vertex_count = 0;
-        std::size_t texcoord_meshes = 0;
-
-        for (const gfx::Mesh& mesh : loaded.meshes) {
-            vertex_count += mesh.positions.size();
-
-            if (mesh.has_texcoords()) {
-                ++texcoord_meshes;
-            }
-        }
-
-        LOG_INFO(
-            "loaded model: %zu mesh%s, %zu instance%s, %zu vertices, "
-            "%zu triangles",
-            loaded.meshes.size(), loaded.meshes.size() == 1 ? "" : "es",
-            loaded.instances.size(), loaded.instances.size() == 1 ? "" : "s",
-            vertex_count, gfx::model_triangle_count(loaded)
-        );
-
-        if (loaded.meshes.size() == 1) {
-            LOG_INFO("texture coordinates: %s",
-                     texcoord_meshes == 1 ? "yes" : "no");
-        } else {
-            LOG_INFO("texture coordinates: %zu of %zu meshes",
-                     texcoord_meshes, loaded.meshes.size());
-        }
-
-        // One line per distinct material name (glTF gives every mesh a
-        // copy of the whole list)
-        std::vector<std::string> logged_materials;
-
-        for (const gfx::Mesh& mesh : loaded.meshes) {
-            for (const gfx::Material& material : mesh.materials) {
-                if (std::find(logged_materials.begin(),
-                              logged_materials.end(),
-                              material.name) != logged_materials.end()) {
-                    continue;
-                }
-
-                logged_materials.push_back(material.name);
-
-                LOG_INFO(
-                    "material '%s': base colour %.2f %.2f %.2f, roughness "
-                    "%.2f, metallic %.2f%s%s",
-                    material.name.c_str(),
-                    material.base_color.x,
-                    material.base_color.y,
-                    material.base_color.z,
-                    material.roughness,
-                    material.metallic,
-                    material.base_color_texture.empty() ? "" : ", texture ",
-                    material.base_color_texture.c_str());
-            }
-        }
-
-        // The decoded images (the renderers will use them from Step 3).
-        // The material that uses an image knows its name
-        std::vector<bool> image_logged(loaded.images.size(), false);
-
-        for (const gfx::Mesh& mesh : loaded.meshes) {
-            for (const gfx::Material& material : mesh.materials) {
-                const int image = material.base_color_image;
-
-                if (image < 0 ||
-                    static_cast<std::size_t>(image) >= loaded.images.size() ||
-                    image_logged[static_cast<std::size_t>(image)]) {
-                    continue;
-                }
-
-                image_logged[static_cast<std::size_t>(image)] = true;
-
-                const gfx::Image& decoded =
-                    loaded.images[static_cast<std::size_t>(image)];
-
-                LOG_INFO("texture %s: %dx%d",
-                         material.base_color_texture.c_str(),
-                         decoded.width, decoded.height);
-            }
-        }
-
-        gfx::scene_add_model(scene, model, std::move(loaded), file_name);
     }
 
-    if (has_model) {
+    // Everything that depends on which models are loaded; also run again
+    // after the Load models button added files
+    const auto refresh_scene_info = [&]() {
+        has_model = !scene.objects.empty();
+
+        if (!has_model) {
+            return;
+        }
+
         model_name = scene.collections.size() == 1
             ? scene.collections[0].name
             : std::to_string(scene.collections.size()) + " files";
@@ -239,7 +274,10 @@ int main(int argc, char** argv) {
         // Every collection stands on the floor; with several files they
         // are placed side by side. The box frames the camera
         bounds = gfx::scene_bounds(scene, model);
-    }
+        model_radius = 0.5f * gfx::length(bounds.max - bounds.min);
+    };
+
+    refresh_scene_info();
 
     gfx::Window window;
 
@@ -287,6 +325,19 @@ int main(int argc, char** argv) {
     bool select_box_active = false;
     float select_start_x = 0.0f;
     float select_start_y = 0.0f;
+
+    // The Outliner (panel on the right): whether the "Scene Collection"
+    // root and each file's collection are unfolded (one flag per
+    // collection, 1 = open; new collections start open), the Load models
+    // button's request (the dialog blocks, so the main loop opens it, not
+    // the UI code), and the line under the button about the last load
+    bool outliner_root_open = true;
+    std::vector<unsigned char> collection_open;
+    bool load_models_requested = false;
+    std::string load_status;
+
+    // The objects a G / R / S edit is changing (core/group_edit.h)
+    gfx::GroupEdit group_edit;
 
     // Panel line with the timings, refreshed with the title
     char stats_text[96] = "-- FPS";
@@ -378,12 +429,7 @@ int main(int argc, char** argv) {
     // index
     std::vector<gfx::MeshId> mesh_ids;
 
-    // Half the scene's diagonal: frames the camera, and scales how far a
-    // drag in the panel's Position fields moves an object
-    const float model_radius =
-        has_model ? 0.5f * gfx::length(bounds.max - bounds.min) : 1.0f;
-
-    // The start-up view: default angles, framed on the model
+    // The start-up view: default angles, framed on the models
     const auto reset_camera = [&]() {
         camera = gfx::OrbitCamera{};
 
@@ -392,53 +438,6 @@ int main(int argc, char** argv) {
                          kFovY);
         }
     };
-
-    if (has_model) {
-        reset_camera();
-
-        // Upload every image once; textures[i] belongs to model.images[i]
-        // (0 = this backend has no textures, or the upload failed).
-        // model.images stays in memory: the path tracer will need it
-        std::vector<gfx::TextureId> textures;
-        textures.reserve(model.images.size());
-
-        std::size_t textures_uploaded = 0;
-
-        for (const gfx::Image& image : model.images) {
-            const gfx::TextureId texture = renderer->create_texture(image);
-
-            if (texture != 0) {
-                ++textures_uploaded;
-            }
-
-            textures.push_back(texture);
-        }
-
-        if (!model.images.empty()) {
-            LOG_INFO("textures uploaded: %zu of %zu", textures_uploaded,
-                     model.images.size());
-        }
-
-        for (const gfx::Mesh& mesh : model.meshes) {
-            const gfx::MeshId id = renderer->create_mesh(mesh, textures);
-
-            if (id == 0) {
-                LOG_ERROR("failed to upload model to the renderer");
-                return 1;
-            }
-
-            mesh_ids.push_back(id);
-        }
-
-        if (is_cuda) {
-            material_entries = gfx::build_material_entries(model.meshes);
-
-            for (const gfx::MaterialEntry& entry : material_entries) {
-                material_states.push_back(
-                    gfx::edit_state_of(entry.original));
-            }
-        }
-    }
 
     // Sends entry i's edited values to every mesh copy of the material
     const auto apply_material = [&](std::size_t i) {
@@ -452,6 +451,195 @@ int main(int argc, char** argv) {
                          target.index, target.mesh);
             }
         }
+    };
+
+    // The material editor's list after meshes were added (CUDA only):
+    // rebuilt from all meshes, and what was edited stays: an entry that
+    // existed before (same index and name) keeps its edited values, the
+    // selected entry stays selected, and the edited values are sent to the
+    // new meshes that share the material. first_new_mesh is the number of
+    // meshes the model had before (0 = the first load, nothing to keep)
+    const auto refresh_material_entries = [&](std::size_t first_new_mesh) {
+        std::vector<gfx::MaterialEntry> old_entries =
+            std::move(material_entries);
+        std::vector<gfx::MaterialEditState> old_states =
+            std::move(material_states);
+
+        int kept_index = -1;
+        std::string kept_name;
+
+        if (!old_entries.empty()) {
+            const std::size_t selected = static_cast<std::size_t>(std::clamp(
+                static_cast<int>(std::lround(material_slider)), 0,
+                static_cast<int>(old_entries.size()) - 1));
+
+            kept_index = old_entries[selected].index;
+            kept_name = old_entries[selected].name;
+        }
+
+        material_entries = gfx::build_material_entries(model.meshes);
+        material_states.clear();
+
+        std::vector<std::size_t> to_apply;
+
+        for (std::size_t i = 0; i < material_entries.size(); ++i) {
+            const gfx::MaterialEntry& entry = material_entries[i];
+            gfx::MaterialEditState state = gfx::edit_state_of(entry.original);
+
+            for (std::size_t k = 0; k < old_entries.size(); ++k) {
+                if (old_entries[k].index == entry.index &&
+                    old_entries[k].name == entry.name) {
+                    state = old_states[k];
+                    break;
+                }
+            }
+
+            material_states.push_back(state);
+
+            for (const gfx::MaterialTarget& target : entry.targets) {
+                if (first_new_mesh > 0 && target.mesh >= first_new_mesh) {
+                    to_apply.push_back(i);
+                    break;
+                }
+            }
+
+            if (entry.index == kept_index && entry.name == kept_name) {
+                material_slider = static_cast<float>(i);
+            }
+        }
+
+        if (kept_index < 0) {
+            material_slider = 0.0f;
+        }
+
+        for (const std::size_t i : to_apply) {
+            apply_material(i);
+        }
+    };
+
+    // One renderer texture per Model image (0 = this backend has no
+    // textures, or the upload failed); a mesh's material refers to them by
+    // the image's index
+    std::vector<gfx::TextureId> texture_ids;
+
+    // Uploads the images and meshes the Model has and the renderer does
+    // not have yet: everything at start-up, the new file's after Load
+    // models. mesh_ids stays parallel to model.meshes, so a mesh that
+    // fails to upload keeps id 0 (and is not drawn). model.images stays in
+    // memory: the path tracer will need it. Returns false when a mesh
+    // failed
+    const auto upload_new_parts = [&]() -> bool {
+        const std::size_t first_image = texture_ids.size();
+        const std::size_t first_mesh = mesh_ids.size();
+
+        std::size_t textures_uploaded = 0;
+
+        for (std::size_t i = first_image; i < model.images.size(); ++i) {
+            const gfx::TextureId texture =
+                renderer->create_texture(model.images[i]);
+
+            if (texture != 0) {
+                ++textures_uploaded;
+            }
+
+            texture_ids.push_back(texture);
+        }
+
+        if (model.images.size() > first_image) {
+            LOG_INFO("textures uploaded: %zu of %zu", textures_uploaded,
+                     model.images.size() - first_image);
+        }
+
+        bool all_uploaded = true;
+
+        for (std::size_t m = first_mesh; m < model.meshes.size(); ++m) {
+            const gfx::MeshId id =
+                renderer->create_mesh(model.meshes[m], texture_ids);
+
+            if (id == 0) {
+                LOG_ERROR("failed to upload mesh %zu to the renderer", m);
+                all_uploaded = false;
+            }
+
+            mesh_ids.push_back(id);
+        }
+
+        if (is_cuda) {
+            refresh_material_entries(first_mesh);
+        }
+
+        return all_uploaded;
+    };
+
+    if (has_model) {
+        reset_camera();
+
+        if (!upload_new_parts()) {
+            LOG_ERROR("failed to upload model to the renderer");
+            return 1;
+        }
+    }
+
+    // The Load models button: asks for files, adds each one as a new
+    // collection, uploads their meshes and textures to the renderer and
+    // frames the whole scene (the first load also resets the view angles).
+    // The selection is left alone. The main loop calls it, never the UI
+    // code, because the dialog blocks until it is closed
+    const auto load_models_now = [&]() {
+        const std::vector<std::string> files =
+            gfx::open_model_files_dialog(window.native_handle());
+
+        if (files.empty()) {
+            return; // cancelled
+        }
+
+        const bool scene_was_empty = !has_model;
+        std::size_t loaded = 0;
+        std::string last_error;
+
+        for (const std::string& file : files) {
+            std::string error;
+
+            if (add_model_file(file, model, scene, error)) {
+                ++loaded;
+            } else {
+                last_error = error;
+            }
+        }
+
+        char text[192];
+
+        if (loaded == 0) {
+            std::snprintf(text, sizeof(text), "Failed: %.150s",
+                          last_error.c_str());
+            load_status = text;
+            return;
+        }
+
+        refresh_scene_info();
+
+        const bool uploaded = upload_new_parts();
+
+        if (scene_was_empty) {
+            reset_camera();
+        } else {
+            camera.frame((bounds.min + bounds.max) * 0.5f, model_radius,
+                         kFovY);
+        }
+
+        if (!uploaded) {
+            std::snprintf(text, sizeof(text),
+                          "Some meshes could not be uploaded (see the log)");
+        } else if (loaded < files.size()) {
+            std::snprintf(text, sizeof(text), "Loaded %zu of %zu: %.120s",
+                          loaded, files.size(), last_error.c_str());
+        } else {
+            std::snprintf(text, sizeof(text), "Loaded %zu file%s", loaded,
+                          loaded == 1 ? "" : "s");
+        }
+
+        load_status = text;
+        LOG_INFO("%s", text);
     };
 
     // Convert the current camera and viewport into backend-independent
@@ -713,11 +901,13 @@ int main(int argc, char** argv) {
                 }
 
                 if (editor.active()) {
-                    char edit_text[48];
+                    char edit_text[64];
                     std::snprintf(edit_text, sizeof(edit_text),
-                                  "Editing: %s %s",
+                                  "Editing: %s %s (%zu object%s)",
                                   mode_name(editor.mode()),
-                                  axis_name(editor.axis()));
+                                  axis_name(editor.axis()),
+                                  group_edit.objects.size(),
+                                  group_edit.objects.size() == 1 ? "" : "s");
                     ui.text(edit_text);
                 }
             }
@@ -981,11 +1171,13 @@ int main(int argc, char** argv) {
                 ui.text("Click: select, Shift + click: add / remove");
                 ui.text("Drag: box select, Shift + drag: add");
                 ui.text("A: select all, Alt + A: deselect all");
-                ui.text("G / R / S: grab, rotate, scale active object");
+                ui.text("G / R / S: grab, rotate, scale selection");
                 ui.text("  X / Y / Z: axis, left click: confirm");
                 ui.text("  Right click / Esc: cancel");
                 ui.text("W wireframe, M materials, V vsync");
-                ui.text("H or << hide panel");
+                ui.text("Outliner (right): click / Shift + click select,");
+                ui.text("  eye hides, Load models... adds files");
+                ui.text("H or << hide panels");
                 ui.text("T ray tracing, L sun, O AO (CUDA)");
                 ui.text("P path tracing (CUDA, excludes T)");
                 ui.text("Right drag: move the sun (CUDA)");
@@ -993,6 +1185,110 @@ int main(int argc, char** argv) {
             }
 
             ui.end_panel();
+            // ---- Outliner -------------------------------------------
+            // (a second panel at the right edge; the H key and the
+            // << Hide button fold it away together with the first)
+            {
+                const float outliner_x = ui.right_aligned_x(
+                    "Outliner", 260.0f,
+                    static_cast<float>(window.width()), 10.0f);
+
+                ui.begin_panel("Outliner", outliner_x, 10.0f, 260.0f);
+
+                if (ui.button("Load models...")) {
+                    load_models_requested = true;
+                }
+
+                if (!load_status.empty()) {
+                    ui.text(load_status.c_str());
+                }
+
+                collection_open.resize(scene.collections.size(), 1);
+
+                if (!has_model) {
+                    ui.text("No models loaded");
+                } else {
+                    // The root folds everything; it has no eye
+                    ui.tree_row("scene", "Scene Collection", 0,
+                                gfx::UiRowMark::UI_ROW_PLAIN,
+                                &outliner_root_open, nullptr);
+                }
+
+                if (has_model && outliner_root_open) {
+                    const bool shift =
+                        window.input().key_down(gfx::Key::GFX_KEY_SHIFT);
+                    char key[32];
+
+                    for (std::size_t c = 0; c < scene.collections.size();
+                         ++c) {
+                        const auto collection =
+                            static_cast<std::uint32_t>(c);
+                        int total = 0;
+                        int visible = 0;
+
+                        gfx::scene_collection_counts(scene, collection,
+                                                     total, visible);
+
+                        bool open = collection_open[c] != 0;
+                        bool collection_visible = visible > 0;
+
+                        std::snprintf(key, sizeof(key), "c%zu", c);
+
+                        const gfx::UiRowEvent folder = ui.tree_row(
+                            key, scene.collections[c].name.c_str(), 1,
+                            gfx::UiRowMark::UI_ROW_PLAIN, &open,
+                            &collection_visible);
+
+                        collection_open[c] = open ? 1 : 0;
+
+                        if (folder.eye_clicked) {
+                            gfx::scene_set_collection_hidden(
+                                scene, collection, !collection_visible);
+                        }
+
+                        if (!open) {
+                            continue;
+                        }
+
+                        for (std::size_t i = 0; i < scene.objects.size();
+                             ++i) {
+                            const gfx::SceneObject& object = scene.objects[i];
+
+                            if (object.collection != collection) {
+                                continue;
+                            }
+
+                            gfx::UiRowMark mark = gfx::UiRowMark::UI_ROW_PLAIN;
+
+                            if (object.selected) {
+                                mark = static_cast<int>(i) == scene.active
+                                    ? gfx::UiRowMark::UI_ROW_ACTIVE
+                                    : gfx::UiRowMark::UI_ROW_SELECTED;
+                            }
+
+                            bool object_visible = !object.hidden;
+
+                            std::snprintf(key, sizeof(key), "o%zu", i);
+
+                            const gfx::UiRowEvent row = ui.tree_row(
+                                key, object.name.c_str(), 2, mark, nullptr,
+                                &object_visible);
+
+                            if (row.eye_clicked) {
+                                gfx::scene_set_hidden(
+                                    scene, static_cast<int>(i),
+                                    !object_visible);
+                            } else if (row.clicked && !object.hidden) {
+                                // The same rules as a click in the 3D view
+                                gfx::scene_click_select(
+                                    scene, static_cast<int>(i), shift);
+                            }
+                        }
+                    }
+                }
+
+                ui.end_panel();
+            }
         } else {
             // Hidden: a small tab flush with the left edge brings it
             // back. It is a panel like any other, so the mouse over it
@@ -1012,6 +1308,7 @@ int main(int argc, char** argv) {
         ui.end_frame();
 
         frame.ui = &ui_list;
+        frame.show_demo = !has_model;
 
         // The application owns the transforms. The renderer receives
         // the resulting matrices and draws the meshes: one draw item per
@@ -1020,7 +1317,8 @@ int main(int argc, char** argv) {
             for (std::size_t i = 0; i < scene.objects.size(); ++i) {
                 const gfx::SceneObject& object = scene.objects[i];
 
-                if (object.hidden || object.mesh >= mesh_ids.size()) {
+                if (object.hidden || object.mesh >= mesh_ids.size() ||
+                    mesh_ids[object.mesh] == 0) {
                     continue;
                 }
 
@@ -1152,6 +1450,14 @@ int main(int argc, char** argv) {
         }
 
         was_minimized = false;
+
+        // The Load models button (pressed last frame): the dialog blocks,
+        // so the frame timer is restarted afterwards
+        if (load_models_requested) {
+            load_models_requested = false;
+            load_models_now();
+            timer.reset();
+        }
 
         const gfx::InputState& in = window.input();
 
@@ -1373,26 +1679,30 @@ int main(int argc, char** argv) {
         // Modal G / R / S editing
         // ------------------------------------------------------------
 
-        // G / R / S act on the active object, when it is selected (with
-        // nothing selected they do nothing, as in Blender). The pointer
-        // stays valid for the whole block: nothing adds or removes
-        // objects, and clicks and A are ignored during an edit
-        gfx::SceneObject* edit_candidate = scene.active_object();
-
-        if (gfx::SceneObject* edited =
-                edit_candidate != nullptr && edit_candidate->selected
-                    ? edit_candidate
-                    : nullptr) {
+        // G / R / S act on every selected object together, around the
+        // middle of the selection (core/group_edit.h); with nothing
+        // selected they do nothing, as in Blender. The TransformEditor
+        // works on a made-up transform at the pivot, and what it does to
+        // it is applied to all the objects. Nothing adds, removes or
+        // hides objects during an edit: clicks, A and the Outliner are
+        // ignored while it runs
+        if (has_model) {
             const auto begin_edit = [&](gfx::EditMode mode) {
+                if (!gfx::group_edit_begin(scene, group_edit)) {
+                    return;
+                }
+
                 editor.begin(
                     mode,
-                    edited->transform,
+                    gfx::group_edit_pivot_transform(group_edit),
                     in.mouse_x(),
                     in.mouse_y(),
                     edit_view
                 );
 
-                LOG_INFO("%s started", mode_name(mode));
+                LOG_INFO("%s started (%zu object%s)", mode_name(mode),
+                         group_edit.objects.size(),
+                         group_edit.objects.size() == 1 ? "" : "s");
             };
 
             gfx::EditMode requested_mode = gfx::EditMode::EDIT_NONE;
@@ -1411,8 +1721,9 @@ int main(int argc, char** argv) {
                 }
             } else if (requested_mode != gfx::EditMode::EDIT_NONE) {
                 // Switching G / R / S cancels the previous operation
-                // and starts the next one from the restored transform
-                edited->transform = editor.cancel();
+                // and starts the next one from the restored transforms
+                (void)editor.cancel();
+                gfx::group_edit_restore(scene, group_edit);
                 LOG_INFO("cancelled; switching edit mode");
 
                 begin_edit(requested_mode);
@@ -1432,14 +1743,19 @@ int main(int argc, char** argv) {
             }
 
             if (editor.active()) {
-                // Calculate the result from the starting transform and
+                // Calculate the result from the starting transforms and
                 // current mouse position
+                gfx::Transform edited_pivot =
+                    gfx::group_edit_pivot_transform(group_edit);
+
                 editor.update(
                     in.mouse_x(),
                     in.mouse_y(),
                     edit_view,
-                    edited->transform
+                    edited_pivot
                 );
+
+                gfx::group_edit_apply(scene, group_edit, edited_pivot);
 
                 // Confirm takes precedence if both mouse buttons are
                 // reported pressed during the same frame
@@ -1452,7 +1768,8 @@ int main(int argc, char** argv) {
                         gfx::MouseButton::GFX_MOUSE_RIGHT) ||
                     in.key_pressed(gfx::Key::GFX_KEY_ESCAPE)
                 ) {
-                    edited->transform = editor.cancel();
+                    (void)editor.cancel();
+                    gfx::group_edit_restore(scene, group_edit);
                     LOG_INFO("cancelled");
                 }
             }

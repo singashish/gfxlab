@@ -33,6 +33,9 @@ constexpr std::uint32_t kHoverColor = ui_rgba(66, 71, 81, 255);
 constexpr std::uint32_t kHeldColor = ui_rgba(84, 90, 102, 255);
 constexpr std::uint32_t kAccentColor = ui_rgba(74, 138, 226, 255);
 constexpr std::uint32_t kValueColor = ui_rgba(240, 242, 245, 255);
+constexpr std::uint32_t kRowSelectedColor = ui_rgba(46, 84, 128, 255);
+constexpr std::uint32_t kRowActiveColor = ui_rgba(66, 120, 196, 255);
+constexpr float kIndentWidth = 14.0f;     // tree rows: per level
 constexpr std::uint32_t kHeaderColor = ui_rgba(38, 42, 49, 255);
 constexpr std::uint32_t kTrackColor = ui_rgba(255, 255, 255, 16);
 constexpr std::uint32_t kThumbColor = ui_rgba(92, 98, 110, 255);
@@ -134,6 +137,24 @@ float Ui::panel_scroll(const char* title) const {
 float Ui::panel_max_scroll(const char* title) const {
     const PanelState* panel = find_panel(hash_string(title, kFnvBasis));
     return panel != nullptr ? panel->max_scroll : 0.0f;
+}
+
+float Ui::right_aligned_x(const char* title, float min_width,
+                          float window_width, float margin) const {
+    const PanelState* state = find_panel(hash_string(title, kFnvBasis));
+
+    float width = px(min_width);
+
+    if (state != nullptr) {
+        width = std::max(width, state->width);
+
+        // A panel that scrolls has a strip for its scrollbar on top
+        if (state->max_scroll > 0.0f) {
+            width += px(kBarWidth);
+        }
+    }
+
+    return (window_width - width - px(margin)) / m_scale;
 }
 
 std::uint32_t Ui::thumb_id() const {
@@ -661,6 +682,138 @@ bool Ui::slider(const char* label, float* value, float min, float max,
                      text, m_enabled ? kValueColor : dimmed(kValueColor));
 
     return changed;
+}
+
+UiRowEvent Ui::tree_row(const char* key, const char* label, int indent,
+                        UiRowMark mark, bool* open, bool* visible) {
+    UiRowEvent event;
+
+    if (m_list == nullptr || !m_in_panel || key == nullptr ||
+        label == nullptr) {
+        return event;
+    }
+
+    const float line = m_list->line_height();
+    const Rect row = next_row(line + px(kRowExtra));
+    const std::uint32_t id = widget_id(key);
+    const std::uint32_t eye_id = widget_id(key) ^ 0x2545F491u;
+
+    const float arrow = std::round(line * 0.4f);
+    const float eye_width = visible != nullptr ? std::round(line * 1.4f)
+                                               : 0.0f;
+    const float text_x = row.x0 + px(kIndentWidth) *
+                                      static_cast<float>(std::max(indent, 0)) +
+                         px(4.0f) + arrow + px(6.0f);
+    const float text_width = m_list->text_width(label);
+
+    // The panel must be wide enough for the label and the eye
+    note_width(text_x + text_width + px(8.0f) + eye_width);
+
+    if (!m_row_visible) {
+        return event;
+    }
+
+    const Rect label_area{row.x0, row.y0, row.x1 - eye_width, row.y1};
+    const Rect eye_area{row.x1 - eye_width, row.y0, row.x1, row.y1};
+
+    bool pressed = false;
+    bool released = false;
+    const bool hovered = interact(id, label_area, pressed, released);
+
+    // The label area and the eye are separate widgets
+    bool eye_pressed = false;
+    bool eye_released = false;
+    bool eye_hovered = false;
+
+    if (visible != nullptr) {
+        eye_hovered = interact(eye_id, eye_area, eye_pressed, eye_released);
+    }
+
+    std::uint32_t background = 0;
+
+    if (mark == UiRowMark::UI_ROW_ACTIVE) {
+        background = kRowActiveColor;
+    } else if (mark == UiRowMark::UI_ROW_SELECTED) {
+        background = kRowSelectedColor;
+    } else if (hovered) {
+        background = kHoverColor;
+    }
+
+    if (background != 0) {
+        m_list->add_rect(row.x0, row.y0, row.x1, row.y1,
+                         m_enabled ? background : dimmed(background));
+    }
+
+    const float cy = (row.y0 + row.y1) * 0.5f;
+
+    // The arrow of a folder, like a header's
+    if (open != nullptr) {
+        const float cx = row.x0 + px(kIndentWidth) *
+                                      static_cast<float>(std::max(indent, 0)) +
+                         px(4.0f) + arrow * 0.5f;
+
+        if (*open) {
+            m_list->add_triangle(cx - arrow * 0.5f, cy - arrow * 0.3f,
+                                 cx + arrow * 0.5f, cy - arrow * 0.3f,
+                                 cx, cy + arrow * 0.4f, kTitleColor);
+        } else {
+            m_list->add_triangle(cx - arrow * 0.3f, cy - arrow * 0.5f,
+                                 cx + arrow * 0.4f, cy,
+                                 cx - arrow * 0.3f, cy + arrow * 0.5f,
+                                 kTitleColor);
+        }
+    }
+
+    const bool hidden_row = visible != nullptr && !*visible;
+    std::uint32_t color = mark == UiRowMark::UI_ROW_PLAIN ? text_color()
+                                                          : kValueColor;
+
+    if (hidden_row) {
+        color = dimmed(color);
+    }
+
+    m_list->add_text(text_x, row.y0 + (row.y1 - row.y0 - line) * 0.5f, label,
+                     color);
+
+    // The eye: a lens with a pupil when visible, a closed line when not
+    if (visible != nullptr) {
+        const float ex = (eye_area.x0 + eye_area.x1) * 0.5f;
+        const float half_w = std::round(eye_width * 0.32f);
+        const float half_h = std::max(2.0f, std::round(line * 0.24f));
+        const std::uint32_t eye_color = eye_hovered
+            ? kValueColor
+            : (hidden_row ? dimmed(kTextColor) : kTextColor);
+
+        if (*visible) {
+            m_list->add_triangle(ex - half_w, cy, ex, cy - half_h,
+                                 ex + half_w, cy, eye_color);
+            m_list->add_triangle(ex - half_w, cy, ex, cy + half_h,
+                                 ex + half_w, cy, eye_color);
+
+            const float pupil = std::max(1.0f, std::round(half_h * 0.45f));
+            m_list->add_rect(ex - pupil, cy - pupil, ex + pupil, cy + pupil,
+                             background != 0 ? background : kPanelColor);
+        } else {
+            const float thickness = std::max(1.0f, px(1.0f));
+            m_list->add_rect(ex - half_w, cy - thickness * 0.5f, ex + half_w,
+                             cy + thickness * 0.5f, eye_color);
+        }
+    }
+
+    if (released && hovered) {
+        if (open != nullptr) {
+            *open = !*open;
+        } else {
+            event.clicked = true;
+        }
+    }
+
+    if (visible != nullptr && eye_released && eye_hovered) {
+        *visible = !*visible;
+        event.eye_clicked = true;
+    }
+
+    return event;
 }
 
 bool Ui::header(const char* label, bool* open) {
