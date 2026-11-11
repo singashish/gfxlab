@@ -24,14 +24,17 @@ Early development. **M0 (foundation), M1 (window and input), M2 (OpenGL
 renderer and orbit camera), M3 (models, lighting and object transforms), M4
 (the Vulkan backend), M5 (the CUDA software rasterizer), M6 (wireframe, GPU
 timing and CUDA clipping), M7 (the CUDA ray tracer), M8 (a basic user
-interface) and M9 (materials, textures and a CUDA path tracer) are complete.**
+interface), M9 (materials, textures and a CUDA path tracer) and M10 (object
+selection, an Outliner and several models) are complete.**
 The app opens a window with a
 Blender-style viewport: an infinite, anti-aliased floor grid with colored X and
 Y axes that fades with distance, and a mouse-controlled orbit camera. Give it
 an OBJ file (with its MTL materials and textures) or a glTF/GLB file on the
 command line and the model is loaded, shaded with its materials and textures,
-placed on the floor, and can be moved, rotated and scaled with Blender's G, R
-and S keys.
+placed on the floor. Every part of a file (every glTF node) is an object that
+you select with a click, Shift+click or a dragged box, like in Blender, and that
+the G, R and S keys move, rotate and scale together with the rest of the
+selection; an Outliner on the right lists the scene and loads more files.
 Without a file it shows two demo triangles. The scene keeps rendering while the
 window is dragged or resized. It renders with OpenGL by default, with Vulkan
 when started with `--backend=vulkan`, or with a software rasterizer written in
@@ -44,7 +47,7 @@ the model and ambient occlusion that refines while the view is still, and
 **P** to a progressive path tracer ("Rendered" mode) with a sun, a sky, glossy
 and metallic materials and emissive surfaces that light their surroundings. A
 panel in the top-left corner, drawn by every backend, shows the timings and
-lets the mouse change the view, the model's position, rotation and scale, the
+lets the mouse change the view, the active object's position, rotation and scale, the
 ray tracer's and path tracer's settings and, with CUDA, the model's materials
 live. The panel can be hidden to the left edge, and scrolls when the window is
 shorter than it.
@@ -61,6 +64,7 @@ shorter than it.
 | M7 | CUDA ray tracer | DONE |
 | M8 | Basic user interface | DONE |
 | M9 | Materials, textures and a CUDA path tracer | DONE |
+| M10 | Object selection, an Outliner and several models | DONE |
 
 ### What is in the repository so far
 
@@ -78,16 +82,20 @@ shorter than it.
   software texture sampling with mip maps, the path tracer's maths (sRGB and
   tone mapping, the sky and sun, the GGX material model in `brdf.h`, sampling
   of emissive triangles), the path tracer's settings and the material editor's
-  helpers, all header-only and shared with the GPU code where it matters
+  helpers, all header-only and shared with the GPU code where it matters.
+  Since M10 it also holds the scene (objects and collections), picking with a
+  ray against one BVH per mesh, the selection rules, box select, the group
+  editor behind G/R/S on a selection, and the parser for the Open dialog's text
 - **`gfx_ui`**: an immediate-mode UI: a font atlas packer, the `UiDrawList`
   of UI triangles every backend draws, a software rasterizer for that list
   (used by the CUDA backend, and by the tests), and widgets (panels, text,
   buttons, checkboxes, sliders, drag fields, foldable sections) with mouse
-  capture and, since M9, panels that scroll when taller than the window
+  capture and, since M9, panels that scroll when taller than the window and,
+  since M10, tree rows with a fold arrow and an eye icon (the Outliner)
 - **`gfx_platform`**: a hand-written Win32 window (DPI-aware, resize and
   minimize handling, rendering during the drag/resize loop), a keyboard and
-  mouse state tracker with mouse capture and focus-loss handling, and the UI
-  font, rasterized with GDI
+  mouse state tracker with mouse capture and focus-loss handling, the UI
+  font, rasterized with GDI, and the Open dialog for the Load models button
 - **`gfx_gl`**: an OpenGL 4.6 core context created through WGL, an own function
   loader, shader helpers, the ray-cast grid, lit mesh drawing (`GLMesh`), an
   edge-list wireframe, a non-blocking GPU timer (`GL_TIME_ELAPSED` queries), the
@@ -197,6 +205,7 @@ cancel the edit, and the camera stays locked except for zoom.
 | [`docs/m7-design.md`](docs/m7-design.md) | CUDA ray tracer: ray tests, the SAH BVH and its 4-wide version, instancing with the inverse model matrix, sun shadows, ambient occlusion with progressive refinement, ray statistics, megakernel versus wavefront, measurements and what they taught, manual checklist |
 | [`docs/m8-design.md`](docs/m8-design.md) | User interface: the GDI font atlas, the UI draw list, the UI pass in OpenGL and Vulkan, the CUDA presenter interface and the software UI rasterizer, immediate-mode widgets and mouse ownership, the settings panel, the cost of the UI, manual checklist |
 | [`docs/m9-design.md`](docs/m9-design.md) | Materials and textures: the MTL parser, Deflate, PNG and TGA decoders, the JSON parser and glTF/GLB loader, textured drawing in all three backends, the CUDA path tracer (linear light, sun and sky, the GGX material model, emissive triangles and MIS, the firefly limit), the settings panel, hiding and scrolling, the material editor, manual checklist |
+| [`docs/m10-design.md`](docs/m10-design.md) | Object selection: objects and collections, the pick ray and its tests, the selection rules, the silhouette outline in all three backends, box select, G/R/S on a selection, hiding, the Outliner and its tree-row widget, loading models at run time, decisions, problems, manual checklist, limits |
 
 ## Requirements
 
